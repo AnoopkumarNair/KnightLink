@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "tpms/sensairy",
+  "title": "SensAiry BLE tyre sensors",
+  "companyId": "BA06",
+  "provenance": "inferred",
+  "fields": [
+    { "id": "temp_c", "formula": "C", "unit": "degC" },
+    { "id": "pressure_psi", "formula": "((D<<8)|E)/32", "unit": "psi" }
+  ],
+  "notes": "SRS 2.4 gives temperature = B2 and pressure = (B3<<8|B4)/32 but not where byte 0 starts. This file assumes byte 0 is the first byte after the company id. Marked 'inferred' until checked against a raw advertisement capture."
+}

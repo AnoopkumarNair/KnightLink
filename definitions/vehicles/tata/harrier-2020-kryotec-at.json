@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/tata/harrier-2020-kryotec-at",
+  "kind": "vehicle",
+  "title": "Tata Harrier BS6 2.0L Kryotec AT (2020)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Tata",
+    "model": "Harrier",
+    "yearFrom": 2020,
+    "engine": "2.0L Kryotec diesel, Bosch EDC17C69",
+    "fuel": "diesel",
+    "wmi": "MAT",
+    "tankCapacityL": 50,
+    "fuelDensityKgPerL": 0.832
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8",
+      "description": "Bosch EDC17C69. Engine, fuel rate, DPF, EGT, turbo, battery." },
+    { "id": "tcm", "name": "TCM - TransmisCtrl", "requestId": "7E1", "responseId": "7E9",
+      "description": "Hyundai Powertech 6-speed AT." },
+    { "id": "rdcm", "name": "RDCM - ReductantCtrl", "requestId": "7E4", "responseId": "7EC",
+      "description": "Bosch Denoxtronic SCR. AdBlue level, temperature, concentration." }
+  ],
+  "parameters": [
+    { "service": "01", "pid": "78", "ecu": "ecm", "provenance": "verified",
+      "notes": "SRS 2.3. Byte A is the sensor-supported bitmap; 0x0F means all four sensors present.",
+      "signals": [
+        { "id": "exhaust.egt_supported_mask", "formula": "A&15", "unit": "bitmap" },
+        { "id": "exhaust.egt_b1s1", "formula": "(256*B+C)/10-40", "unit": "degC", "min": -40, "max": 1200 },
+        { "id": "exhaust.egt_b1s2", "formula": "(256*D+E)/10-40", "unit": "degC", "min": -40, "max": 1200 },
+        { "id": "exhaust.egt_b1s3", "formula": "(256*F+G)/10-40", "unit": "degC", "min": -40, "max": 1200 },
+        { "id": "exhaust.egt_b1s4", "formula": "(256*H+I)/10-40", "unit": "degC", "min": -40, "max": 1200 }
+      ] },
+    { "service": "01", "pid": "8B", "ecu": "ecm", "provenance": "verified",
+      "notes": "SRS 2.3. Status 2 = active regeneration. Observed: regen starts at 100 % soot and ends near 17.65 % after about 16 minutes.",
+      "signals": [
+        { "id": "dpf.regen_status", "formula": "B", "unit": "enum" },
+        { "id": "dpf.soot_pct", "formula": "C/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "dpf.avg_regen_interval_min", "formula": "256*D+E", "unit": "min" },
+        { "id": "dpf.avg_regen_distance_km", "formula": "256*F+G", "unit": "km" }
+      ] },
+    { "service": "01", "pid": "9B", "ecu": "rdcm", "provenance": "verified",
+      "notes": "SRS 2.3. Read from the reductant controller, not the engine ECU.",
+      "signals": [
+        { "id": "def.temp", "formula": "C-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "def.level_pct", "formula": "D/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "9D", "ecu": "ecm", "provenance": "verified",
+      "notes": "SRS 2.3. Litres per hour = g/s * 3.6 / fuel density.",
+      "signals": [
+        { "id": "fuel.rate_gps", "formula": "(256*A+B)/50", "unit": "g/s", "min": 0, "max": 1310.7 }
+      ] }
+  ]
+}

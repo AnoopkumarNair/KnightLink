@@ -1,0 +1,114 @@
+package knightlink.core.signals
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+/** Highest definition schema this build understands. Newer files are rejected, not half-read. */
+public const val SUPPORTED_SCHEMA_VERSION: Int = 1
+
+/** How much a definition entry can be trusted. */
+@Serializable
+public enum class Provenance {
+    /** Published standard (SAE J1979 / ISO 15031). */
+    @SerialName("standard") STANDARD,
+
+    /** Confirmed against captures from a real vehicle. */
+    @SerialName("verified") VERIFIED,
+
+    /** Submitted by users, not yet confirmed by the maintainers. */
+    @SerialName("community") COMMUNITY,
+
+    /** Guessed by the discovery engine. */
+    @SerialName("inferred") INFERRED,
+}
+
+/** One definition file: either the shared standard layer or a vehicle profile layered on top of it. */
+@Serializable
+public data class DefinitionFile(
+    val schemaVersion: Int,
+    val id: String,
+    val kind: Kind,
+    val title: String,
+    val extends: List<String> = emptyList(),
+    val vehicle: VehicleInfo? = null,
+    val ecus: List<EcuDefinition> = emptyList(),
+    val parameters: List<ParameterDefinition> = emptyList(),
+) {
+    @Serializable
+    public enum class Kind {
+        @SerialName("standard") STANDARD,
+        @SerialName("vehicle") VEHICLE,
+    }
+}
+
+@Serializable
+public data class VehicleInfo(
+    val make: String,
+    val model: String,
+    val yearFrom: Int,
+    val yearTo: Int? = null,
+    val engine: String? = null,
+    val fuel: String? = null,
+    /** World manufacturer identifier: the first three VIN characters. Never a full VIN. */
+    val wmi: String? = null,
+    val tankCapacityL: Double? = null,
+    val fuelDensityKgPerL: Double? = null,
+)
+
+@Serializable
+public data class EcuDefinition(
+    val id: String,
+    val name: String,
+    /** CAN identifiers as hex strings, e.g. `7E0` / `7E8`. */
+    val requestId: String,
+    val responseId: String,
+    val description: String? = null,
+) {
+    val requestCanId: Int get() = requestId.toInt(16)
+    val responseCanId: Int get() = responseId.toInt(16)
+}
+
+/** One request (service + PID or DID) and the signals carried in its reply. */
+@Serializable
+public data class ParameterDefinition(
+    /** Service as hex, e.g. `01` or `22`. */
+    val service: String,
+    /** PID or DID as hex, e.g. `0C` or `F190`. */
+    val pid: String,
+    /** ECU id this entry applies to; null means any ECU. */
+    val ecu: String? = null,
+    val provenance: Provenance,
+    val signals: List<SignalDefinition>,
+    val notes: String? = null,
+)
+
+@Serializable
+public data class SignalDefinition(
+    /** Canonical signal id shared by every vehicle, e.g. `engine.rpm`. */
+    val id: String,
+    /** See [Expression]. Variables are the data bytes after the PID. */
+    val formula: String,
+    val unit: String,
+    val min: Double? = null,
+    val max: Double? = null,
+)
+
+public class DefinitionException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+public object DefinitionJson {
+    // Strict on purpose: an unknown key means a typo or a newer schema, and both should fail loudly.
+    internal val json = Json { ignoreUnknownKeys = false }
+
+    public fun parse(text: String): DefinitionFile {
+        val file = try {
+            json.decodeFromString(DefinitionFile.serializer(), text)
+        } catch (e: IllegalArgumentException) {
+            throw DefinitionException("Invalid definition file: ${e.message}", e)
+        }
+        if (file.schemaVersion > SUPPORTED_SCHEMA_VERSION) {
+            throw DefinitionException("'${file.id}' uses schema ${file.schemaVersion}; this build supports up to $SUPPORTED_SCHEMA_VERSION")
+        }
+        return file
+    }
+}

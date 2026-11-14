@@ -1,0 +1,13 @@
+.gradle/
+build/
+.kotlin/
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+*.keystore
+*.jks
+# Raw captures can contain a VIN, MAC addresses and location. Keep them local unless scrubbed.
+fixtures/raw/*
+!fixtures/raw/README.md

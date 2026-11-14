@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "adapters/vgate-icar-pro-2s",
+  "title": "Vgate iCar Pro 2S (BLE)",
+  "chipset": "elm327",
+  "firmware": "iCarPro v2.3.16 / ELM327 v2.3",
+  "ble": {
+    "names": ["IOS-Vlink"],
+    "serviceUuid": "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+    "writeCharacteristicUuid": "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f",
+    "notifyCharacteristicUuid": "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f",
+    "ignoreServiceUuids": ["000018f0-0000-1000-8000-00805f9b34fb"]
+  },
+  "initScript": ["ATD", "ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP6", "ATAT1", "ATST32"],
+  "notes": "SRS 2.1. Service 0x18F0 echoes commands without executing them and must not be used. ATSP6 fixes 11-bit 500 kbaud CAN for the reference car; discovery will replace it with protocol detection for other vehicles."
+}

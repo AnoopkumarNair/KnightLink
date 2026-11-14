@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "standard/sae-j1979-mode01",
+  "kind": "standard",
+  "title": "SAE J1979 service 01 live data",
+  "parameters": [
+    { "service": "01", "pid": "04", "provenance": "standard", "signals": [
+      { "id": "engine.load_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 } ] },
+    { "service": "01", "pid": "05", "provenance": "standard", "signals": [
+      { "id": "engine.coolant_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] },
+    { "service": "01", "pid": "0B", "provenance": "standard", "signals": [
+      { "id": "intake.map_kpa", "formula": "A", "unit": "kPa", "min": 0, "max": 255 } ] },
+    { "service": "01", "pid": "0C", "provenance": "standard", "signals": [
+      { "id": "engine.rpm", "formula": "(256*A+B)/4", "unit": "rpm", "min": 0, "max": 16383.75 } ] },
+    { "service": "01", "pid": "0D", "provenance": "standard", "signals": [
+      { "id": "vehicle.speed", "formula": "A", "unit": "km/h", "min": 0, "max": 255 } ] },
+    { "service": "01", "pid": "0F", "provenance": "standard", "signals": [
+      { "id": "intake.air_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] },
+    { "service": "01", "pid": "10", "provenance": "standard", "signals": [
+      { "id": "intake.maf", "formula": "(256*A+B)/100", "unit": "g/s", "min": 0, "max": 655.35 } ] },
+    { "service": "01", "pid": "11", "provenance": "standard", "signals": [
+      { "id": "engine.throttle_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 } ] },
+    { "service": "01", "pid": "2F", "provenance": "standard", "signals": [
+      { "id": "fuel.level_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 } ] },
+    { "service": "01", "pid": "31", "provenance": "standard", "signals": [
+      { "id": "distance.since_dtc_clear_km", "formula": "256*A+B", "unit": "km", "min": 0, "max": 65535 } ] },
+    { "service": "01", "pid": "33", "provenance": "standard", "signals": [
+      { "id": "ambient.pressure_kpa", "formula": "A", "unit": "kPa", "min": 0, "max": 255 } ] },
+    { "service": "01", "pid": "42", "provenance": "standard", "signals": [
+      { "id": "electrical.module_voltage", "formula": "(256*A+B)/1000", "unit": "V", "min": 0, "max": 65.535 } ] },
+    { "service": "01", "pid": "46", "provenance": "standard", "signals": [
+      { "id": "ambient.air_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] },
+    { "service": "01", "pid": "5C", "provenance": "standard", "signals": [
+      { "id": "engine.oil_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] }
+  ]
+}
