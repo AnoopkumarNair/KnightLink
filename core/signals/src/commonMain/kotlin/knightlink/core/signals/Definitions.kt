@@ -11,16 +11,20 @@ public const val SUPPORTED_SCHEMA_VERSION: Int = 1
 @Serializable
 public enum class Provenance {
     /** Published standard (SAE J1979 / ISO 15031). */
-    @SerialName("standard") STANDARD,
+    @SerialName("standard")
+    STANDARD,
 
     /** Confirmed against captures from a real vehicle. */
-    @SerialName("verified") VERIFIED,
+    @SerialName("verified")
+    VERIFIED,
 
     /** Submitted by users, not yet confirmed by the maintainers. */
-    @SerialName("community") COMMUNITY,
+    @SerialName("community")
+    COMMUNITY,
 
     /** Guessed by the discovery engine. */
-    @SerialName("inferred") INFERRED,
+    @SerialName("inferred")
+    INFERRED,
 }
 
 /** One definition file: either the shared standard layer or a vehicle profile layered on top of it. */
@@ -37,8 +41,11 @@ public data class DefinitionFile(
 ) {
     @Serializable
     public enum class Kind {
-        @SerialName("standard") STANDARD,
-        @SerialName("vehicle") VEHICLE,
+        @SerialName("standard")
+        STANDARD,
+
+        @SerialName("vehicle")
+        VEHICLE,
     }
 }
 

@@ -4,6 +4,8 @@
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jlleitschuh.gradle.ktlint")
+    id("org.jetbrains.kotlinx.kover")
 }
 
 val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
@@ -29,6 +31,11 @@ kotlin {
 tasks.withType<Test>().configureEach {
     // JVM tests validate the data files in /definitions and /fixtures.
     systemProperty("knightlink.repoRoot", rootDir.absolutePath)
+    // Declared as inputs so that editing only a data file reruns the tests instead of reusing a cached result.
+    inputs
+        .files(fileTree(rootDir) { include("definitions/**/*.json", "fixtures/**/*.json") })
+        .withPropertyName("repositoryDataFiles")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     testLogging {
         events("failed")
         showStandardStreams = false

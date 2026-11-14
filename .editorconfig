@@ -1,0 +1,18 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{kt,kts}]
+indent_size = 4
+max_line_length = 160
+ij_kotlin_allow_trailing_comma = true
+ij_kotlin_allow_trailing_comma_on_call_site = true
+ktlint_code_style = intellij_idea
+# Signature layout rules would collapse every multi-line constructor/function signature onto one line because the
+# line limit is 160 and would force expression bodies onto separate lines; the existing layout is deliberate.
+ktlint_standard_class-signature = disabled
+ktlint_standard_function-signature = disabled

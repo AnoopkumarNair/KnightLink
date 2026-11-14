@@ -130,8 +130,10 @@ class PollSchedulerTest {
     @Test
     fun affinityDoesNotStarveAnEcu() {
         val items = listOf(
-            item("ecm1", 200.milliseconds, 0x7E0), item("tcm1", 210.milliseconds, 0x7E1),
-            item("ecm2", 220.milliseconds, 0x7E0), item("tcm2", 230.milliseconds, 0x7E1),
+            item("ecm1", 200.milliseconds, 0x7E0),
+            item("tcm1", 210.milliseconds, 0x7E1),
+            item("ecm2", 220.milliseconds, 0x7E0),
+            item("tcm2", 230.milliseconds, 0x7E1),
         )
         val sim = Simulated(PollScheduler(items), cost = 60.milliseconds).apply { run(60.seconds) }
         val counts = sim.counts.values
@@ -147,7 +149,10 @@ class PollingLoopTest {
 
     @Test
     fun pollsOnScheduleAndReportsRoundTrip() = runTest {
-        val requester = DiagnosticRequester { _, _, _ -> delay(40.milliseconds); positive }
+        val requester = DiagnosticRequester { _, _, _ ->
+            delay(40.milliseconds)
+            positive
+        }
         val loop = PollingLoop(requester, PollScheduler(listOf(item("rpm", 200.milliseconds))), testTimeSource)
 
         val results = loop.results().take(4).toList()

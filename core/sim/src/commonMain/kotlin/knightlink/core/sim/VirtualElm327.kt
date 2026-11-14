@@ -85,8 +85,14 @@ public class VirtualElm327(
 
     private fun atCommand(body: String): List<String> {
         when (body) {
-            "Z" -> { reset(); return listOf(config.banner) }
-            "D" -> { reset(); return OK }
+            "Z" -> {
+                reset()
+                return listOf(config.banner)
+            }
+            "D" -> {
+                reset()
+                return OK
+            }
             "I" -> return listOf(config.banner)
             "@1" -> return listOf("OBDII to RS232 Interpreter")
             "RV" -> return listOf("14.1V")

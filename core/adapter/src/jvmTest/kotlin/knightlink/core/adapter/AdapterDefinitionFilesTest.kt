@@ -16,8 +16,10 @@ class AdapterDefinitionFilesTest {
             val definition = AdapterDefinition.parse(file.readText())
             assertEquals("adapters/${file.nameWithoutExtension}", definition.id)
             assertTrue(definition.initScript.isNotEmpty(), "${definition.id}: empty init script")
-            assertTrue(definition.initScript.any { it.replace(" ", "").equals("ATH1", ignoreCase = true) },
-                "${definition.id}: headers must be switched on (ATH1); the protocol layer depends on them")
+            assertTrue(
+                definition.initScript.any { it.replace(" ", "").equals("ATH1", ignoreCase = true) },
+                "${definition.id}: headers must be switched on (ATH1); the protocol layer depends on them",
+            )
         }
     }
 }

@@ -104,7 +104,12 @@ private fun simulate(file: File, seconds: Int) {
             result.response?.messages?.filterIsInstance<DiagnosticResponse.Positive>()?.flatMap(decoder::decode)?.forEach { reading ->
                 val key = "${reading.ecu}/${reading.signal.id}"
                 if (latest.put(key, reading.signal.value) != reading.signal.value) {
-                    println("%6.1fs  %s".format(result.at.inWholeMilliseconds / 1000.0, format(reading.ecu, reading.signal.id, reading.signal.value, reading.signal.unit)))
+                    println(
+                        "%6.1fs  %s".format(
+                            result.at.inWholeMilliseconds / 1000.0,
+                            format(reading.ecu, reading.signal.id, reading.signal.value, reading.signal.unit),
+                        ),
+                    )
                 }
             }
         }

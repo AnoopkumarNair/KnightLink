@@ -38,8 +38,11 @@ public class ElmLineParser(private val extendedIds: Boolean) {
         val compact = line.filterNot { it.isWhitespace() }.uppercase()
         val word = compact.trimStart('<').trimEnd('.')
         ElmStatus.entries.firstOrNull { status ->
-            if (status == ElmStatus.UNKNOWN_COMMAND || status == ElmStatus.OK) word == status.prefix
-            else word.startsWith(status.prefix)
+            if (status == ElmStatus.UNKNOWN_COMMAND || status == ElmStatus.OK) {
+                word == status.prefix
+            } else {
+                word.startsWith(status.prefix)
+            }
         }?.let { return ElmLine.Status(it) }
 
         val isFrame = compact.length >= idDigits + 2 &&

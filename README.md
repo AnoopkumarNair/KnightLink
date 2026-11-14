@@ -39,6 +39,8 @@ Requires JDK 21.
 
 This compiles every module for JVM and iOS and runs all tests, including validation of every file under `definitions/` and the golden frames under `fixtures/golden/`. iOS tests run on macOS only (CI does this).
 
+`check` also runs ktlint on every module (rules in `.editorconfig`; `./gradlew ktlintFormat` fixes most findings) and the architecture guard tests in `tools/archtest` (no vehicle-specific names or BLE UUID/MAC literals in `core/`, allowed module dependencies, no real VINs in data files). `./gradlew koverXmlReport` writes a merged coverage report for the core modules to `build/reports/kover/report.xml`.
+
 ## Try it without a car
 
 Run a simulated Harrier through a DPF regeneration (virtual ECUs, virtual adapter, real driver, scheduler and definitions):

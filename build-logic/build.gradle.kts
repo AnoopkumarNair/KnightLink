@@ -5,4 +5,6 @@ plugins {
 dependencies {
     implementation(libs.kotlin.gradle.plugin)
     implementation(libs.kotlin.serialization.plugin)
+    implementation(libs.ktlint.gradle.plugin)
+    implementation(libs.kover.gradle.plugin)
 }

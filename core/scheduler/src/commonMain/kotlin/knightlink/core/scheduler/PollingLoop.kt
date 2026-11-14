@@ -50,8 +50,14 @@ public class PollingLoop(
         while (true) {
             val item = when (val decision = scheduler.next(start.elapsedNow(), currentRequestId)) {
                 is PollDecision.Poll -> decision.item
-                is PollDecision.Wait -> { delay(decision.duration); continue }
-                PollDecision.Idle -> { delay(idleDelay); continue }
+                is PollDecision.Wait -> {
+                    delay(decision.duration)
+                    continue
+                }
+                PollDecision.Idle -> {
+                    delay(idleDelay)
+                    continue
+                }
             }
 
             val sent = start.elapsedNow()

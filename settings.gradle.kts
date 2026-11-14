@@ -30,4 +30,5 @@ include(
     ":core:scheduler",
     ":core:telemetry",
     ":tools:cli",
+    ":tools:archtest",
 )
