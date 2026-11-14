@@ -15,6 +15,7 @@ kotlin {
             implementation(projects.core.scheduler)
             implementation(projects.core.signals)
             implementation(projects.core.telemetry)
+            implementation(projects.core.vehicle)
         }
     }
 }

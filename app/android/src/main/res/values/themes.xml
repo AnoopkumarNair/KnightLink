@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark only: the platform dark theme, no action bar (the Compose UI draws its own). -->
+    <style name="Theme.KnightLink" parent="@android:style/Theme.Material.NoActionBar" />
+</resources>

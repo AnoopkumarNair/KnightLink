@@ -28,6 +28,10 @@ public data class SimulationFile(
         val responseId: String,
         /** A made-up 17-character VIN, served on service 09 PID 02. Never a real one. */
         val vin: String? = null,
+        /** Made-up ECU name, served on service 09 PID 0A as one count byte plus [NAME_LENGTH] NUL-padded ASCII bytes. */
+        val name: String? = null,
+        /** Made-up calibration id, served on service 09 PID 04 as one count byte plus [CALIBRATION_ID_LENGTH] NUL-padded bytes. */
+        val calibrationId: String? = null,
         /** Request hex (service + PID) to reply data hex. */
         val data: Map<String, String> = emptyMap(),
     )
@@ -49,9 +53,18 @@ public data class SimulationFile(
                     require(it.length == VIN_LENGTH) { "$id: VIN must be $VIN_LENGTH characters" }
                     ecu.set("0902", "01" + it.encodeToByteArray().toHex())
                 }
+                spec.name?.let { ecu.set("090A", paddedInfo(it, NAME_LENGTH, "name")) }
+                spec.calibrationId?.let { ecu.set("0904", paddedInfo(it, CALIBRATION_ID_LENGTH, "calibrationId")) }
             }
         },
     )
+
+    // Service 09 text items: item count 1, then fixed-width ASCII padded with NUL, as real ECUs send them.
+    private fun paddedInfo(text: String, width: Int, field: String): String {
+        require(text.length <= width) { "$id: $field must be at most $width characters" }
+        require(text.all { it.code in PRINTABLE_ASCII }) { "$id: $field must be printable ASCII" }
+        return "01" + text.encodeToByteArray().toHex() + "00".repeat(width - text.length)
+    }
 
     /** Applies the timeline to [vehicle] in real (or virtual test) time. Returns when the last step is applied. */
     public suspend fun play(vehicle: VirtualVehicle, onStep: (Step) -> Unit = {}) {
@@ -72,6 +85,9 @@ public data class SimulationFile(
 
     public companion object {
         private const val VIN_LENGTH = 17
+        private const val NAME_LENGTH = 20
+        private const val CALIBRATION_ID_LENGTH = 16
+        private val PRINTABLE_ASCII = 0x20..0x7E
         private val json = Json { ignoreUnknownKeys = false }
 
         public fun parse(text: String): SimulationFile = json.decodeFromString(serializer(), text)

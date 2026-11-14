@@ -11,3 +11,5 @@ captures/
 # Raw captures can contain a VIN, MAC addresses and location. Keep them local unless scrubbed.
 fixtures/raw/*
 !fixtures/raw/README.md
+# Scratch worktrees used by coding agents.
+.claude/worktrees/

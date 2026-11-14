@@ -31,22 +31,26 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
         val positive = byteArrayOf((service + POSITIVE_OFFSET).toByte()) + request.copyOfRange(1, request.size)
         replies[request.toHex()]?.let { return positive + it }
 
-        if (service == SERVICE_LIVE_DATA && request.size == 2) {
+        if ((service == SERVICE_LIVE_DATA || service == SERVICE_VEHICLE_INFO) && request.size == 2) {
             val pid = request[1].toInt() and 0xFF
-            if (pid % SUPPORT_RANGE == 0) return supportBitmap(pid)?.let { positive + it }
+            if (pid % SUPPORT_RANGE == 0) return supportBitmap(service, pid)?.let { positive + it }
         }
         return when (service) {
             // Emission-related services: an ECU that lacks the PID simply does not answer.
-            SERVICE_LIVE_DATA, 0x02, 0x09 -> null
+            SERVICE_LIVE_DATA, 0x02, SERVICE_VEHICLE_INFO -> null
             0x22 -> byteArrayOf(NEGATIVE, service.toByte(), NRC_REQUEST_OUT_OF_RANGE)
             else -> byteArrayOf(NEGATIVE, service.toByte(), NRC_SERVICE_NOT_SUPPORTED)
         }
     }
 
-    /** Service 01 "supported PIDs" bitmap for the range starting at [base], derived from the stored replies. */
-    private fun supportBitmap(base: Int): ByteArray? {
+    /**
+     * "Supported PIDs" bitmap of [service] (01 or 09, which share one layout) for the range starting at [base],
+     * derived from the stored replies so the two can never disagree.
+     */
+    private fun supportBitmap(service: Int, base: Int): ByteArray? {
+        val prefix = byteArrayOf(service.toByte()).toHex()
         val pids = replies.keys
-            .filter { it.length == 4 && it.startsWith("01") }
+            .filter { it.length == 4 && it.startsWith(prefix) }
             .map { it.substring(2).toInt(16) }
         var bits = 0L
         for (offset in 1..SUPPORT_RANGE) {
@@ -61,6 +65,7 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
     private companion object {
         const val POSITIVE_OFFSET = 0x40
         const val SERVICE_LIVE_DATA = 0x01
+        const val SERVICE_VEHICLE_INFO = 0x09
         const val SUPPORT_RANGE = 0x20
         const val NEGATIVE = 0x7F.toByte()
         const val NRC_SERVICE_NOT_SUPPORTED = 0x11.toByte()

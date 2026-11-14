@@ -4,7 +4,7 @@
   "title": "Harrier: soot climbs to 100 %, active regeneration, back to 17.65 % (time-compressed)",
   "definition": "vehicles/tata/harrier-2020-kryotec-at",
   "ecus": [
-    { "id": "ecm", "requestId": "7E0", "responseId": "7E8", "vin": "SIMHARRIER2020001",
+    { "id": "ecm", "requestId": "7E0", "responseId": "7E8", "vin": "SIMHARRIER2020001", "name": "ECM-EngineControl", "calibrationId": "SIM-ECM-CAL-0001",
       "data": {
         "0105": "6B", "010B": "65", "010C": "0C7C", "010D": "28", "0110": "04B0", "012F": "80",
         "0131": "0F53", "0142": "3714", "0146": "44",
@@ -12,9 +12,9 @@
         "018B": "7300E300EF00B3",
         "019D": "001D001D"
       } },
-    { "id": "tcm", "requestId": "7E1", "responseId": "7E9",
+    { "id": "tcm", "requestId": "7E1", "responseId": "7E9", "name": "TCM-TransmisCtrl",
       "data": { "0131": "0EEE" } },
-    { "id": "rdcm", "requestId": "7E4", "responseId": "7EC",
+    { "id": "rdcm", "requestId": "7E4", "responseId": "7EC", "name": "RDCM-ReductantCtrl", "calibrationId": "SIM-RDCM-CAL-001",
       "data": { "0105": "6A", "010C": "0C7C", "019B": "0E833EF4" } }
   ],
   "timeline": [

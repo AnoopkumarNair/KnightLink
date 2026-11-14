@@ -1,6 +1,7 @@
 package knightlink.core.adapter
 
 import knightlink.core.common.toHex
+import knightlink.core.protocol.DiagnosticLink
 import knightlink.core.protocol.ElmResponse
 import knightlink.core.protocol.ElmResponseDecoder
 import knightlink.core.protocol.ElmStreamFramer
@@ -36,7 +37,7 @@ public class Elm327Driver(
     scope: CoroutineScope,
     private val extendedIds: Boolean = false,
     private val defaultTimeout: Duration = 3.seconds,
-) {
+) : DiagnosticLink {
     private val framer = ElmStreamFramer()
     private val decoder = ElmResponseDecoder(extendedIds)
     private val responses = Channel<List<String>>(Channel.UNLIMITED)
@@ -47,8 +48,10 @@ public class Elm327Driver(
         stream.incoming.collect { chunk -> framer.feed(chunk).forEach { responses.send(it) } }
     }
 
+    override suspend fun command(text: String): List<String> = command(text, defaultTimeout)
+
     /** Sends one command and returns the reply lines, without the echo. */
-    public suspend fun command(text: String, timeout: Duration = defaultTimeout): List<String> =
+    public suspend fun command(text: String, timeout: Duration): List<String> =
         lock.withLock { exchange(text, timeout) }
 
     /**
@@ -77,8 +80,8 @@ public class Elm327Driver(
     public suspend fun request(
         requestId: Int,
         payload: ByteArray,
-        expectedResponses: Int? = null,
-        timeout: Duration = defaultTimeout,
+        expectedResponses: Int?,
+        timeout: Duration,
     ): ElmResponse = lock.withLock {
         require(!extendedIds) { "29-bit header selection is not implemented yet" }
         require(expectedResponses == null || expectedResponses in 1..15) { "expectedResponses must be 1..15" }
@@ -91,6 +94,9 @@ public class Elm327Driver(
         val suffix = expectedResponses?.toString(16)?.uppercase().orEmpty()
         decoder.decode(exchange(payload.toHex() + suffix, timeout))
     }
+
+    override suspend fun request(requestId: Int, payload: ByteArray, expectedResponses: Int?): ElmResponse =
+        request(requestId, payload, expectedResponses, defaultTimeout)
 
     public fun stop() {
         reader.cancel()

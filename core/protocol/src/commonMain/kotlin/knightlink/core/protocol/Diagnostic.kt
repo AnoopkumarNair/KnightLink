@@ -65,6 +65,22 @@ public class ElmResponse(
     public val text: List<String>,
 )
 
+/**
+ * What the layers above an adapter driver need from it. Declared here, not in the driver's module, so
+ * discovery and polling code can be tested with a scripted fake and never depends on a concrete adapter.
+ */
+public interface DiagnosticLink {
+    /** Sends one adapter (AT) command and returns the reply lines without the echo. */
+    public suspend fun command(text: String): List<String>
+
+    /**
+     * Sends a diagnostic request to the ECU with physical request id [requestId].
+     *
+     * @param expectedResponses when set, the adapter stops waiting after that many replies.
+     */
+    public suspend fun request(requestId: Int, payload: ByteArray, expectedResponses: Int? = null): ElmResponse
+}
+
 /** Decodes the lines of one adapter response (as produced by [ElmStreamFramer]). Stateless between calls. */
 public class ElmResponseDecoder(extendedIds: Boolean) {
     private val parser = ElmLineParser(extendedIds)

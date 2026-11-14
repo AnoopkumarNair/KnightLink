@@ -6,7 +6,7 @@ It reads the car over OBD-II / UDS, learns the vehicle and the driver's habits, 
 
 ## Status
 
-Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: the full path from adapter bytes to engineering values runs against a simulated vehicle and is checked against captures from the reference vehicle. Replay of real drive logs waits for the first recordings. There is no Android app yet; that is M2.
+Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: the full path from adapter bytes to engineering values runs against a simulated vehicle and is checked against captures from the reference vehicle. Replay of real drive logs waits for the first recordings. M2 has started: a read-only capability probe and an Android app shell that proves the shared core runs on a phone. The app does not connect to an adapter yet.
 
 ## Layout
 
@@ -20,7 +20,9 @@ Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: th
 | `core/adapter` | ELM327 driver (single-writer command queue, init script, header management) |
 | `core/scheduler` | Polling scheduler (shares the adapter's limited request rate fairly) and polling loop |
 | `core/telemetry` | Turns diagnostic replies into readings; builds the poll list from a vehicle's definitions |
+| `core/vehicle` | Read-only capability probe: finds the ECUs, their supported PIDs, VIN and names, and compares them with a vehicle definition |
 | `core/sim` | Virtual ECUs and a virtual ELM327 adapter, driven by scenario files in `fixtures/sim/` |
+| `app/android` | Android application (currently a one-screen shell) |
 | `tools/cli` | Developer tool: run a simulated vehicle through the real stack, or decode captured frames |
 | `definitions/` | Vehicle, adapter and sensor knowledge as data |
 | `fixtures/` | Golden frames used by tests; `raw/` holds local, git-ignored captures |
@@ -31,11 +33,20 @@ Vehicle-specific knowledge belongs in `definitions/`, never in `core/`.
 
 ## Build and test
 
-Requires JDK 21.
+Requires JDK 21. Building the Android app additionally needs the Android SDK (platform 36 and build-tools 36): create a git-ignored `local.properties` in the repository root with `sdk.dir=/path/to/Android/Sdk` (on Windows: `sdk.dir=C\:\\Users\\<you>\\AppData\\Local\\Android\\Sdk`), or set `ANDROID_HOME`.
 
 ```bash
 ./gradlew check
 ```
+
+Debug APK (`app/android`, application id `in.byteheaven.knightlink`):
+
+```bash
+./gradlew :app:android:assembleDebug
+adb install -r app/android/build/outputs/apk/debug/android-debug.apk
+```
+
+The app consumes the JVM artefacts of the shared modules, so `core/*` has no Android dependency. When no SDK is configured the build skips `app/android` (it says so), and `./gradlew check` still covers everything else with only a JDK.
 
 This compiles every module for JVM and iOS and runs all tests, including validation of every file under `definitions/` and the golden frames under `fixtures/golden/`. iOS tests run on macOS only (CI does this).
 
@@ -47,6 +58,12 @@ Run a simulated Harrier through a DPF regeneration (virtual ECUs, virtual adapte
 
 ```bash
 ./gradlew -q :tools:cli:run --args="simulate fixtures/sim/harrier-dpf-regen.json 24"
+```
+
+Probe the simulated car the way the app would probe an unknown one (read-only: adapter commands and OBD services 01 and 09 only), and compare what it reports with the vehicle definition. Add `--json` for the report as JSON (VIN redacted):
+
+```bash
+./gradlew -q :tools:cli:run --args="probe fixtures/sim/harrier-dpf-regen.json"
 ```
 
 Decode frames captured from an adapter:

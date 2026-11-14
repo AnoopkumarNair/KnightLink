@@ -16,3 +16,5 @@ ktlint_code_style = intellij_idea
 # line limit is 160 and would force expression bodies onto separate lines; the existing layout is deliberate.
 ktlint_standard_class-signature = disabled
 ktlint_standard_function-signature = disabled
+# Composable functions are named like types by Compose convention.
+ktlint_function_naming_ignore_when_annotated_with = Composable
