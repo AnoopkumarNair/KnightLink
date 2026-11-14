@@ -26,4 +26,8 @@ include(
     ":core:signals",
     ":core:tpms",
     ":core:adapter",
+    ":core:sim",
+    ":core:scheduler",
+    ":core:telemetry",
+    ":tools:cli",
 )

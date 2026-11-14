@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "sim/harrier-dpf-regen",
+  "title": "Harrier: soot climbs to 100 %, active regeneration, back to 17.65 % (time-compressed)",
+  "definition": "vehicles/tata/harrier-2020-kryotec-at",
+  "ecus": [
+    { "id": "ecm", "requestId": "7E0", "responseId": "7E8", "vin": "SIMHARRIER2020001",
+      "data": {
+        "0105": "6B", "010B": "65", "010C": "0C7C", "010D": "28", "0110": "04B0", "012F": "80",
+        "0131": "0F53", "0142": "3714", "0146": "44",
+        "0178": "0F06F20589039702C9",
+        "018B": "7300E300EF00B3",
+        "019D": "001D001D"
+      } },
+    { "id": "tcm", "requestId": "7E1", "responseId": "7E9",
+      "data": { "0131": "0EEE" } },
+    { "id": "rdcm", "requestId": "7E4", "responseId": "7EC",
+      "data": { "0105": "6A", "010C": "0C7C", "019B": "0E833EF4" } }
+  ],
+  "timeline": [
+    { "atMs": 4000, "ecu": "ecm", "set": { "018B": "7300F200EF00B3" }, "note": "soot 94.9 %" },
+    { "atMs": 8000, "ecu": "ecm", "set": { "018B": "7302FF00EF00B3", "0178": "0F0E420FD2170C1838", "010C": "1F40" },
+      "note": "soot 100 %, active regeneration starts, exhaust heats up" },
+    { "atMs": 14000, "ecu": "ecm", "set": { "018B": "73029600EF00B3" }, "note": "regenerating, soot 58.8 %" },
+    { "atMs": 20000, "ecu": "ecm", "set": { "018B": "73002D00EF00B3", "0178": "0F09C4089807D00708", "010C": "0C7C" },
+      "note": "regeneration complete, soot 17.65 %" }
+  ]
+}

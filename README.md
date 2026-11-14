@@ -6,7 +6,7 @@ It reads the car over OBD-II / UDS, learns the vehicle and the driver's habits, 
 
 ## Status
 
-Milestone M0 (foundation) and the decoding half of M1 (protocol core) are in place: raw adapter bytes are framed, reassembled and decoded into engineering values using definition files, and checked against captures from the reference vehicle. There is no app yet.
+Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: the full path from adapter bytes to engineering values runs against a simulated vehicle and is checked against captures from the reference vehicle. Replay of real drive logs waits for the first recordings. There is no Android app yet; that is M2.
 
 ## Layout
 
@@ -18,6 +18,10 @@ Milestone M0 (foundation) and the decoding half of M1 (protocol core) are in pla
 | `core/signals` | Definition file model, safe formula evaluator, signal catalog |
 | `core/tpms` | Definition-driven decoder for BLE tyre sensor advertisements |
 | `core/adapter` | ELM327 driver (single-writer command queue, init script, header management) |
+| `core/scheduler` | Polling scheduler (shares the adapter's limited request rate fairly) and polling loop |
+| `core/telemetry` | Turns diagnostic replies into readings; builds the poll list from a vehicle's definitions |
+| `core/sim` | Virtual ECUs and a virtual ELM327 adapter, driven by scenario files in `fixtures/sim/` |
+| `tools/cli` | Developer tool: run a simulated vehicle through the real stack, or decode captured frames |
 | `definitions/` | Vehicle, adapter and sensor knowledge as data |
 | `fixtures/` | Golden frames used by tests; `raw/` holds local, git-ignored captures |
 | `docs/adr/` | Architecture decisions |
@@ -34,6 +38,20 @@ Requires JDK 21.
 ```
 
 This compiles every module for JVM and iOS and runs all tests, including validation of every file under `definitions/` and the golden frames under `fixtures/golden/`. iOS tests run on macOS only (CI does this).
+
+## Try it without a car
+
+Run a simulated Harrier through a DPF regeneration (virtual ECUs, virtual adapter, real driver, scheduler and definitions):
+
+```bash
+./gradlew -q :tools:cli:run --args="simulate fixtures/sim/harrier-dpf-regen.json 24"
+```
+
+Decode frames captured from an adapter:
+
+```bash
+./gradlew -q :tools:cli:run --args="decode vehicles/tata/harrier-2020-kryotec-at '7E8 03 41 05 6B'"
+```
 
 ## Adding a vehicle
 
