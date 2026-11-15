@@ -1,0 +1,239 @@
+package knightlink.app.session
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import knightlink.app.MainActivity
+import knightlink.app.R
+import knightlink.app.data.AndroidAssetSource
+import knightlink.app.data.AppConfig
+import knightlink.app.data.DefinitionStore
+import knightlink.app.data.DefinitionStoreException
+import knightlink.app.text
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import java.io.File
+
+/**
+ * Hosts the [SessionController], so a session survives the activity: rotation, the activity being destroyed and the app being
+ * swiped away from the recents list do not touch it. The activity binds to read [SessionController.uiState] (see
+ * [LocalBinder]) and starts and stops the session with intents ([startDemoIntent], [disconnectIntent]), the same ones the
+ * notification uses, so there is one path for commands whichever way they arrive.
+ *
+ * The service owns the scope the session runs in (a supervisor over [Dispatchers.Default]) and stops itself once the
+ * session has been disconnected.
+ *
+ * Foreground or not: see [needsForegroundService]. The demo is not a link to a device, so it runs as an ordinary started
+ * service with an ordinary ongoing notification; a link that needs the process kept alive becomes a foreground service of
+ * type `connectedDevice`, guarded so that a refusal by the system degrades to the ordinary mode instead of crashing.
+ */
+class SessionService : Service() {
+    /** The activity's handle on the service. In-process only, so it hands out the controller itself. */
+    inner class LocalBinder : Binder() {
+        val controller: SessionController get() = this@SessionService.controller
+    }
+
+    // The handler matters: an unexpected exception of the session is reported through the scope (the session also shows it as
+    // Failed), and without a handler it would reach the thread's uncaught handler and kill the app.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "Unexpected error in the session scope", e) },
+    )
+    private val binder = LocalBinder()
+    private lateinit var controller: SessionController
+    private lateinit var notifications: SessionNotifications
+    private lateinit var assets: AndroidAssetSource
+
+    @Volatile
+    private var closed = false
+
+    @Volatile
+    private var sawActive = false
+
+    override fun onCreate() {
+        super.onCreate()
+        assets = AndroidAssetSource(applicationContext.assets)
+        val store = DefinitionStore(assets)
+        controller = SessionController(
+            scope = scope,
+            config = { AppConfig.load(assets) },
+            store = store,
+            transports = DemoTransportFactory(scenario = store::simulation),
+            recordings = FileRecordSinkFactory(RecordingStore(recordingsDirectory(applicationContext))),
+        )
+        notifications = SessionNotifications(this)
+        watchSession()
+    }
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START_DEMO -> startLink(ConnectionTarget.Demo(demoScenarioId()))
+            ACTION_DISCONNECT -> scope.launch {
+                controller.disconnect()
+                // Also when there was nothing to disconnect (a notification outlived the process): it must not linger.
+                shutDown()
+            }
+            else -> stopSelf(startId)
+        }
+        // Not sticky: a session killed with the process is not worth resurrecting without the user.
+        return START_NOT_STICKY
+    }
+
+    private fun startLink(target: ConnectionTarget) {
+        // Connect first: it sets "Connecting" synchronously, so the foreground notification starts with the right text, and a
+        // request refused because a session exists already does not touch the service's mode.
+        if (controller.connect(target) && target.needsForegroundService()) enterForeground()
+    }
+
+    /**
+     * `connectedDevice` services have a runtime precondition since Android 14 (see [needsForegroundService]); when it is not
+     * met, or the system refuses a foreground start for any other reason, the service carries on as an ordinary one.
+     */
+    private fun enterForeground() {
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
+        try {
+            ServiceCompat.startForeground(this, SessionNotifications.ID, notifications.build(controller.uiState.value.connection), type)
+        } catch (e: RuntimeException) {
+            // SecurityException (precondition missing), ForegroundServiceStartNotAllowedException and
+            // ForegroundServiceTypeException have no common type narrower than this.
+            Log.w(TAG, "Could not start as a foreground service; continuing as an ordinary service", e)
+        }
+    }
+
+    private fun demoScenarioId(): String =
+        try {
+            AppConfig.load(assets).demoScenario
+        } catch (e: DefinitionStoreException) {
+            // The controller reads the same config first thing and reports it as a failed connection; it needs a target to do so.
+            Log.e(TAG, "Cannot read the app config", e)
+            ""
+        }
+
+    /** The notification follows the status (at most once a second); leaving the idle state for good stops the service. */
+    private fun watchSession() {
+        val statuses = controller.uiState.map { it.connection }.distinctUntilChanged()
+        scope.launch {
+            statuses.filter { it != ConnectionStatus.Idle }.conflate().collect { status ->
+                sawActive = true
+                if (!closed) notifications.show(status)
+                delay(NOTIFICATION_INTERVAL_MS)
+            }
+        }
+        scope.launch {
+            statuses.filter { it == ConnectionStatus.Idle }.collect { if (sawActive) shutDown() }
+        }
+    }
+
+    private fun shutDown() {
+        if (closed) return
+        sawActive = false
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        notifications.cancel()
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        closed = true
+        notifications.cancel()
+        // The session must stop and its stream must close, and neither may block the main thread: do it on the service's own
+        // scope, and cancel the scope only once that is done. NonCancellable keeps the cleanup out of the scope's cancellation.
+        scope.launch(NonCancellable) { controller.disconnect() }.invokeOnCompletion { scope.cancel() }
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "SessionService"
+        private const val ACTION_START_DEMO = "knightlink.app.action.START_DEMO"
+        private const val ACTION_DISCONNECT = "knightlink.app.action.DISCONNECT"
+        private const val NOTIFICATION_INTERVAL_MS = 1000L
+
+        fun startDemoIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_START_DEMO)
+
+        fun disconnectIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_DISCONNECT)
+
+        fun bindIntent(context: Context): Intent = Intent(context, SessionService::class.java)
+
+        /** The recordings directory: app-private storage, never shared as it is (see [RecordingShare]). */
+        fun recordingsDirectory(context: Context): File = File(context.filesDir, "recordings")
+    }
+}
+
+/**
+ * Whether a link of this kind needs a foreground service to keep the process alive while the app is in the background.
+ *
+ * The demo does not. Android 14 and later only let a `connectedDevice` foreground service start when the app holds one of
+ * the permissions that go with a device link (a Bluetooth permission granted at runtime, a USB permission, or one of a short
+ * list of network and NFC permissions declared in the manifest), and the demo talks to no device. Faking one of those only to
+ * qualify would be dishonest and gets the app rejected in review; starting the service anyway throws SecurityException.
+ */
+fun ConnectionTarget.needsForegroundService(): Boolean = this is ConnectionTarget.Ble
+
+/** The ongoing notification of the session, with a Disconnect action. */
+internal class SessionNotifications(private val context: Context) {
+    private val manager = context.getSystemService(NotificationManager::class.java)
+
+    init {
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, context.getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW).apply {
+                description = context.getString(R.string.notification_channel_description)
+            },
+        )
+    }
+
+    fun build(status: ConnectionStatus): Notification {
+        val open = PendingIntent.getActivity(
+            context,
+            0,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val disconnect = PendingIntent.getService(context, 0, SessionService.disconnectIntent(context), PendingIntent.FLAG_IMMUTABLE)
+        return NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_session)
+            .setContentTitle(context.getString(R.string.app_name))
+            .setContentText(status.text(context.resources))
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setContentIntent(open)
+            .addAction(0, context.getString(R.string.action_disconnect), disconnect)
+            .build()
+    }
+
+    /** Without the notification permission (Android 13 and later) the system drops this silently: the session does not depend on it. */
+    fun show(status: ConnectionStatus) {
+        manager.notify(ID, build(status))
+    }
+
+    fun cancel() {
+        manager.cancel(ID)
+    }
+
+    companion object {
+        const val ID = 1
+        private const val CHANNEL_ID = "session"
+    }
+}

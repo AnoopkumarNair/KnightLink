@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "vehicleDefinition": "vehicles/tata/harrier-2020-kryotec-at",
+  "adapterDefinition": "adapters/vgate-icar-pro-2s",
+  "demoScenario": "sim/harrier-dpf-regen"
+}

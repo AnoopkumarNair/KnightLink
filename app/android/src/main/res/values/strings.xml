@@ -1,4 +1,77 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">KnightLink</string>
+
+    <!-- Connection card -->
+    <string name="connection_title">Connection</string>
+    <string name="status_idle">Idle</string>
+    <string name="status_connecting">Connecting, attempt %1$d</string>
+    <string name="status_initialising">Initialising adapter</string>
+    <string name="status_probing">Reading vehicle capabilities: %1$s</string>
+    <string name="status_live">Live</string>
+    <string name="status_reconnecting">Reconnecting in %1$d s: %2$s</string>
+    <string name="status_failed">Failed: %1$s</string>
+    <string name="probe_stage_adapter">identifying the adapter</string>
+    <string name="probe_stage_ecu_sweep">finding ECUs</string>
+    <string name="probe_stage_live_data_support">checking supported data</string>
+    <string name="probe_stage_vehicle_info">reading vehicle information</string>
+    <string name="probe_stage_benchmark">measuring speed</string>
+    <string name="probe_stage_derived_facts">working out what is available</string>
+    <string name="action_start_demo">Start demo</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_connect_bluetooth">Connect adapter (Bluetooth)</string>
+    <string name="caption_bluetooth_soon">Coming in the next build</string>
+
+    <!-- Vehicle card -->
+    <string name="vehicle_title">Vehicle</string>
+    <string name="vehicle_ecus">ECUs: %1$d</string>
+    <string name="vehicle_ecu_unnamed">ECU %1$s</string>
+    <string name="vehicle_ecu_line">%1$s (%2$s)</string>
+    <string name="vehicle_vin">VIN: %1$s</string>
+    <string name="vehicle_vin_unknown">VIN: not reported</string>
+    <string name="vehicle_adapter">Adapter: %1$s</string>
+    <string name="vehicle_adapter_unknown">Adapter: unknown</string>
+    <string name="vehicle_rate">Measured rate: %1$s requests per second</string>
+    <string name="vehicle_rate_unknown">Measured rate: not available</string>
+    <string name="vehicle_fuel">Fuel data: %1$s</string>
+    <string name="fuel_direct_rate">reported by the vehicle</string>
+    <string name="fuel_maf">estimated from air flow</string>
+    <string name="fuel_speed_density">estimated from manifold pressure</string>
+    <string name="fuel_unknown">not available</string>
+    <string name="vehicle_dpf_yes">DPF data: yes</string>
+    <string name="vehicle_dpf_no">DPF data: no</string>
+    <string name="coverage_title">Definition coverage</string>
+    <string name="coverage_confirmed">Confirmed: %1$d</string>
+    <string name="coverage_missing">Missing: %1$d</string>
+    <string name="coverage_unmapped">Unmapped: %1$d</string>
+    <string name="coverage_expand">Show list</string>
+    <string name="coverage_collapse">Hide list</string>
+    <string name="coverage_empty">None</string>
+
+    <!-- Live values -->
+    <string name="live_title">Live values</string>
+    <string name="live_empty">No readings yet</string>
+    <string name="live_row_value">%1$s %2$s</string>
+    <string name="live_ecu_stale">%1$s, stale %2$d s</string>
+    <string name="live_stale_only">Stale %1$d s</string>
+    <string name="live_stale_description">%1$s: %2$s, stale, seconds since the last update: %3$d</string>
+
+    <!-- Recordings card -->
+    <string name="recordings_title">Recordings</string>
+    <string name="recordings_none">No recordings yet</string>
+    <plurals name="recordings_summary">
+        <item quantity="one">%1$d recording, %2$s</item>
+        <item quantity="other">%1$d recordings, %2$s</item>
+    </plurals>
+    <string name="action_share_latest">Share latest (VIN removed)</string>
+    <string name="share_chooser_title">Share recording</string>
+    <string name="share_warning_title">Some data was removed</string>
+    <string name="share_warning_intro">The scrubber could not read these responses with confidence and replaced them with NO DATA. The copy has no VIN, but it is missing this data:</string>
+    <string name="share_anyway">Share anyway</string>
+    <string name="cancel">Cancel</string>
+    <string name="share_failed">Could not prepare the recording: %1$s</string>
+
+    <!-- Notification -->
+    <string name="notification_channel_name">Vehicle session</string>
+    <string name="notification_channel_description">Shows while KnightLink is connected to a vehicle or running the demo.</string>
 </resources>

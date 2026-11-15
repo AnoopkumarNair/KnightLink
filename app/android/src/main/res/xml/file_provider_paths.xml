@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the scrubbed copies of recordings are ever shared. They are written to cache/shared by RecordingShare; the recordings
+  themselves (files/recordings, which hold the full VIN) are deliberately not listed, so the provider cannot hand them out.
+-->
+<paths>
+    <cache-path name="scrubbed_recordings" path="shared/" />
+</paths>
