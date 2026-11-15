@@ -30,6 +30,8 @@ include(
     ":core:scheduler",
     ":core:telemetry",
     ":core:vehicle",
+    ":core:runtime",
+    ":core:recorder",
     ":tools:cli",
     ":tools:archtest",
 )

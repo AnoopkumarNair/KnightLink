@@ -4,6 +4,7 @@ import knightlink.core.common.hexToBytes
 import knightlink.core.common.isHexDigit
 import knightlink.core.common.toHex
 import knightlink.core.transport.ByteStream
+import knightlink.core.transport.TransportException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -45,7 +46,22 @@ public class VirtualElm327(
 
     override val incoming: Flow<ByteArray> = channel.receiveAsFlow()
 
+    /** Set by [disconnect] and [close]: the link is gone and nothing can be sent over it any more. */
+    private var linkEnded = false
+
+    /**
+     * Simulates the adapter being unplugged or going out of range: [incoming] ends (normally, or by failing
+     * with [cause]) after delivering what was already sent, and every later [write] throws
+     * [TransportException]. Does nothing if the link has already ended.
+     */
+    public fun disconnect(cause: Throwable? = null) {
+        if (linkEnded) return
+        linkEnded = true
+        channel.close(cause)
+    }
+
     override suspend fun write(bytes: ByteArray) {
+        ensureLinked()
         for (byte in bytes) {
             val c = (byte.toInt() and 0xFF).toChar()
             if (c != '\r') {
@@ -56,6 +72,8 @@ public class VirtualElm327(
             input.clear()
             log += command
             delay(config.responseDelay)
+            // The link may have dropped while the adapter was "thinking": the answer is then lost, as on a real link.
+            ensureLinked()
             // Characters are echoed as they arrive, so the echo setting in force before the command applies.
             val echoed = echo
             send(command, echoed, execute(command.filterNot { it.isWhitespace() }.uppercase()))
@@ -63,17 +81,22 @@ public class VirtualElm327(
     }
 
     override suspend fun close() {
+        linkEnded = true
         channel.close()
     }
 
-    private suspend fun send(command: String, echoed: Boolean, lines: List<String>) {
+    private fun ensureLinked() {
+        if (linkEnded) throw TransportException("The simulated adapter is disconnected")
+    }
+
+    private fun send(command: String, echoed: Boolean, lines: List<String>) {
         val eol = if (linefeeds) "\r\n" else "\r"
         val text = buildString {
             if (echoed) append(command).append(eol)
             lines.forEach { append(it).append(eol) }
             append(eol).append('>')
         }
-        text.encodeToByteArray().asList().chunked(config.chunkSize).forEach { channel.send(it.toByteArray()) }
+        text.encodeToByteArray().asList().chunked(config.chunkSize).forEach { channel.trySend(it.toByteArray()) }
     }
 
     private fun execute(command: String): List<String> = when {

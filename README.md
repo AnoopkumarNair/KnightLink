@@ -6,7 +6,7 @@ It reads the car over OBD-II / UDS, learns the vehicle and the driver's habits, 
 
 ## Status
 
-Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: the full path from adapter bytes to engineering values runs against a simulated vehicle and is checked against captures from the reference vehicle. Replay of real drive logs waits for the first recordings. M2 has started: a read-only capability probe and an Android app shell that proves the shared core runs on a phone. The app does not connect to an adapter yet.
+Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: the full path from adapter bytes to engineering values runs against a simulated vehicle and is checked against captures from the reference vehicle. Replay of real drive logs waits for the first recordings. M2 is under way: the capability probe, the vehicle session with reconnect, byte-level session recording and replay, and an Android app shell that proves the shared core runs on a phone. The app does not connect to an adapter yet; the Bluetooth transport and foreground service are next.
 
 ## Layout
 
@@ -22,8 +22,10 @@ Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: th
 | `core/telemetry` | Turns diagnostic replies into readings; builds the poll list from a vehicle's definitions |
 | `core/vehicle` | Read-only capability probe: finds the ECUs, their supported PIDs, VIN and names, and compares them with a vehicle definition |
 | `core/sim` | Virtual ECUs and a virtual ELM327 adapter, driven by scenario files in `fixtures/sim/` |
+| `core/runtime` | The vehicle session: connect, initialise, probe, poll only what the car confirmed, reconnect with backoff on link loss |
+| `core/recorder` | Byte-level session recording (JSON Lines), replay of a recording as a virtual adapter, and a scrubber that removes the VIN before a recording is shared |
 | `app/android` | Android application (currently a one-screen shell) |
-| `tools/cli` | Developer tool: run a simulated vehicle through the real stack, or decode captured frames |
+| `tools/cli` | Developer tool: run a simulated vehicle through the real stack, record and replay sessions, scrub recordings, or decode captured frames |
 | `definitions/` | Vehicle, adapter and sensor knowledge as data |
 | `fixtures/` | Golden frames used by tests; `raw/` holds local, git-ignored captures |
 | `docs/adr/` | Architecture decisions |
@@ -64,6 +66,14 @@ Probe the simulated car the way the app would probe an unknown one (read-only: a
 
 ```bash
 ./gradlew -q :tools:cli:run --args="probe fixtures/sim/harrier-dpf-regen.json"
+```
+
+Record a session at the byte level, make a copy that is safe to share (VIN reduced to its manufacturer code), and replay it through the unmodified stack. A field problem becomes a repeatable test. `replay` answers each command with the recorded answer to that command (add `--strict` to require exactly the recorded traffic, `--speed 4` to run faster); `fixtures/recordings/` holds an example:
+
+```bash
+./gradlew -q :tools:cli:run --args="probe fixtures/sim/harrier-dpf-regen.json --record build/session.jsonl"
+./gradlew -q :tools:cli:run --args="scrub build/session.jsonl build/session-shareable.jsonl"
+./gradlew -q :tools:cli:run --args="replay build/session-shareable.jsonl vehicles/tata/harrier-2020-kryotec-at"
 ```
 
 Decode frames captured from an adapter:

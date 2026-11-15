@@ -7,9 +7,13 @@ import knightlink.core.protocol.ElmStatus
 import knightlink.core.signals.DefinitionJson
 import knightlink.core.signals.SignalCatalog
 import knightlink.core.transport.ByteStream
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -22,6 +26,8 @@ private class ScriptedAdapter(
     private val replies: Map<String, String?>,
     private val echo: Boolean = false,
     private val chunkSize: Int = 5,
+    /** Ends the stream right after the first reply, like an adapter that drops the link as it answers. */
+    private val endAfterReply: Boolean = false,
 ) : ByteStream {
     private val channel = Channel<ByteArray>(Channel.UNLIMITED)
     val written = ArrayList<String>()
@@ -35,10 +41,16 @@ private class ScriptedAdapter(
         val body = replies[command] ?: "?"
         val full = (if (echo) "$command\r" else "") + "$body\r\r>"
         full.encodeToByteArray().asList().chunked(chunkSize).forEach { channel.send(it.toByteArray()) }
+        if (endAfterReply) channel.close()
     }
 
     override suspend fun close() {
         channel.close()
+    }
+
+    /** Ends [incoming] the way a dropped link does: normally, or with [cause]. */
+    fun endStream(cause: Throwable? = null) {
+        channel.close(cause)
     }
 }
 
@@ -128,5 +140,108 @@ class Elm327DriverTest {
 
         assertEquals(0.0, values["dpf.regen_status"])
         assertEquals(89.02, values.getValue("dpf.soot_pct"), 0.005)
+    }
+}
+
+/** What the driver does when the link under it ends: callers must learn at once, not after a timeout. */
+@OptIn(ExperimentalCoroutinesApi::class)
+class Elm327DriverDisconnectTest {
+    private val silent = mapOf<String, String?>("0105" to null, "01051" to null)
+
+    @Test
+    fun aCommandWaitingForAReplyFailsAtOnceWhenTheStreamCompletes() = runTest {
+        val adapter = ScriptedAdapter(mapOf("ATSH7E0" to "OK") + silent)
+        val driver = Elm327Driver(adapter, backgroundScope)
+
+        val pending = async { runCatching { driver.request(0x7E0, "0105".hexToBytes(), expectedResponses = 1) } }
+        runCurrent()
+        adapter.endStream()
+
+        val error = assertIs<AdapterDisconnectedException>(pending.await().exceptionOrNull())
+        // The default timeout is 3 s; failing "at once" means no virtual time passed at all.
+        assertEquals(0L, currentTime)
+    }
+
+    @Test
+    fun aStreamFailureFailsTheWaitingCommandAndCarriesTheCause() = runTest {
+        val adapter = ScriptedAdapter(silent)
+        val driver = Elm327Driver(adapter, backgroundScope)
+        val reset = IllegalStateException("link reset by peer")
+
+        val pending = async { runCatching { driver.command("0105") } }
+        runCurrent()
+        adapter.endStream(reset)
+
+        val error = assertIs<AdapterDisconnectedException>(pending.await().exceptionOrNull())
+        assertTrue(error.message!!.contains("link reset by peer"), error.message)
+        assertEquals("link reset by peer", error.cause?.message)
+        assertEquals(0L, currentTime)
+    }
+
+    @Test
+    fun aCleanEndIsReportedAsTheAdapterClosingTheConnection() = runTest {
+        val adapter = ScriptedAdapter(silent)
+        val driver = Elm327Driver(adapter, backgroundScope)
+        val pending = async { runCatching { driver.command("0105") } }
+        runCurrent()
+        adapter.endStream()
+        val error = assertIs<AdapterDisconnectedException>(pending.await().exceptionOrNull())
+        assertTrue(error.message!!.contains("closed"), error.message)
+        assertEquals(null, error.cause)
+    }
+
+    @Test
+    fun everyLaterCallFailsAtOnceAndNothingMoreIsWritten() = runTest {
+        val adapter = ScriptedAdapter(mapOf("ATZ" to "ELM327 v2.3"))
+        val driver = Elm327Driver(adapter, backgroundScope)
+        adapter.endStream()
+        runCurrent()
+
+        assertFailsWith<AdapterDisconnectedException> { driver.command("ATZ") }
+        assertFailsWith<AdapterDisconnectedException> { driver.request(0x7E0, "0105".hexToBytes(), expectedResponses = 1) }
+        assertFailsWith<AdapterDisconnectedException> { driver.initialize(listOf("ATZ")) }
+        assertEquals(emptyList(), adapter.written)
+        assertEquals(0L, currentTime)
+    }
+
+    @Test
+    fun callsQueuedBehindTheFailingOneFailToo() = runTest {
+        val adapter = ScriptedAdapter(silent)
+        val driver = Elm327Driver(adapter, backgroundScope)
+        val first = async { runCatching { driver.command("0105") } }
+        val second = async { runCatching { driver.command("0105") } }
+        runCurrent()
+        adapter.endStream()
+        assertIs<AdapterDisconnectedException>(first.await().exceptionOrNull())
+        assertIs<AdapterDisconnectedException>(second.await().exceptionOrNull())
+        assertEquals(listOf("0105"), adapter.written)
+        assertEquals(0L, currentTime)
+    }
+
+    @Test
+    fun aReplyThatArrivedBeforeTheStreamEndedIsStillDelivered() = runTest {
+        val adapter = ScriptedAdapter(mapOf("ATI" to "ELM327 v2.3"), endAfterReply = true)
+        val driver = Elm327Driver(adapter, backgroundScope)
+        assertEquals(listOf("ELM327 v2.3"), driver.command("ATI"))
+        assertFailsWith<AdapterDisconnectedException> { driver.command("ATI") }
+    }
+
+    @Test
+    fun stoppingTheDriverFailsCallsInsteadOfLeavingThemToTimeOut() = runTest {
+        val adapter = ScriptedAdapter(silent)
+        val driver = Elm327Driver(adapter, backgroundScope)
+        val pending = async { runCatching { driver.command("0105") } }
+        runCurrent()
+        driver.stop()
+        assertIs<AdapterDisconnectedException>(pending.await().exceptionOrNull())
+        assertFailsWith<AdapterDisconnectedException> { driver.command("ATI") }
+        assertEquals(0L, currentTime)
+    }
+
+    @Test
+    fun aTimeoutIsStillATimeoutWhileTheStreamIsAlive() = runTest {
+        val driver = Elm327Driver(ScriptedAdapter(silent), backgroundScope)
+        assertFailsWith<AdapterTimeoutException> { driver.command("0105") }
+        assertEquals(3_000L, currentTime)
     }
 }

@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     implementation(projects.core.adapter)
+    implementation(projects.core.recorder)
     implementation(projects.core.scheduler)
     implementation(projects.core.signals)
     implementation(projects.core.sim)

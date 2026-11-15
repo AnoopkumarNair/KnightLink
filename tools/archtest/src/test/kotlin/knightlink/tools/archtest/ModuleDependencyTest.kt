@@ -19,6 +19,8 @@ class ModuleDependencyTest {
             "telemetry" to setOf("protocol", "signals", "scheduler", "common"),
             "sim" to setOf("transport", "common"),
             "vehicle" to setOf("protocol", "signals", "common"),
+            "runtime" to setOf("adapter", "transport", "protocol", "scheduler", "telemetry", "signals", "vehicle", "common"),
+            "recorder" to setOf("transport", "protocol", "common"),
         )
 
     private val accessor = Regex("""projects\.(core|tools)\.(\w+)""")

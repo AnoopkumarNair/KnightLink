@@ -16,6 +16,8 @@ kotlin {
             implementation(projects.core.signals)
             implementation(projects.core.telemetry)
             implementation(projects.core.vehicle)
+            // The session tests run the whole runtime against the simulator.
+            implementation(projects.core.runtime)
         }
     }
 }
