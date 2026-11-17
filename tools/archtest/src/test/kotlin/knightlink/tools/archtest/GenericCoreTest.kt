@@ -20,13 +20,13 @@ class GenericCoreTest {
     @Test
     fun productionCodeNamesNoVehicleOrAdapter() {
         val offences = mutableListOf<String>()
-        for (module in RepoFiles.coreModules()) {
+        for (module in RepoFiles.coreModules() + RepoFiles.voiceModules()) {
             for (file in RepoFiles.kotlinFiles(module) { it.endsWith("Main") }) {
                 val text = file.readText()
                 forbiddenNames.filter { text.contains(it) }.forEach { offences += "${RepoFiles.relative(file)}: mentions '$it'" }
             }
         }
-        assertTrue(offences.isEmpty(), "Vehicle/adapter-specific names in core production code:\n" + offences.joinToString("\n"))
+        assertTrue(offences.isEmpty(), "Vehicle/adapter-specific names in core and voice production code:\n" + offences.joinToString("\n"))
     }
 
     @Test
