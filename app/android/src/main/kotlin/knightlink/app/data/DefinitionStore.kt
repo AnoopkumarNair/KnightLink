@@ -7,6 +7,8 @@ import knightlink.core.signals.DefinitionFile
 import knightlink.core.signals.DefinitionJson
 import knightlink.core.signals.SignalCatalog
 import knightlink.core.sim.SimulationFile
+import knightlink.core.tpms.TpmsDecoder
+import knightlink.core.tpms.TpmsDefinition
 import kotlinx.serialization.SerializationException
 import java.io.IOException
 
@@ -72,6 +74,23 @@ class DefinitionStore(private val assets: AssetSource) {
         }
     }
 
+    /**
+     * The decoder of tyre sensor definition [id] (`tpms/<brand>`).
+     *
+     * @throws DefinitionStoreException if the file is missing or invalid, or a formula does not compile.
+     */
+    fun tpms(id: String): TpmsDecoder {
+        if (!id.startsWith(TPMS_PREFIX)) throw DefinitionStoreException("'$id' is not a tyre sensor definition id")
+        val text = read(assets, "$DEFINITIONS_ROOT/${checked(id)}.json")
+        return try {
+            TpmsDecoder(TpmsDefinition.parse(text))
+        } catch (e: DefinitionException) {
+            throw DefinitionStoreException("Invalid tyre sensor definition '$id': ${e.message}", e)
+        } catch (e: IllegalArgumentException) {
+            throw DefinitionStoreException("Invalid tyre sensor definition '$id': ${e.message}", e)
+        }
+    }
+
     /** @throws DefinitionStoreException if the file is missing or invalid. */
     fun simulation(id: String): SimulationFile {
         if (!id.startsWith("$SIM_ROOT/")) throw DefinitionStoreException("'$id' is not a simulation scenario id")
@@ -122,6 +141,7 @@ class DefinitionStore(private val assets: AssetSource) {
         private const val SWEEP_PLAN = "discovery/did-sweep"
         private const val VEHICLES_PREFIX = "vehicles/"
         private const val ADAPTERS_PREFIX = "adapters/"
+        private const val TPMS_PREFIX = "tpms/"
         private const val JSON = ".json"
         private val ID = Regex("[a-z0-9][a-z0-9_.-]*(/[a-z0-9][a-z0-9_.-]*)*")
 

@@ -20,6 +20,8 @@ public data class TpmsDefinition(
     val provenance: Provenance,
     val fields: List<TpmsField>,
     val notes: String? = null,
+    /** Where the sensor's own identifier sits in the payload, when the layout has one; it tells sensors apart without any device address. */
+    val sensorId: TpmsByteRange? = null,
 ) {
     public companion object {
         private val json = Json { ignoreUnknownKeys = false }
@@ -33,10 +35,17 @@ public data class TpmsDefinition(
             if (definition.schemaVersion > SUPPORTED_SCHEMA_VERSION) {
                 throw DefinitionException("'${definition.id}' uses unsupported schema ${definition.schemaVersion}")
             }
+            definition.sensorId?.let {
+                if (it.offset < 0 || it.length < 1) throw DefinitionException("'${definition.id}': sensorId needs offset >= 0 and length >= 1")
+            }
             return definition
         }
     }
 }
+
+/** [length] bytes of the payload from [offset] (0 is `A`, the first byte after the company id). */
+@Serializable
+public data class TpmsByteRange(val offset: Int, val length: Int)
 
 @Serializable
 public data class TpmsField(
@@ -70,5 +79,22 @@ public class TpmsDecoder(public val definition: TpmsDefinition) {
     public fun decode(companyId: Int, payload: ByteArray): List<SignalValue>? {
         if (companyId != this.companyId || payload.size < requiredBytes) return null
         return fields.map { (field, expression) -> SignalValue(field.id, expression.evaluate(payload), field.unit) }
+    }
+
+    /** The sensor identifier in [payload] as upper-case hex, or null when the layout has none or the payload is too short. */
+    public fun sensorId(payload: ByteArray): String? {
+        val range = definition.sensorId ?: return null
+        if (payload.size < range.offset + range.length) return null
+        return buildString {
+            for (i in range.offset until range.offset + range.length) {
+                val v = payload[i].toInt() and 0xFF
+                append(HEX[v ushr 4])
+                append(HEX[v and 0x0F])
+            }
+        }
+    }
+
+    private companion object {
+        const val HEX = "0123456789ABCDEF"
     }
 }

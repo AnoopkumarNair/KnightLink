@@ -75,6 +75,40 @@ class ExternalSamplesTest {
     }
 
     @Test
+    fun aTyreSensorLineCarriesCompanyPayloadAndSignalStrengthAndReadsBack() {
+        val line = ExternalSamples.tpmsLine(TpmsSample(7000, 0x0A1B, "00ff1c0420", -71))
+        assertEquals("tpms 0A1B 00FF1C0420 -71", line)
+        assertEquals(TpmsSample(7000, 0x0A1B, "00FF1C0420", -71), ExternalSamples.parseTpms(7000, line))
+        assertEquals("tpms 0001 - -", ExternalSamples.tpmsLine(TpmsSample(0, 1, "", null)))
+        assertEquals(TpmsSample(5, 1, "", null), ExternalSamples.parseTpms(5, "tpms 0001 - -"))
+    }
+
+    @Test
+    fun aMalformedTyreSensorLineIsNotRead() {
+        assertNull(ExternalSamples.parseTpms(0, "gps 1 2 3 4 5"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B 00FF1C0420"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms A1B 00FF -70"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B 00F -70"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B 00FG -70"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B 00FF loud"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B 00FF -300"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B " + "00".repeat(ExternalSamples.MAX_TPMS_PAYLOAD_BYTES + 1) + " -70"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B 00FF -70 extra"))
+    }
+
+    @Test
+    fun aSharedTyreSensorLineKeepsOnlyItsThreeFieldsAndFailsClosed() {
+        assertEquals("tpms 0A1B 00FF1C0420 -71", ExternalSamples.scrub("tpms 0A1B 00FF1C0420 -71"))
+        // A device address must never leave the phone, even if a future writer slipped one in (built here: core sources hold no address literals).
+        val address = List(6) { "A1" }.joinToString(":")
+        assertEquals("tpms - - -", ExternalSamples.scrub("tpms 0A1B 00FF1C0420 -71 $address"))
+        assertEquals("tpms - - -", ExternalSamples.scrub("tpms $address 00FF -71"))
+        assertEquals("tpms - - -", ExternalSamples.scrub("tpms"))
+        // Not a tyre-sensor line: a tag that only starts with the same letters is left to other rules.
+        assertEquals("tpmsx 1", ExternalSamples.scrub("tpmsx 1"))
+    }
+
+    @Test
     fun theScrubberRoundsEveryPositionInARecordingAndLeavesTheRest() {
         val recording = Recording(
             header,
@@ -82,13 +116,22 @@ class ExternalSamplesTest {
                 RecordingEvent.open(0),
                 RecordingEvent.external(1000, "gps 52.52001 13.40495 0.0 - 5"),
                 RecordingEvent.external(1010, "mot 0 0.10 0.20 9.80 0.000 0.001 0.002"),
+                RecordingEvent.external(1500, "tpms 0A1B 00FF1C0420 -71"),
                 RecordingEvent.external(2000, "gps 52.52012 13.40511 31.5 88 4"),
                 RecordingEvent.close(3000),
             ),
         )
         val scrubbed = RecordingScrubber.scrub(recording).recording
         val payloads = scrubbed.events.filter { it.kind == EventKind.EXTERNAL }.map { it.payload }
-        assertEquals(listOf("gps 52.52 13.40 0.0 - 5", "mot 0 0.10 0.20 9.80 0.000 0.001 0.002", "gps 52.52 13.41 31.5 88 4"), payloads)
+        assertEquals(
+            listOf(
+                "gps 52.52 13.40 0.0 - 5",
+                "mot 0 0.10 0.20 9.80 0.000 0.001 0.002",
+                "tpms 0A1B 00FF1C0420 -71",
+                "gps 52.52 13.41 31.5 88 4",
+            ),
+            payloads,
+        )
         assertEquals(recording.events.map { it.timeMs }, scrubbed.events.map { it.timeMs })
         // Nothing of the precise position is left anywhere in the text.
         val text = scrubbed.toText()

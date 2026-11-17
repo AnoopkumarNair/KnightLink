@@ -75,6 +75,7 @@ dependencies {
     implementation(projects.core.signals)
     implementation(projects.core.sim)
     implementation(projects.core.telemetry)
+    implementation(projects.core.tpms)
     implementation(projects.core.transport)
     implementation(projects.core.vehicle)
     implementation(projects.platform.bleAndroid)

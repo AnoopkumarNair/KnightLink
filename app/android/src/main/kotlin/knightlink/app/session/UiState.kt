@@ -32,6 +32,8 @@ data class UiState(
     val pollingRate: Double? = null,
     /** The full scan; [ScanStatus.Unavailable] outside a live session. */
     val scan: ScanStatus = ScanStatus.Unavailable,
+    /** Tyre sensor capture; null when this session does not capture (no definition configured, or no source). */
+    val tyres: TyreSensors? = null,
 ) {
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle

@@ -54,6 +54,14 @@
     <string name="drive_data_location_on">The location of the phone is recorded too. It stays on this phone; a shared copy has it rounded to about a kilometre.</string>
     <string name="drive_data_location_off">Location is not recorded. Allow it to record where the drive was, for speed and bearing checks. It stays on this phone; a shared copy has it rounded to about a kilometre.</string>
     <string name="action_allow_location">Allow location</string>
+    <string name="tyres_title">Tyre sensors</string>
+    <string name="tyres_title_unconfirmed">Tyre sensors (unconfirmed)</string>
+    <string name="tyres_not_listening">Not listening: Bluetooth is off or the Nearby devices permission is missing. Nothing is recorded.</string>
+    <string name="tyres_listening_nothing_yet">Listening. Nothing heard yet: the sensors send about once a minute, and some only once the car moves.</string>
+    <string name="tyres_listening">Each payload is read with every layout (%1$s). Compare with the sensor app: the layout that matches is the right one. No alerts.</string>
+    <string name="tyres_payload">%1$s · %2$s</string>
+    <string name="tyres_heard">%1$d dBm · %2$d s ago · %3$d×</string>
+    <string name="tyres_no_layout_fits">Too short for every layout.</string>
 
     <!-- Adapter picker -->
     <string name="picker_title">Choose adapter</string>

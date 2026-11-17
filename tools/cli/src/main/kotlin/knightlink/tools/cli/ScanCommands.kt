@@ -139,7 +139,26 @@ internal fun didTimeline(rawArgs: List<String>) {
     renderDidTimeline(recording, args.positional[1], args.positional[2], catalog).forEach(::println)
 }
 
-private class Sample(val timeMs: Long, val value: Double)
+internal class Sample(val timeMs: Long, val value: Double)
+
+/** The car's own speed (`vehicle.speed`) and engine speed (`engine.rpm`) from every service 01 reply in the recording, decoded the way the app does it. */
+internal fun vehicleSamples(exchanges: List<TrafficExchange>, catalog: SignalCatalog): Map<String, List<Sample>> {
+    val decoder = TelemetryDecoder(catalog)
+    val speed = ArrayList<Sample>()
+    val rpm = ArrayList<Sample>()
+    for (exchange in exchanges) {
+        if (exchange.header == null || !exchange.request.startsWith("01")) continue
+        for (message in decode(exchange).filterIsInstance<DiagnosticResponse.Positive>()) {
+            for (reading in decoder.decode(message)) {
+                when (reading.signal.id) {
+                    "vehicle.speed" -> speed += Sample(exchange.timeMs, reading.signal.value)
+                    "engine.rpm" -> rpm += Sample(exchange.timeMs, reading.signal.value)
+                }
+            }
+        }
+    }
+    return mapOf("vehicle.speed" to speed, "engine.rpm" to rpm)
+}
 
 /**
  * The raw bytes of data identifier [did] of control unit [ecu] each time it was read, next to what the car's own speed and engine speed read
@@ -155,20 +174,9 @@ internal fun renderDidTimeline(recording: Recording, ecu: String, did: String, c
     val exchanges = recording.trafficExchanges()
 
     // The vehicle's own signals, from every service 01 reply in the recording (single or batched), decoded the way the app does it.
-    val decoder = TelemetryDecoder(catalog)
-    val speed = ArrayList<Sample>()
-    val rpm = ArrayList<Sample>()
-    for (exchange in exchanges) {
-        if (exchange.header == null || !exchange.request.startsWith("01")) continue
-        for (message in decode(exchange).filterIsInstance<DiagnosticResponse.Positive>()) {
-            for (reading in decoder.decode(message)) {
-                when (reading.signal.id) {
-                    "vehicle.speed" -> speed += Sample(exchange.timeMs, reading.signal.value)
-                    "engine.rpm" -> rpm += Sample(exchange.timeMs, reading.signal.value)
-                }
-            }
-        }
-    }
+    val vehicle = vehicleSamples(exchanges, catalog)
+    val speed = vehicle.getValue("vehicle.speed")
+    val rpm = vehicle.getValue("engine.rpm")
     // The phone: how hard it was accelerated (the length of the acceleration vector), and its GPS speed.
     val acceleration = ArrayList<Sample>()
     val gpsSpeed = ArrayList<Sample>()

@@ -13,6 +13,7 @@ import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleSession
 import knightlink.core.signals.SignalCatalog
+import knightlink.core.tpms.TpmsDecoder
 import knightlink.core.vehicle.CapabilityReport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -62,6 +63,8 @@ import kotlin.time.TimeSource
  * @param connectionLog the rolling text log that the session's events are also written to; null for none
  * @param sessionConfig the session's settings; the adapter definition's scripts and timing are put on top of them at each connect
  * @param samples the phone's own sensors, recorded next to the link's traffic while a session runs; null for none
+ * @param tyreSensors tyre sensor advertisements, captured (rate-limited) into the recording and shown decoded, unconfirmed, while a session runs,
+ *   when the config names a tyre sensor definition; null for none
  */
 class SessionController(
     private val scope: CoroutineScope,
@@ -75,6 +78,7 @@ class SessionController(
     private val connectionLog: ConnectionLog? = null,
     private val sessionConfig: VehicleSession.Config = VehicleSession.Config(),
     private val samples: SampleSource? = null,
+    private val tyreSensors: AdvertisementSource? = null,
 ) {
     /** One connection request, from [connect] to the end of [disconnect]. */
     private class Run(val scope: CoroutineScope) {
@@ -84,6 +88,10 @@ class SessionController(
         /** Stops the phone's sensors; set while they run. */
         @Volatile
         var stopSamples: (() -> Unit)? = null
+
+        /** What the tyre sensor capture shows now; set while it runs. */
+        @Volatile
+        var tyres: (() -> TyreSensors)? = null
     }
 
     private val lock = Any()
@@ -143,10 +151,12 @@ class SessionController(
         // a throw there must show as Failed, not leave the screen on "Connecting".
         var catalog: SignalCatalog? = null
         var recorded: RecordingTransport? = null
+        var tyres: List<TpmsDecoder> = emptyList()
         val session = try {
             val setup = prepare(target)
             catalog = setup.catalog
             recorded = setup.transport
+            tyres = setup.tyres
             VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events)
         } catch (e: CancellationException) {
             throw e
@@ -159,9 +169,9 @@ class SessionController(
         run.scope.coroutineContext.ensureActive()
         val started = timeSource.markNow()
         run.session = session
-        run.scope.launch { publish(session, started, signalPeriods(checkNotNull(catalog))) }
+        run.scope.launch { publish(session, started, signalPeriods(checkNotNull(catalog)), run) }
         run.scope.launch { keepScanResults(session) }
-        startSamples(run, checkNotNull(recorded))
+        startSamples(run, checkNotNull(recorded), started, tyres)
         session.start()
     }
 
@@ -173,14 +183,38 @@ class SessionController(
         }
     }
 
-    /** Samples of the phone's sensors go into the recording while the session runs; a full buffer drops the oldest, never the session's time. */
-    private fun startSamples(run: Run, transport: RecordingTransport) {
-        val source = samples ?: return
+    /**
+     * Samples of the phone's sensors, and tyre sensor advertisements when there are [tyres] layouts, go into the recording while the session runs; a full
+     * buffer drops the oldest, never the session's time. Tyre advertisements are timed from [started], the session's clock.
+     */
+    private fun startSamples(run: Run, transport: RecordingTransport, started: TimeMark, tyres: List<TpmsDecoder>) {
+        val phone = samples
+        val radio = tyreSensors.takeIf { tyres.isNotEmpty() }
+        if (phone == null && radio == null) return
         val lines = Channel<String>(SAMPLE_BUFFER, BufferOverflow.DROP_OLDEST)
         run.scope.launch { for (line in lines) transport.external(line) }
-        source.start { line -> lines.trySend(line) }
+        phone?.start { line -> lines.trySend(line) }
+        if (radio != null) {
+            val capture = TyreSensorCapture(tyres)
+            val companyIds = tyres.map { it.definition.companyId.uppercase() }.toSet()
+            val listening = radio.start(companyIds) { companyId, payload, rssi ->
+                capture.accept(started.elapsedNow().inWholeMilliseconds, companyId, payload, rssi)?.let { lines.trySend(it) }
+            }
+            connectionLog?.app(
+                if (listening) {
+                    "tyre sensors: listening (${tyres.joinToString {
+                        it.definition.id
+                    }})"
+                } else {
+                    "tyre sensors: not listening (no permission or Bluetooth off)"
+                },
+            )
+            // Anything short of a confirmed layout is shown as unconfirmed; the rules engine refuses such signals for alerts anyway.
+            run.tyres = { TyreSensors(listening, capture.layouts, capture.unconfirmed, capture.readings(started.elapsedNow().inWholeMilliseconds)) }
+        }
         run.stopSamples = {
-            source.stop()
+            phone?.stop()
+            radio?.stop()
             lines.close()
         }
     }
@@ -210,12 +244,26 @@ class SessionController(
         val catalog: SignalCatalog,
         val config: VehicleSession.Config,
         val events: SessionEventSink,
+        val tyres: List<TpmsDecoder>,
     )
 
     private fun prepare(target: ConnectionTarget): Setup {
         val config = config()
         val catalog = store.vehicleCatalog(config.vehicleDefinition)
         val adapter = store.adapter(config.adapterDefinition)
+        // Like the sweep plan, a broken tyre sensor definition costs only the capture, never the connection.
+        val tyres = if (tyreSensors == null) {
+            emptyList()
+        } else {
+            config.tpmsDefinitions.mapNotNull { id ->
+                try {
+                    store.tpms(id)
+                } catch (e: DefinitionStoreException) {
+                    connectionLog?.app("tyre sensor layout left out: ${e.message}")
+                    null
+                }
+            }
+        }
         // The note ends up in recordings that users share: it names the kind of link, never an address.
         val note = when (target) {
             is ConnectionTarget.Demo -> "app, demo: ${target.scenarioId}"
@@ -226,7 +274,7 @@ class SessionController(
             { recordings.newSink() },
             timeSource,
             RecordingHeader(adapter.id, note),
-            externalSamples = samples != null,
+            externalSamples = samples != null || tyres.isNotEmpty(),
         )
         // The adapter definition decides the scripts and the adapter-specific timing; everything else is the app's. A missing sweep plan only
         // means no full scan: it is not a reason to refuse the connection.
@@ -245,14 +293,14 @@ class SessionController(
         // The recording gets every event (it is the replayable record); the text log gets the same ones, except the scan's result, which is
         // a long line of JSON that belongs in the recording and its sidecar, not in a log that is meant to be read on a phone.
         val events: SessionEventSink = connectionLog?.let { transport + it.withoutScanResult() } ?: transport
-        return Setup(transport, adapter.initScript, catalog, sessionSettings, events)
+        return Setup(transport, adapter.initScript, catalog, sessionSettings, events, tyres)
     }
 
     /**
      * Rebuilds [uiState] whenever the session's state changes and every [uiRefresh] otherwise. Readings are pulled at that
      * pace instead of being collected, which bounds the work however fast they arrive.
      */
-    private suspend fun publish(session: VehicleSession, started: TimeMark, periods: Map<String, Duration>) {
+    private suspend fun publish(session: VehicleSession, started: TimeMark, periods: Map<String, Duration>, run: Run) {
         var vehicle: VehicleSummary? = null
         var summarised: CapabilityReport? = null
         val ticks = flow {
@@ -274,6 +322,7 @@ class SessionController(
                 liveValues(session.telemetry.value, started.elapsedNow(), staleAfter, periods),
                 rate,
                 session.scan.value.toStatus(),
+                run.tyres?.invoke(),
             )
         }
     }

@@ -48,6 +48,7 @@ import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.LiveValue
 import knightlink.app.session.RecordingsSummary
 import knightlink.app.session.ScanStatus
+import knightlink.app.session.TyreSensors
 import knightlink.app.session.UiState
 import knightlink.app.session.ValueGroup
 import knightlink.app.session.VehicleSummary
@@ -124,7 +125,7 @@ private fun LazyListScope.summaryItems(
 ) {
     item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
-    item(key = "drive-data", contentType = "card") { DriveDataCard(driveData) }
+    item(key = "drive-data", contentType = "card") { DriveDataCard(driveData, state.tyres) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
 }
 
@@ -203,7 +204,7 @@ private fun ScanSection(scan: ScanStatus, resources: android.content.res.Resourc
 }
 
 @Composable
-private fun DriveDataCard(driveData: DriveDataActions) {
+private fun DriveDataCard(driveData: DriveDataActions, tyres: TyreSensors?) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.drive_data_title), style = MaterialTheme.typography.titleMedium)
@@ -214,6 +215,47 @@ private fun DriveDataCard(driveData: DriveDataActions) {
             )
             if (!driveData.locationAllowed) {
                 OutlinedButton(onClick = driveData.onAllowLocation, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_allow_location)) }
+            }
+            tyres?.let { TyreSection(it) }
+        }
+    }
+}
+
+/**
+ * The tyre sensors heard lately, each payload read with every layout, so the values can be compared with the sensor's own app on the spot.
+ * Marked unconfirmed while the layouts are only inferred: nothing here raises an alert.
+ */
+@Composable
+private fun TyreSection(tyres: TyreSensors) {
+    Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            stringResource(if (tyres.unconfirmed) R.string.tyres_title_unconfirmed else R.string.tyres_title),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Text(
+            when {
+                !tyres.listening -> stringResource(R.string.tyres_not_listening)
+                tyres.readings.isEmpty() -> stringResource(R.string.tyres_listening_nothing_yet)
+                else -> stringResource(R.string.tyres_listening, tyres.layouts.joinToString(", "))
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
+        tyres.readings.forEach { reading ->
+            Column(Modifier.padding(start = 12.dp, top = 4.dp)) {
+                Text(
+                    stringResource(R.string.tyres_payload, reading.companyHex, reading.payloadHex),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Text(
+                    stringResource(R.string.tyres_heard, reading.rssi, reading.ageSeconds, reading.count),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (reading.decoded.isEmpty()) {
+                    Text(stringResource(R.string.tyres_no_layout_fits), style = MaterialTheme.typography.bodySmall)
+                }
+                reading.decoded.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
         }
     }

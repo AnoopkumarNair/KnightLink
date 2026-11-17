@@ -19,6 +19,11 @@ data class AppConfig(
     val adapterDefinition: String,
     /** Simulation scenario the demo mode plays, e.g. `sim/<name>`. */
     val demoScenario: String,
+    /**
+     * Tyre sensor definitions (`tpms/<brand>`) whose company ids are listened for during a session; every payload heard is shown read with
+     * each of them, side by side, until a capture says which layout the car's sensors use. Empty for no capture.
+     */
+    val tpmsDefinitions: List<String> = emptyList(),
 ) {
     companion object {
         const val PATH = "app-config.json"

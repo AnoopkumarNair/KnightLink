@@ -32,6 +32,21 @@ public data class GpsSample(
 )
 
 /**
+ * One Bluetooth LE advertisement of a tyre sensor, as received: the manufacturer data of one company identifier. The sending device's address
+ * is never part of it (ADR 0002; iOS does not reveal it either): a sensor is told apart by what it sends.
+ *
+ * @property companyId the Bluetooth company identifier the data was filed under, 0..0xFFFF
+ * @property payloadHex the manufacturer data after the company identifier, upper-case hex without spaces (empty when there was none)
+ * @property rssi the received signal strength in dBm, null when not known
+ */
+public data class TpmsSample(
+    val timeMs: Long,
+    val companyId: Int,
+    val payloadHex: String,
+    val rssi: Int?,
+)
+
+/**
  * The text of [EventKind.EXTERNAL] events: samples that did not come over the link, as compact lines. The recorder does not interpret
  * them except where it must (the scrubber coarsens positions); a source tag says what a line holds, and a reader skips tags it does not know.
  *
@@ -41,10 +56,17 @@ public data class GpsSample(
  * - `sensors <what the phone has>`: written once when sampling starts, e.g. `sensors accel=linear gyro=yes gps=on`; for a person.
  * - `gps <lat> <lon> <speed km/h> <bearing deg> <accuracy m>`: one fix; `-` for a value that is not known. Latitude and longitude have
  *   5 decimals on the device and are rounded to [SHARED_DECIMALS] decimals (about a kilometre) in a copy that is shared.
+ * - `tpms <company id> <payload> <rssi>`: one advertisement of a tyre sensor (see [TpmsSample]), at the event's time. The company id is four
+ *   hex digits, the payload is hex (`-` when empty, at most [MAX_TPMS_PAYLOAD_BYTES] bytes), the RSSI is in dBm (`-` when not known). There is
+ *   no device address in the line, and a shared copy keeps only what parses as these three fields.
  */
 public object ExternalSamples {
     public const val MOTION: String = "mot"
     public const val GPS: String = "gps"
+    public const val TPMS: String = "tpms"
+
+    /** The longest manufacturer payload a `tpms` line holds: an extended advertisement carries at most 251 bytes of data in all. */
+    public const val MAX_TPMS_PAYLOAD_BYTES: Int = 251
 
     /** Decimals of a shared coordinate: 0.01 degrees is about 1.1 km of latitude, and less of longitude. */
     public const val SHARED_DECIMALS: Int = 2
@@ -99,12 +121,38 @@ public object ExternalSamples {
         return GpsSample(eventTimeMs, values[0], values[1], values[2], values[3], values[4])
     }
 
+    /** The line for one tyre-sensor advertisement. */
+    public fun tpmsLine(sample: TpmsSample): String {
+        require(sample.companyId in 0..0xFFFF) { "a company id has 16 bits, not ${sample.companyId}" }
+        val payload = sample.payloadHex.uppercase()
+        require(payload.length % 2 == 0 && payload.length <= 2 * MAX_TPMS_PAYLOAD_BYTES && payload.all { it in HEX_DIGITS }) {
+            "the payload is at most $MAX_TPMS_PAYLOAD_BYTES bytes of hex, not '${sample.payloadHex}'"
+        }
+        return listOf(TPMS, companyHex(sample.companyId), payload.ifEmpty { MISSING }, sample.rssi?.toString() ?: MISSING).joinToString(" ")
+    }
+
+    /** The advertisement of a `tpms` line from an event at [eventTimeMs], or null when [payload] is not a well-formed `tpms` line. */
+    public fun parseTpms(eventTimeMs: Long, payload: String): TpmsSample? {
+        val fields = payload.trim().split(' ')
+        if (fields.size != TPMS_FIELDS || fields[0] != TPMS) return null
+        val company = fields[1].takeIf { it.length == 4 && it.all { c -> c in HEX_DIGITS } }?.toInt(16) ?: return null
+        val hex = if (fields[2] == MISSING) "" else fields[2]
+        if (hex.length % 2 != 0 || hex.length > 2 * MAX_TPMS_PAYLOAD_BYTES || !hex.all { it in HEX_DIGITS }) return null
+        val rssi = if (fields[3] == MISSING) null else fields[3].toIntOrNull()?.takeIf { it in RSSI_RANGE } ?: return null
+        return TpmsSample(eventTimeMs, company, hex, rssi)
+    }
+
     /**
      * The copy of an external line that may leave the device: a position is rounded to [SHARED_DECIMALS] decimals, which is about a
      * kilometre, so a shared drive shows where in the world it was, not at which door. Speed, bearing and accuracy stay (a speed trace does
-     * not locate anything). A `gps` line that cannot be read is replaced by a fix with no position, failing closed. Other lines are unchanged.
+     * not locate anything). A `gps` line that cannot be read is replaced by a fix with no position, failing closed. A `tpms` line is written
+     * again from its parsed fields, so nothing else (an address, say) can ride along; one that cannot be read becomes `tpms - - -`.
+     * Other lines are unchanged.
      */
     public fun scrub(payload: String): String {
+        if (payload.startsWith("$TPMS ") || payload == TPMS) {
+            return parseTpms(0, payload)?.let(::tpmsLine) ?: "$TPMS $MISSING $MISSING $MISSING"
+        }
         if (!payload.startsWith("$GPS ") && payload != GPS) return payload
         val fix = parseGps(0, payload) ?: return "$GPS $MISSING $MISSING $MISSING $MISSING $MISSING"
         return listOf(
@@ -121,6 +169,13 @@ public object ExternalSamples {
 
     private const val MOTION_FIELDS = 7
     private const val GPS_FIELDS = 6
+    private const val TPMS_FIELDS = 4
+    private const val HEX_DIGITS = "0123456789ABCDEF"
+
+    /** What a receiver can report: -127..+20 dBm covers every radio, and anything outside is not a reading. */
+    private val RSSI_RANGE = -127..20
+
+    private fun companyHex(id: Int): String = id.toString(16).uppercase().padStart(4, '0')
 
     /** [value] with exactly [decimals] decimals and a point, whatever the platform's locale (common code has no String.format). */
     internal fun fixed(value: Double, decimals: Int): String {

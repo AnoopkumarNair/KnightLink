@@ -11,6 +11,7 @@ dependencies {
     implementation(projects.core.signals)
     implementation(projects.core.sim)
     implementation(projects.core.telemetry)
+    implementation(projects.core.tpms)
     implementation(projects.core.vehicle)
     implementation(libs.kotlinx.coroutines.core)
     testImplementation(kotlin("test"))
