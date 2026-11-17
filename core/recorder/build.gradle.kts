@@ -9,7 +9,8 @@ kotlin {
             api(projects.core.transport)
             // ElmLineParser and IsoTpReassembler let the scrubber read what an adapter printed instead of guessing at bytes.
             implementation(projects.core.protocol)
-            implementation(projects.core.common)
+            // SessionEventSink is part of RecordingTransport's public API.
+            api(projects.core.common)
             implementation(libs.kotlinx.serialization.json)
         }
         jvmTest.dependencies {

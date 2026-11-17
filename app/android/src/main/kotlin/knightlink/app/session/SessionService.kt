@@ -21,6 +21,7 @@ import knightlink.app.data.AppConfig
 import knightlink.app.data.DefinitionStore
 import knightlink.app.data.DefinitionStoreException
 import knightlink.app.text
+import knightlink.platform.ble.BleTransport
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +64,7 @@ class SessionService : Service() {
     private lateinit var controller: SessionController
     private lateinit var notifications: SessionNotifications
     private lateinit var assets: AndroidAssetSource
+    private lateinit var connectionLog: ConnectionLog
 
     @Volatile
     private var closed = false
@@ -70,16 +72,26 @@ class SessionService : Service() {
     @Volatile
     private var sawActive = false
 
+    // Whether startForeground has succeeded and not been undone; written on the main thread and when shutting down.
+    @Volatile
+    private var foreground = false
+
     override fun onCreate() {
         super.onCreate()
         assets = AndroidAssetSource(applicationContext.assets)
+        connectionLog = ConnectionLog.of(connectionLogDirectory(applicationContext))
         val store = DefinitionStore(assets)
         controller = SessionController(
             scope = scope,
             config = { AppConfig.load(assets) },
             store = store,
-            transports = DemoTransportFactory(scenario = store::simulation),
+            transports = AppTransportFactory(
+                demo = DemoTransportFactory(scenario = store::simulation),
+                adapter = { store.adapter(AppConfig.load(assets).adapterDefinition) },
+                ble = { address, profile -> BleTransport(applicationContext, address, profile) },
+            ),
             recordings = FileRecordSinkFactory(RecordingStore(recordingsDirectory(applicationContext))),
+            connectionLog = connectionLog,
         )
         notifications = SessionNotifications(this)
         watchSession()
@@ -89,8 +101,23 @@ class SessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START_DEMO -> startLink(ConnectionTarget.Demo(demoScenarioId()))
+            ACTION_START_DEMO -> {
+                connectionLog.app("service: demo start command received")
+                startLink(ConnectionTarget.Demo(demoScenarioId()))
+            }
+            ACTION_START_BLE -> {
+                Log.i(TAG, "Bluetooth start command received")
+                connectionLog.app("service: Bluetooth start command received")
+                val address = intent.getStringExtra(EXTRA_ADDRESS)?.takeIf { it.isNotBlank() }
+                if (address != null) {
+                    startLink(ConnectionTarget.Ble(address))
+                } else {
+                    connectionLog.app("service: the start command had no adapter address")
+                    rejectForegroundStart()
+                }
+            }
             ACTION_DISCONNECT -> scope.launch {
+                connectionLog.app("service: disconnect requested")
                 controller.disconnect()
                 // Also when there was nothing to disconnect (a notification outlived the process): it must not linger.
                 shutDown()
@@ -102,9 +129,26 @@ class SessionService : Service() {
     }
 
     private fun startLink(target: ConnectionTarget) {
-        // Connect first: it sets "Connecting" synchronously, so the foreground notification starts with the right text, and a
-        // request refused because a session exists already does not touch the service's mode.
-        if (controller.connect(target) && target.needsForegroundService()) enterForeground()
+        // Connect first: it sets "Connecting" synchronously, so the foreground notification starts with the right text.
+        val wasForeground = foreground
+        val accepted = controller.connect(target)
+        if (target.needsForegroundService()) {
+            // Always, also for a refused request: the activity started this service with startForegroundService, and Android
+            // kills the app if startForeground does not follow within a few seconds.
+            enterForeground()
+            // Refused means another session owns the service. If it is not one that runs in the foreground, do not change its mode.
+            if (!accepted && !wasForeground) leaveForeground()
+        }
+    }
+
+    /** A start command that cannot be carried out, which must still reach startForeground (see [startLink]) before the service ends. */
+    private fun rejectForegroundStart() {
+        val wasForeground = foreground
+        enterForeground()
+        when {
+            controller.uiState.value.connection == ConnectionStatus.Idle -> shutDown()
+            !wasForeground -> leaveForeground()
+        }
     }
 
     /**
@@ -115,11 +159,20 @@ class SessionService : Service() {
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
         try {
             ServiceCompat.startForeground(this, SessionNotifications.ID, notifications.build(controller.uiState.value.connection), type)
+            foreground = true
+            connectionLog.app("service: running in the foreground")
         } catch (e: RuntimeException) {
             // SecurityException (precondition missing), ForegroundServiceStartNotAllowedException and
             // ForegroundServiceTypeException have no common type narrower than this.
             Log.w(TAG, "Could not start as a foreground service; continuing as an ordinary service", e)
+            connectionLog.app("service: could not start in the foreground (${e::class.simpleName}: ${e.message}); continuing as an ordinary service")
         }
+    }
+
+    /** Back to an ordinary service; the notification stays (and is updated as before), only the foreground priority goes. */
+    private fun leaveForeground() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
+        foreground = false
     }
 
     private fun demoScenarioId(): String =
@@ -134,6 +187,8 @@ class SessionService : Service() {
     /** The notification follows the status (at most once a second); leaving the idle state for good stops the service. */
     private fun watchSession() {
         val statuses = controller.uiState.map { it.connection }.distinctUntilChanged()
+        // Every change, unconflated, for diagnosing real sessions from logcat. The statuses carry no address and no VIN.
+        scope.launch { statuses.collect { Log.i(TAG, "Status: $it") } }
         scope.launch {
             statuses.filter { it != ConnectionStatus.Idle }.conflate().collect { status ->
                 sawActive = true
@@ -149,6 +204,7 @@ class SessionService : Service() {
     private fun shutDown() {
         if (closed) return
         sawActive = false
+        foreground = false
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         notifications.cancel()
         stopSelf()
@@ -166,10 +222,19 @@ class SessionService : Service() {
     companion object {
         private const val TAG = "SessionService"
         private const val ACTION_START_DEMO = "knightlink.app.action.START_DEMO"
+        private const val ACTION_START_BLE = "knightlink.app.action.START_BLE"
         private const val ACTION_DISCONNECT = "knightlink.app.action.DISCONNECT"
+        private const val EXTRA_ADDRESS = "knightlink.app.extra.ADDRESS"
         private const val NOTIFICATION_INTERVAL_MS = 1000L
 
         fun startDemoIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_START_DEMO)
+
+        /**
+         * Starts a session with the adapter at [address]. Send it with `ContextCompat.startForegroundService`: the service
+         * becomes a foreground service at once, as a link to a device must be.
+         */
+        fun startBleIntent(context: Context, address: String): Intent =
+            Intent(context, SessionService::class.java).setAction(ACTION_START_BLE).putExtra(EXTRA_ADDRESS, address)
 
         fun disconnectIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_DISCONNECT)
 
@@ -177,6 +242,9 @@ class SessionService : Service() {
 
         /** The recordings directory: app-private storage, never shared as it is (see [RecordingShare]). */
         fun recordingsDirectory(context: Context): File = File(context.filesDir, "recordings")
+
+        /** The rolling connection log (app-private; shared only as a redacted copy, see [ConnectionLog.prepareShare]). */
+        fun connectionLogDirectory(context: Context): File = File(context.filesDir, "connection-log")
     }
 }
 

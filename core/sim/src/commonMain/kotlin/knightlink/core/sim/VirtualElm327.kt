@@ -40,6 +40,14 @@ public class VirtualElm327(
     private var headers = false
     private var header = VirtualVehicle.FUNCTIONAL_ADDRESS
 
+    /**
+     * A status word the adapter answers every diagnostic request with instead of asking the vehicle (`CAN ERROR`, `UNABLE TO CONNECT`),
+     * as when the bus cannot be reached. Null for normal behaviour.
+     */
+    public var busFault: String? = null
+
+    private var resetBeforeNextCommand = false
+
     /** Every command received, in order. For assertions in tests. */
     public val received: List<String> get() = log
     private val log = ArrayList<String>()
@@ -71,6 +79,10 @@ public class VirtualElm327(
             val command = input.toString()
             input.clear()
             log += command
+            if (resetBeforeNextCommand) {
+                resetBeforeNextCommand = false
+                reset()
+            }
             delay(config.responseDelay)
             // The link may have dropped while the adapter was "thinking": the answer is then lost, as on a real link.
             ensureLinked()
@@ -78,6 +90,21 @@ public class VirtualElm327(
             val echoed = echo
             send(command, echoed, execute(command.filterNot { it.isWhitespace() }.uppercase()))
         }
+    }
+
+    /**
+     * The adapter loses power for a moment, as when the engine is cranked: every setting goes back to its default (echo on,
+     * headers off), the selected header is forgotten, and, when [printBanner] is set, the start-up banner is sent without anyone
+     * having asked for it. What the driver had been waiting for is lost.
+     */
+    public fun powerDip(printBanner: Boolean = true) {
+        reset()
+        if (printBanner && !linkEnded) send(command = "", echoed = false, lines = listOf(config.banner))
+    }
+
+    /** Like [powerDip] without a banner, and only when the next command arrives: that command is the first one the reset adapter sees. */
+    public fun powerDipBeforeNextCommand() {
+        resetBeforeNextCommand = true
     }
 
     override suspend fun close() {
@@ -147,6 +174,7 @@ public class VirtualElm327(
         val limit = if (command.length % 2 == 1) command.last().digitToInt(16) else null
         val request = (if (limit != null) command.dropLast(1) else command).hexToBytes()
         if (request.isEmpty()) return listOf("?")
+        busFault?.let { return listOf(it) }
 
         var replies = vehicle.targets(header).mapNotNull { ecu -> ecu.respond(request)?.let { ecu.responseId to it } }
         if (limit != null) replies = replies.take(limit)

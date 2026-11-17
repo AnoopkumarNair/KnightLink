@@ -30,11 +30,15 @@ internal suspend fun runSession(
     initScript: List<String>,
     catalog: SignalCatalog,
     poll: Boolean,
-    onProgress: (ProbeStage) -> Unit = {},
+    probeScript: List<String> = emptyList(),
+    pollScript: List<String> = emptyList(),
+    onProgress: suspend (ProbeStage) -> Unit = {},
 ): SessionResult {
-    driver.initialize(initScript)
+    driver.initialize(initScript + probeScript)
     // Only the redacted form is ever used afterwards: a probe of a real car must not put a full VIN in a terminal log.
-    val report = CapabilityProbe(driver).run(onProgress).redacted()
+    val report = CapabilityProbe(driver).run(onProgress).let { it.copy(adapter = it.adapter.copy(unsupportedCommands = driver.unsupportedCommands)) }.redacted()
+    // The probe's timing is done with; what a re-initialisation restores is the polling one, as in the app.
+    if (probeScript.isNotEmpty() || pollScript.isNotEmpty()) driver.applyScript(initScript + pollScript, send = pollScript)
     val coverage = DefinitionCoverage.compare(report, catalog)
 
     val decoder = TelemetryDecoder(catalog)

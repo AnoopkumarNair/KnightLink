@@ -1,6 +1,7 @@
 package knightlink.core.runtime
 
 import knightlink.core.transport.TransportException
+import knightlink.core.vehicle.ProbeStage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -137,10 +138,11 @@ class VehicleSessionTest {
 
         assertTrue(states.any { it.state == SessionState.Initialising })
         val reconnecting = states.map { it.state }.filterIsInstance<SessionState.Reconnecting>().single()
-        assertTrue(reconnecting.cause.contains("rejected 'ATZ'"), reconnecting.cause)
+        assertTrue(reconnecting.cause.contains("rejected 'ATE0'"), reconnecting.cause)
         assertEquals(2, transport.opens)
         assertEquals(listOf(1, 1), streams.map { it.closes })
-        assertEquals(listOf("ATZ"), streams.first().written)
+        // ATZ is not essential, so the script went on to ATE0; the warm-up's two echo commands came first and were rejected too, and ignored.
+        assertEquals(listOf("ATE0", "ATE0", "ATZ", "ATE0"), streams.first().written)
         assertIs<SessionState.Failed>(session.state.value)
     }
 
@@ -165,22 +167,26 @@ class VehicleSessionTest {
     }
 
     @Test
-    fun aCarThatDoesNotAnswerTheProbeIsRetriedInsteadOfPollingNothing() = runTest {
+    fun aCarThatDoesNotAnswerTheProbeKeepsTheLinkAndWaitsForTheIgnition() = runTest {
         val streams = ArrayList<FakeStream>()
         val transport = FakeTransport { FakeStream(::silentCar).also { streams += it } }
         val session = VehicleSession(transport, init, testCatalog(), backgroundScope, testTimeSource)
         val states = recordStates(session)
 
         session.start()
-        advanceTimeBy(1.seconds)
+        advanceTimeBy(30.seconds)
         runCurrent()
 
         assertTrue(states.any { it.state is SessionState.Probing }, "probing never started")
-        val reconnecting = states.map { it.state }.filterIsInstance<SessionState.Reconnecting>().first()
-        assertTrue(reconnecting.cause.contains("ignition"), reconnecting.cause)
-        assertEquals(2, transport.opens, "the second attempt should start after the 1 s backoff")
-        assertEquals(1, streams.first().closes)
+        val waiting = states.map { it.state }.filterIsInstance<SessionState.WaitingForIgnition>()
+        assertTrue(waiting.size >= 3, "the probe should be repeated while nothing answers: $waiting")
+        assertEquals(listOf(1, 2, 3), waiting.take(3).map { it.probes })
+        assertEquals(1, transport.opens, "the link is kept, not closed and reopened")
+        assertEquals(0, streams.single().closes)
+        assertTrue(states.none { it.state is SessionState.Reconnecting })
         assertTrue(states.none { it.state is SessionState.Polling })
+        // Quiet probes do not flicker the state: after the first, only the waiting state is shown.
+        assertEquals(1, states.count { it.state is SessionState.Probing && (it.state as SessionState.Probing).stage == ProbeStage.ADAPTER })
     }
 
     @Test

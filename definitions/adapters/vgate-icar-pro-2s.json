@@ -12,5 +12,17 @@
     "ignoreServiceUuids": ["000018f0-0000-1000-8000-00805f9b34fb"]
   },
   "initScript": ["ATD", "ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP6", "ATAT1", "ATST32"],
-  "notes": "SRS 2.1. Service 0x18F0 echoes commands without executing them and must not be used. ATSP6 fixes 11-bit 500 kbaud CAN for the reference car; discovery will replace it with protocol detection for other vehicles."
+  "probeScript": ["ATST64"],
+  "pollScript": ["ATST32"],
+  "essentialCommands": ["ATE0", "ATH1", "ATSP"],
+  "timing": {
+    "warmUp": true,
+    "warmUpDelayMs": 300,
+    "postResetDelayMs": 500,
+    "stoppedRetryDelayMs": 200,
+    "commandTimeoutMs": 3000,
+    "resetTimeoutMs": 6000,
+    "searchingTimeoutMs": 8000
+  },
+  "notes": "SRS 2.1. Service 0x18F0 echoes commands without executing them and must not be used. ATSP6 fixes 11-bit 500 kbaud CAN for the reference car; discovery will replace it with protocol detection for other vehicles. The init script ends with the polling timeout (ATST32, 200 ms); the probe lengthens it to ATST64 (400 ms) for the first contact with a car that may be slow to wake up, and the poll script puts it back. ATL0, ATS0, ATAT1 and ATST are tolerated if an adapter does not know them; ATE0, ATH1 and ATSP are not."
 }

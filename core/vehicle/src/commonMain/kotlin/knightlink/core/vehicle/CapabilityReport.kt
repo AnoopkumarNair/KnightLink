@@ -19,6 +19,11 @@ public data class CapabilityReport(
     val derived: DerivedFacts,
     /** Things that went wrong without stopping the probe, e.g. a range request that timed out. Never contains a VIN. */
     val warnings: List<String> = emptyList(),
+    /**
+     * Set when no ECU answered and the adapter said it could not reach the vehicle bus (name of the status word, e.g. `CAN_ERROR`).
+     * That is a different problem from silence: the car is awake enough to answer, or the wiring or protocol is wrong.
+     */
+    val busFault: String? = null,
 ) {
     /** Copy that is safe to export: every VIN keeps only its first three characters (the manufacturer code). */
     public fun redacted(): CapabilityReport = copy(ecus = ecus.map { it.copy(vin = it.vin?.let { vin -> redactVin(vin) }) })
@@ -72,6 +77,8 @@ public data class AdapterInfo(
     val voltage: Double?,
     /** Reply to `ATDPN`: the adapter's protocol number, e.g. `A6`. */
     val protocolNumber: String?,
+    /** Init script commands the adapter did not know and the driver skipped; see `Elm327Driver.unsupportedCommands`. */
+    val unsupportedCommands: List<String> = emptyList(),
 )
 
 /** How long the probe took and how fast the vehicle answered. */

@@ -2,9 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      Foreground service permissions. They are declared for the real adapter link, which will run as a connectedDevice
-      foreground service; the demo does not use them (see SessionService.needsForegroundService). The permissions that
-      Android 14 additionally requires for that type come with the Bluetooth support.
+      Foreground service permissions. They are declared for the real adapter link, which runs as a connectedDevice
+      foreground service; the demo does not use them (see SessionService.needsForegroundService). The Bluetooth permissions
+      that Android 14 requires at run time for that type (and that the scan and the link need anyway) are declared by the
+      platform:ble-android module and merged into this manifest.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

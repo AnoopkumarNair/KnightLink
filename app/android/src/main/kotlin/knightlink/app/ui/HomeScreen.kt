@@ -41,6 +41,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import knightlink.app.R
+import knightlink.app.ble.LastAdapter
 import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.LiveValue
 import knightlink.app.session.RecordingsSummary
@@ -56,6 +57,14 @@ private val WIDE_LAYOUT_MIN_WIDTH = 600.dp
 private val SCREEN_PADDING = 16.dp
 private val ITEM_SPACING = 12.dp
 
+/** What the connection card can do; one object so the screen's signature does not grow with every way to connect. */
+class ConnectionActions(
+    val onStartDemo: () -> Unit,
+    val onConnectLast: (LastAdapter) -> Unit,
+    val onChooseAdapter: () -> Unit,
+    val onDisconnect: () -> Unit,
+)
+
 /**
  * The one screen. Portrait: a single scrolling list (cards, then the live values). Landscape: the cards on the left, the live
  * values on the right, each scrolling on its own, so the values stay in view while the buttons are reachable.
@@ -66,9 +75,10 @@ private val ITEM_SPACING = 12.dp
 fun HomeScreen(
     state: UiState,
     recordings: RecordingsSummary,
-    onStartDemo: () -> Unit,
-    onDisconnect: () -> Unit,
+    lastAdapter: LastAdapter?,
+    actions: ConnectionActions,
     onShareLatest: () -> Unit,
+    onShareLog: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Grouping is a function of the values only; it is redone when they change, not on every recomposition.
@@ -78,7 +88,7 @@ fun HomeScreen(
         if (maxWidth >= WIDE_LAYOUT_MIN_WIDTH) {
             Row(Modifier.fillMaxSize()) {
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                    summaryItems(state, recordings, onStartDemo, onDisconnect, onShareLatest)
+                    summaryItems(state, recordings, lastAdapter, actions, onShareLatest, onShareLog)
                 }
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
                     liveItems(groups)
@@ -86,7 +96,7 @@ fun HomeScreen(
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                summaryItems(state, recordings, onStartDemo, onDisconnect, onShareLatest)
+                summaryItems(state, recordings, lastAdapter, actions, onShareLatest, onShareLog)
                 liveItems(groups)
             }
         }
@@ -96,17 +106,18 @@ fun HomeScreen(
 private fun LazyListScope.summaryItems(
     state: UiState,
     recordings: RecordingsSummary,
-    onStartDemo: () -> Unit,
-    onDisconnect: () -> Unit,
+    lastAdapter: LastAdapter?,
+    actions: ConnectionActions,
     onShareLatest: () -> Unit,
+    onShareLog: () -> Unit,
 ) {
-    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, onStartDemo, onDisconnect) }
+    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, lastAdapter, actions) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle) } }
-    item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest) }
+    item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
 }
 
 @Composable
-private fun ConnectionCard(status: ConnectionStatus, onStartDemo: () -> Unit, onDisconnect: () -> Unit) {
+private fun ConnectionCard(status: ConnectionStatus, lastAdapter: LastAdapter?, actions: ConnectionActions) {
     // LocalResources, unlike LocalContext.current.resources, is invalidated by a configuration change, so the text follows a language change.
     val resources = LocalResources.current
     val idle = status == ConnectionStatus.Idle
@@ -119,17 +130,29 @@ private fun ConnectionCard(status: ConnectionStatus, onStartDemo: () -> Unit, on
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             )
-            Button(onClick = if (idle) onStartDemo else onDisconnect, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(if (idle) R.string.action_start_demo else R.string.action_disconnect))
+            if (idle) {
+                // A remembered adapter is one tap away; choosing another is the secondary action. Without one, the picker is the way in.
+                if (lastAdapter != null) {
+                    Button(onClick = { actions.onConnectLast(lastAdapter) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(lastAdapter.name?.let { stringResource(R.string.action_connect_last, it) } ?: stringResource(R.string.action_connect_last_unnamed))
+                    }
+                    OutlinedButton(onClick = actions.onChooseAdapter, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.action_choose_another))
+                    }
+                } else {
+                    Button(onClick = actions.onChooseAdapter, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.action_connect_bluetooth))
+                    }
+                }
+                OutlinedButton(onClick = actions.onStartDemo, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.action_start_demo))
+                }
+            } else {
+                // One button for both kinds of link.
+                Button(onClick = actions.onDisconnect, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.action_disconnect))
+                }
             }
-            OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.action_connect_bluetooth))
-            }
-            Text(
-                stringResource(R.string.caption_bluetooth_soon),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
@@ -213,7 +236,7 @@ private fun CoverageRow(id: String, label: String, lines: List<String>) {
 }
 
 @Composable
-private fun RecordingsCard(recordings: RecordingsSummary, onShareLatest: () -> Unit) {
+private fun RecordingsCard(recordings: RecordingsSummary, onShareLatest: () -> Unit, onShareLog: () -> Unit) {
     val context = LocalContext.current
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -233,6 +256,10 @@ private fun RecordingsCard(recordings: RecordingsSummary, onShareLatest: () -> U
             )
             OutlinedButton(onClick = onShareLatest, enabled = recordings.count > 0, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.action_share_latest))
+            }
+            // Always available: it is what explains an attempt that never got as far as a recording.
+            OutlinedButton(onClick = onShareLog, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.action_share_connection_log))
             }
         }
     }

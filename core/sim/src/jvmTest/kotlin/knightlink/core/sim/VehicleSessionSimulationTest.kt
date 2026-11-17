@@ -1,6 +1,7 @@
 package knightlink.core.sim
 
 import knightlink.core.adapter.AdapterDefinition
+import knightlink.core.adapter.Elm327Driver
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleSession
 import knightlink.core.scheduler.PollResult
@@ -123,6 +124,8 @@ class VehicleSessionSimulationTest {
 
     /** The DPF is the story of the scenario, so it is polled faster than the rest. */
     private fun fastDpf(base: VehicleSession.Config = VehicleSession.Config()): VehicleSession.Config = base.copy(
+        // The timelines below count commands and round trips, so the warm-up and the pause after ATZ (tested on their own) are left out.
+        driver = if (base.driver == Elm327Driver.Config()) Elm327Driver.Config(warmUp = false, postResetDelay = Duration.ZERO) else base.driver,
         pollPeriod = { parameter -> if (parameter.signals.any { it.definition.id.startsWith("dpf.") }) 500.milliseconds else 1.seconds },
     )
 
@@ -275,12 +278,24 @@ class VehicleSessionSimulationTest {
     }
 
     @Test
-    fun anAdapterThatAnswersQuestionMarkToAnInitCommandIsAConnectionFailureAndIsRetried() = runTest {
-        // "ATFOO" is not a command the simulated adapter knows, so it answers "?" like a real ELM327 would.
+    fun anAdapterThatAnswersQuestionMarkToAnEssentialInitCommandIsAConnectionFailureAndIsRetried() = runTest {
+        // "ATCRA7E8" (a receive filter) is not a command the simulated adapter knows, so it answers "?" like a real ELM327 would; here it is declared essential.
         val simulated = SimulatedTransport(vehicle = { simulation.buildVehicle() }, config = adapterConfig)
         val transport = CountingTransport(simulated)
         val session =
-            VehicleSession(transport, initScript + "ATFOO", catalog, backgroundScope, testTimeSource, fastDpf(VehicleSession.Config(maxConnectAttempts = 2)))
+            VehicleSession(
+                transport,
+                initScript + "ATCRA7E8",
+                catalog,
+                backgroundScope,
+                testTimeSource,
+                fastDpf(
+                    VehicleSession.Config(
+                        maxConnectAttempts = 2,
+                        driver = Elm327Driver.Config(warmUp = false, postResetDelay = Duration.ZERO, essentialCommands = listOf("ATCRA")),
+                    ),
+                ),
+            )
         val states = ArrayList<SessionState>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { session.state.collect { states += it } }
 
@@ -288,10 +303,22 @@ class VehicleSessionSimulationTest {
         run(30.seconds)
 
         val reconnecting = states.filterIsInstance<SessionState.Reconnecting>().single()
-        assertTrue(reconnecting.cause.contains("rejected 'ATFOO'"), reconnecting.cause)
+        assertTrue(reconnecting.cause.contains("rejected 'ATCRA7E8'"), reconnecting.cause)
         assertEquals(listOf(1, 1), transport.streams.map { it.closes })
         assertEquals(2, simulated.opens)
         assertIs<SessionState.Failed>(session.state.value)
+    }
+
+    @Test
+    fun anAdapterThatAnswersQuestionMarkToAnOrdinaryInitCommandIsUsedAndTheCommandIsReportedAsUnsupported() = runTest {
+        val simulated = SimulatedTransport(vehicle = { simulation.buildVehicle() }, config = adapterConfig)
+        val session = VehicleSession(simulated, initScript + "ATCRA7E8", catalog, backgroundScope, testTimeSource, fastDpf())
+        session.start()
+        run(20.seconds)
+
+        val polling = assertIs<SessionState.Polling>(session.state.value)
+        assertEquals(listOf("ATCRA7E8"), polling.report.adapter.unsupportedCommands)
+        assertEquals(799.0, session.telemetry.value.value("engine.rpm"))
     }
 
     @Test

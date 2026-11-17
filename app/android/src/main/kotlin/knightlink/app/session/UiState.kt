@@ -43,7 +43,13 @@ sealed interface ConnectionStatus {
 
     data class Probing(val stage: ProbeStage) : ConnectionStatus
 
+    /** The link is up but no ECU answers, usually because the ignition is off; [busFault] is set when the adapter said the vehicle bus is not reachable. */
+    data class WaitingForIgnition(val probes: Int, val busFault: Boolean) : ConnectionStatus
+
     data object Live : ConnectionStatus
+
+    /** Live data stopped; the adapter is being set up again on the same link. [reason] is in words and may name the vehicle bus. */
+    data class Recovering(val attempt: Int, val reason: String) : ConnectionStatus
 
     data class Reconnecting(val attempt: Int, val retryInSeconds: Int, val cause: String) : ConnectionStatus
 
@@ -100,6 +106,8 @@ fun SessionState.toStatus(): ConnectionStatus = when (this) {
     is SessionState.Connecting -> ConnectionStatus.Connecting(attempt)
     SessionState.Initialising -> ConnectionStatus.Initialising
     is SessionState.Probing -> ConnectionStatus.Probing(stage)
+    is SessionState.WaitingForIgnition -> ConnectionStatus.WaitingForIgnition(probes, busFault != null)
+    is SessionState.Recovering -> ConnectionStatus.Recovering(attempt, reason)
     is SessionState.Polling -> ConnectionStatus.Live
     is SessionState.Reconnecting -> ConnectionStatus.Reconnecting(attempt, retryIn.wholeSecondsRoundedUp(), cause)
     is SessionState.Failed -> ConnectionStatus.Failed(reason)

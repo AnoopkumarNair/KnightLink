@@ -37,6 +37,9 @@ class UiStateTest {
         assertEquals(ConnectionStatus.Probing(ProbeStage.BENCHMARK), SessionState.Probing(ProbeStage.BENCHMARK).toStatus())
         assertEquals(ConnectionStatus.Failed("no"), SessionState.Failed("no").toStatus())
         assertEquals(ConnectionStatus.Live, SessionState.Polling(report(), coverage()).toStatus())
+        assertEquals(ConnectionStatus.WaitingForIgnition(3, busFault = false), SessionState.WaitingForIgnition(3, null).toStatus())
+        assertEquals(ConnectionStatus.WaitingForIgnition(1, busFault = true), SessionState.WaitingForIgnition(1, "CAN_ERROR").toStatus())
+        assertEquals(ConnectionStatus.Recovering(2, "nothing answered"), SessionState.Recovering(2, "nothing answered").toStatus())
     }
 
     @Test

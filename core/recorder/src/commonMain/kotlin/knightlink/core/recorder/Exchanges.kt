@@ -137,7 +137,7 @@ internal fun indexExchanges(events: List<RecordingEvent>): List<RecordedExchange
                 settle()
                 break@loop
             }
-            EventKind.OPEN -> Unit
+            EventKind.OPEN, EventKind.EVENT -> Unit
         }
     }
     return exchanges

@@ -135,15 +135,15 @@ class RecordingFormatTest {
     @Test
     fun aNewerSchemaIsRejectedWithAClearMessageEvenWhenItAddsKeys() {
         val error = assertFailsWith<RecordingFormatException> {
-            Recording.parse("""{"schemaVersion":2,"kind":"knightlink-session","adapter":null,"note":null,"clock":"utc"}""" + "\n")
+            Recording.parse("""{"schemaVersion":3,"kind":"knightlink-session","adapter":null,"note":null,"clock":"utc"}""" + "\n")
         }
-        assertTrue("schema 2" in error.message!! && "up to 1" in error.message!!, error.message)
+        assertTrue("schema 3" in error.message!! && "up to 2" in error.message!!, error.message)
     }
 
     @Test
     fun aNewerSchemaOnAnUnterminatedHeaderIsStillAnError() {
         assertFailsWith<RecordingFormatException> {
-            Recording.parse("""{"schemaVersion":2,"kind":"knightlink-session","adapter":null,"note":null}""")
+            Recording.parse("""{"schemaVersion":3,"kind":"knightlink-session","adapter":null,"note":null}""")
         }
     }
 

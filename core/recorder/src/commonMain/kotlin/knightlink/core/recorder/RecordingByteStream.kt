@@ -1,5 +1,8 @@
 package knightlink.core.recorder
 
+import knightlink.core.common.Redaction
+import knightlink.core.common.SessionEvent
+import knightlink.core.common.SessionEventSink
 import knightlink.core.common.toHex
 import knightlink.core.transport.ByteStream
 import knightlink.core.transport.Transport
@@ -17,14 +20,19 @@ import kotlin.time.TimeSource
  * Writes one session to a [RecordSink]. Writes and reads happen on different coroutines (and threads), so every
  * event takes its timestamp and reaches the sink inside one lock: line order and time order always agree.
  */
-internal class SessionLog(private val sink: RecordSink, timeSource: TimeSource, header: RecordingHeader) {
+internal class SessionLog(
+    private val sink: RecordSink,
+    timeSource: TimeSource,
+    header: RecordingHeader,
+    schemaVersion: Int = Recording.BASE_SCHEMA_VERSION,
+) {
     private val start = timeSource.markNow()
     private val lock = Mutex()
     private var closeLogged = false
     private var eofLogged = false
 
     init {
-        sink.append(Recording.headerLine(header))
+        sink.append(Recording.headerLine(header, schemaVersion))
     }
 
     /** For the owner of the log before it is shared with any other coroutine. */
@@ -60,7 +68,8 @@ internal class SessionLog(private val sink: RecordSink, timeSource: TimeSource, 
     }
 }
 
-private fun Throwable.recordedMessage(): String = message ?: toString()
+// Redacted: a link failure may quote the address of the adapter it was trying to reach.
+private fun Throwable.recordedMessage(): String = Redaction.redact(message ?: toString())
 
 /**
  * Records everything that crosses a [ByteStream] and passes it on unchanged. Wrap the real transport's stream with
@@ -118,29 +127,62 @@ public class RecordingByteStream internal constructor(
 
 /**
  * Records every link a [delegate] transport opens, each into its own sink from [sinkFactory]. A link that cannot be
- * opened still leaves a recording: the header and an `error` event with the reason.
+ * opened still leaves a recording: the header and an `error` event with the reason. The recording starts when [open] is
+ * called, before the first byte is sent, so a session that fails during initialisation or the probe is on record from its
+ * first step.
  *
  * The `open` event's timestamp is how long connecting took, because the recording starts before the connection
  * attempt does.
+ *
+ * It is also a [SessionEventSink]: what the session reports (init steps, resets, re-inits, reconnects, state changes, why it
+ * ended) is written into the recording of the link it concerns, as `ev` lines, redacted. An event goes to the link opened
+ * most recently, even after that link was closed, so the reason a session ended is still the last thing in its file. Events
+ * from before the first link (the first connection attempt) are held, up to [MAX_HELD_EVENTS], and written first when it opens.
+ * Recordings made through this class are schema 2.
  */
 public class RecordingTransport(
     private val delegate: Transport,
     private val sinkFactory: () -> RecordSink,
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val header: RecordingHeader = RecordingHeader(),
-) : Transport {
+) : Transport, SessionEventSink {
+    private val eventLock = Mutex()
+    private var current: SessionLog? = null
+    private val held = ArrayList<String>()
+
     override val kind: TransportKind get() = delegate.kind
 
     override suspend fun open(): ByteStream {
-        val log = SessionLog(sinkFactory(), timeSource, header)
+        val log = SessionLog(sinkFactory(), timeSource, header, Recording.SCHEMA_VERSION)
+        eventLock.withLock {
+            held.forEach { log.logUnshared(EventKind.EVENT, it) }
+            held.clear()
+            current = log
+        }
         val stream = try {
             delegate.open()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log.logUnshared(EventKind.ERROR, e.recordedMessage())
+            log.log(EventKind.ERROR, e.recordedMessage())
             throw e
         }
         return RecordingByteStream(stream, log)
+    }
+
+    override suspend fun emit(event: SessionEvent) {
+        val text = Redaction.redact(event.toString())
+        val log = eventLock.withLock {
+            current ?: run {
+                if (held.size < MAX_HELD_EVENTS) held += text
+                null
+            }
+        }
+        log?.log(EventKind.EVENT, text)
+    }
+
+    public companion object {
+        /** How many events from before the first link are kept for it. */
+        public const val MAX_HELD_EVENTS: Int = 100
     }
 }

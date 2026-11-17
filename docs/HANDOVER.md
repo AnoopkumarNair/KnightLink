@@ -4,46 +4,47 @@ Read this first, then `docs/PLAN.md` (the approved implementation plan with mile
 
 ## Where things stand
 
-- Repo `https://github.com/AnoopkumarNair/KnightLink`, branch `main`. Last pushed commit: `2ae0f79` (vehicle session runtime and session recording). CI is green on it (Linux + iOS simulator, debug APK artifact).
-- Milestones M0 and M1 are done. M2 (Android runtime, first APK) is mostly done; what is left is listed under "Next steps".
-- The demo app was installed on the user's S25 Ultra on 2026-11-15 and the user confirmed it worked (simulated vehicle, live values, running through the real stack on the phone).
+- Repo `https://github.com/AnoopkumarNair/KnightLink`, branch `main`. Last pushed commit: `c542dfd` (demo app: session service, live values screen, recordings sharing; reviewed, with five fixes).
+- Milestones M0 and M1 are done. M2 (Android runtime, first APK) is code-complete and waiting for its first real-car session.
+- The demo app ran on the user's S25 Ultra on 2026-11-15. A Bluetooth build was handed to the user the same day for the first session in the car.
 
-## Uncommitted work in the main checkout (do not lose it)
+## Uncommitted work in the main checkout (reviewed, passes the full check)
 
-The demo app, written by a subagent. `./gradlew check :app:android:assembleDebug` passes with it (48 app unit tests). It is NOT yet reviewed line by line and NOT committed.
+`./gradlew check :app:android:assembleDebug` passes (83 app unit tests). Commit only with the user's go-ahead.
 
-- `app/android/**`: foreground-capable `SessionService`, `SessionController`, `DemoTransportFactory` (simulated vehicle with looping scenario), `DefinitionStore` reading bundled assets, recordings with retention and a "share latest (VIN removed)" flow, Compose `HomeScreen`, `SessionViewModel`. The old `SharedCoreDemo` files are deleted.
-- `build-logic/src/main/kotlin/knightlink.android-app.gradle.kts`, `gradle/libs.versions.toml`, `README.md`.
-- Also uncommitted: `docs/PLAN.md` and this file.
-
-Review focus before committing: `SessionController` (scopes, one-connection guard, failure states), `SessionService` (lifecycle, notification, the `needsForegroundService` seam), `DemoTransportFactory` (mutex around the single-threaded simulator), `RecordingShare` (never shares an unscrubbed file). The README layout row for `app/android` still says "one-screen shell" and needs updating.
-
-## Finished but not merged: Android Bluetooth transport
-
-- Worktree `D:\Projects\KnightLink\.claude\worktrees\agent-aaad33eafe81a2bc2`, branch `worktree-agent-aaad33eafe81a2bc2`, commit `a7dfda2` on top of `2ae0f79`. Its `./gradlew check` passed there (61 new tests).
-- Adds `platform/ble-android` (`BleTransport`, `GattLink`, `BleAdapterScanner`, `BlePermissions`), a `knightlink.android-library` convention, pure GATT logic in `core/transport` (`knightlink.core.transport.ble`: `GattProfileResolver`, `BleSerialProfile`, `chunkForWrite`), and `AdapterDefinition.BleProfile.toSerialProfile()` in `core/adapter`.
-- `GattLink.kt` was reviewed and is sound (single teardown path, one GATT operation in flight, client released exactly once). One cosmetic issue: `requireDone` has ktlint-mangled formatting.
-- None of the framework-touching Bluetooth code has run on a device.
-- To merge: from the main checkout, `git diff 2ae0f79 worktree-agent-aaad33eafe81a2bc2 | git apply --reject --whitespace=nowarn`. Expect one reject in `settings.gradle.kts` (add `include(":platform:ble-android")` inside the existing `androidSdkConfigured` block). Then run the full check.
+- The Bluetooth transport, merged from the old worktree branch (`a7dfda2`): `platform/ble-android` (`BleTransport`, `GattLink`, `BleAdapterScanner`, `BlePermissions`), the `knightlink.android-library` convention, `knightlink.core.transport.ble` in `core/transport`, `BleProfileMapping` in `core/adapter`, and `settings.gradle.kts`. The formatting of `requireDone` in `GattLink.kt` is tidied.
+- Bluetooth wired into the app: `AppTransportFactory` (Demo goes to `DemoTransportFactory`; Ble builds `BleTransport` from the configured adapter definition's `ble` profile), `ACTION_START_BLE` in `SessionService` (always reaches `startForeground`, including for a refused start), the permission flow (`PermissionPolicy`: ask, then explain, then open settings), the `AdapterPicker` dialog (`ScanResults` reducer, 20 s scan timeout), `LastAdapterStore` (address and name in app-private SharedPreferences), and the connection card with "Connect to <name>" and "Choose another adapter".
+- None of the Bluetooth framework code has run on a device yet.
 
 ## Next steps, in order
 
-1. Review the demo app, fix findings, then ask the user before committing and pushing.
-2. Merge the Bluetooth module (above) and run `./gradlew check :app:android:assembleDebug`.
-3. Wire Bluetooth into the app (one subagent task):
-   - runtime permission flow using `BlePermissions`, and merge of the library manifest permissions;
-   - device picker backed by `BleAdapterScanner` (name match must work alone; the adapter may not advertise its service);
-   - `TransportFactory` implementation for `ConnectionTarget.Ble` returning `BleTransport` with the profile from the adapter definition;
-   - `SessionService` calls `startForeground` with the `connectedDevice` type for a real link (the seam `needsForegroundService()` already exists);
-   - enable the "Connect adapter (Bluetooth)" button; remember the last adapter.
-4. First real-car session: install on the S25, connect to the Vgate iCar Pro 2S in the Harrier, run the capability probe, poll, then share the scrubbed recording back. Use the on-device checklist from the Bluetooth subagent's report (permissions denied/granted, scan by name, MTU, write type, echo service never subscribed, unplug mid-session, 40 connect/fail cycles for client leaks). Expect fixes from this session; replay the recording on the PC with `tools/cli replay` to reproduce problems.
-5. Then M2 exit criteria from `docs/PLAN.md` (one-hour drive, drops recovered, trip replayable), and on to M3 (rules and alerts: DPF state machine, cooldown guard, TPMS, spoken alerts).
+1. First real-car session with the Bluetooth APK (checklist below). Get the scrubbed recording back with "Share latest (VIN removed)" and replay it with `tools/cli replay`. Expect a round of fixes. If the phone is on USB or wireless adb, read `adb logcat` for `SessionService` and GATT errors.
+2. Commit and push the Bluetooth work once the user agrees (preferably after the first session's fixes).
+3. Then the M2 exit criteria from `docs/PLAN.md` (one-hour drive, drops recovered, trip replayable), and on to M3 (rules and alerts: DPF state machine, cooldown guard, TPMS, spoken alerts).
+
+On-device checklist for the first session: permissions (grant, deny once and get "Try again", deny twice and get "Open settings"); Bluetooth off, then the picker shows "Turn on Bluetooth"; scan finds the adapter by its name `IOS-Vlink`, listed once; connect goes Connecting, Initialising, Probing, Live; vehicle card and live values fill in; unplug the adapter and get Reconnecting, plug it back in and get Live; swipe the app away and the session continues with its notification; Disconnect from the notification; reconnect with "Connect to <name>"; share the recording and check that it holds no VIN and no device address; about 40 connect/disconnect cycles to check for GATT client leaks.
+
+First car attempt (2026-11-15): the scan found `IOS-Vlink` by name, but tapping it in the picker never started a session (no adapter saved, no recording, no crash). The cause is unknown; the logcat had rolled over. Since then each picker row has a Connect button, and the app logs `Adapter picked`, `Bluetooth start command received` and every `Status:` change (tag `KnightLink` / `SessionService`; no address, no VIN). Read `adb logcat` straight after the next attempt.
+
+Comparison with Car Scanner 2.2.42 (decompiled locally for interoperability; nothing copied). It is .NET MAUI with Plugin.BLE, and works with the reference adapter. It connects with `autoConnect=false` over LE, waits 1 s, never requests an MTU, writes in chunks of 17 bytes or fewer with the library default (write with response when the characteristic supports it), and subscribes to notifications. For adapters it does not know, it tries every notify/write pair and keeps the first whose reply to `ATZ` contains "ELM" or `>`, which is how it skips the echo service. KnightLink now matches the first part: write with response preferred, `settleAfterConnect` 1 s, no MTU request by default (`BleTransport.Config.requestedMtu = null`). The `ATZ` probe is a possible fallback for adapters without a definition (not done).
+
+Car Scanner's recordings on the phone (`Android/data/com.ovz.carscanner/files/records/*.brc`, binary, hold the full VIN; keep them off the repo) show it reading fault codes with UDS `19 02 FF` from 700 (IPC), 701 (BCM, SRS), 750 (ESP), 7E0 (engine) and 7E1. That is input for the Harrier definition's ECU list. Its connection logs (`cache/*/log.txt`) are not readable over adb.
+
+Known gaps in the Bluetooth wiring: "Connect to <name>" does not check whether Bluetooth is on (the session just retries); if `startForeground` throws after `startForegroundService`, Android may still raise `ForegroundServiceDidNotStartInTimeException`; some phone makers' Android builds may report a first denial as "blocked".
+
+Connection robustness (2026-11-17, uncommitted, passes the full check): the driver, session and app were hardened for the next car session. Details in the code comments; in short: every link is recorded from `open()` and the recording and the phone's connection log hold session events (`ev` lines, schema 2); `Elm327Driver` warms the adapter up, tolerates unknown non-essential commands (listed in `CapabilityReport.adapter.unsupportedCommands`), retries on STOPPED, waits longer while SEARCHING, and initialises the adapter again after a detected reset; the session re-initialises on silence (`Recovering`), keeps the link while the car does not answer (`WaitingForIgnition`) and only then reconnects. Timeouts, pauses, essential commands and the probe/poll timing scripts live in the adapter definition (`timing`, `probeScript`, `pollScript`, `essentialCommands`). After the next session: "Share connection log" and "Share latest (VIN removed)" in the app, then `tools/cli replay` prints the recorded events first.
+
+## Vehicle safety guarantees (audited 2026-11-17)
+
+- **Read-only, enforced in one place.** `ReadOnlyPolicy` (`core/adapter`) is checked in `Elm327Driver.exchangeOnce`, the only write to the adapter, before any byte leaves the phone. Diagnostic requests: only OBD 01/02/03/06/07/09/0A, UDS 22 and UDS 19 with a reporting sub-function. Refused: 04, 08, 10, 11, 14, 27, 28, 2E, 2F, 31, 34–37, 3D, 3E, 85 and everything else. Adapter commands: an allowlist of volatile settings and queries. `ATPP` (EEPROM), `AT@3`, `ATCV`, `ATWM`/`ATSW` (adapter-originated bus messages), `ATBI`, monitor modes, K-line inits, chipset (`ST`/`VT`) commands and a bare carriage return (repeats the previous command) are refused. Adapter definitions are validated against the same policy when they load. Tests: `ReadOnlyGuardTest`.
+- **What the app actually sends today:** services 01 and 09 only. The probe sends `0100` to 7E0–7E7, support bitmaps, and 09 VIN/CALID/ECU name; polling sends service 01 PIDs from the definitions. Adapter commands: `ATD ATZ ATE0 ATL0 ATS0 ATH1 ATSP6 ATAT1 ATST32/64 ATSH ATI AT@1 ATRV ATDPN`. `ATSP6` means no multi-protocol search on the bus.
+- **Bus load.** One request in flight at a time, each waiting for its reply or timeout. A hard ceiling of at least 20 ms between diagnostic requests (≤ 50/s; `Elm327Driver.Config.minRequestInterval`, cannot be set below 10 ms). The reference adapter measures about 22 requests/s, about 50–100 CAN frames/s with replies, a few percent of a 500 kbit/s bus, like any scan tool. Re-init and watchdog recovery only send adapter commands. "Waiting for ignition" re-probes at most every 4 s.
 
 ## Known open issues
 
 - 29-bit CAN vehicles: the driver rejects them and the probe reports a misleading "every address failed". Planned for M5.
 - The driver does not handle the "response pending" negative reply (0x78); slow ECUs look silent.
-- Driver timeouts (3 s, 6 s for reset) are not configurable from the session config; slow BLE adapters may need that.
+- Driver timeouts are configurable now (adapter definition `timing`, `VehicleSession.Config.driver`); the values for slow BLE adapters still have to be found in the car.
 - No overall time limit on the capability probe.
 - Telemetry keeps last values while reconnecting; the rules engine (M3) must check reading age.
 - Only OBD service 01 parameters are probed and polled; UDS (service 22) identifiers in a definition are ignored.

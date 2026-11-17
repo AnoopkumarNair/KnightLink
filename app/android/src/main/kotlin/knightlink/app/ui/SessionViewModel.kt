@@ -4,15 +4,34 @@ import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
+import android.content.SharedPreferences
 import android.os.IBinder
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
+import knightlink.app.ble.LastAdapter
+import knightlink.app.ble.LastAdapterStore
+import knightlink.app.ble.PendingStart
+import knightlink.app.ble.PermissionDenial
+import knightlink.app.ble.StringStore
+import knightlink.app.data.AndroidAssetSource
+import knightlink.app.data.AppConfig
+import knightlink.app.data.DefinitionStore
+import knightlink.app.session.ConnectionLog
 import knightlink.app.session.RecordingShare
 import knightlink.app.session.RecordingStore
 import knightlink.app.session.SessionController
 import knightlink.app.session.SessionService
+import knightlink.app.session.requireBle
+import knightlink.platform.ble.BleAdapterScanner
+import knightlink.platform.ble.DiscoveredAdapter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
 
 /**
  * What outlives a rotation on the UI side: the binding to [SessionService] (made with the application context, so it is not
@@ -27,6 +46,9 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     val recordings = RecordingStore(SessionService.recordingsDirectory(application))
 
+    /** The rolling text log of connection attempts; the same instance the service writes to. */
+    val connectionLog: ConnectionLog = ConnectionLog.of(SessionService.connectionLogDirectory(application))
+
     private val _pendingShare = MutableStateFlow<RecordingShare.Prepared?>(null)
 
     /** A scrubbed copy waiting for the user to confirm, because the scrubber had warnings. */
@@ -39,6 +61,53 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     /** Whether the notification permission has been asked for in this process; it is asked for once, not on every start. */
     var notificationPermissionAsked: Boolean = false
+
+    /** What the user asked for while the permissions are being sorted out; null when nothing is waiting. Main thread only. */
+    var pendingStart: PendingStart? = null
+
+    private val _permissionDenial = MutableStateFlow<PermissionDenial?>(null)
+
+    /** Set when Bluetooth permissions were refused, until the user has seen the explanation. */
+    val permissionDenial: StateFlow<PermissionDenial?> = _permissionDenial.asStateFlow()
+
+    private val _pickerOpen = MutableStateFlow(false)
+
+    /** Whether the adapter picker is showing. Kept here so a rotation does not close it. */
+    val pickerOpen: StateFlow<Boolean> = _pickerOpen.asStateFlow()
+
+    private val lastAdapterStore = LastAdapterStore(SharedPreferencesStringStore(application.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)))
+    private val _lastAdapter = MutableStateFlow(lastAdapterStore.load())
+
+    /** The adapter connected to last, if any. */
+    val lastAdapter: StateFlow<LastAdapter?> = _lastAdapter.asStateFlow()
+
+    private val scanner = BleAdapterScanner(application)
+
+    /**
+     * A scan for the configured adapter, started when collected and stopped when the collection ends. Fails (inside the flow)
+     * if the definition has no Bluetooth profile, or the scan cannot start; see [pickerStates].
+     */
+    fun scan(): Flow<DiscoveredAdapter> = flow {
+        val profile = withContext(Dispatchers.IO) {
+            val assets = AndroidAssetSource(getApplication<Application>().assets)
+            DefinitionStore(assets).adapter(AppConfig.load(assets).adapterDefinition).requireBle()
+        }
+        emitAll(scanner.scan(profile))
+    }
+
+    /** Remembers [adapter] for the next start. Only the address and the advertised name are kept. */
+    fun remember(adapter: LastAdapter) {
+        lastAdapterStore.save(adapter)
+        _lastAdapter.value = lastAdapterStore.load()
+    }
+
+    fun setPermissionDenial(denial: PermissionDenial?) {
+        _permissionDenial.value = denial
+    }
+
+    fun setPickerOpen(open: Boolean) {
+        _pickerOpen.value = open
+    }
 
     init {
         connection.bind()
@@ -54,6 +123,18 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         connection.unbind()
+    }
+
+    private companion object {
+        const val PREFERENCES = "knightlink"
+    }
+
+    private class SharedPreferencesStringStore(private val preferences: SharedPreferences) : StringStore {
+        override fun get(key: String): String? = preferences.getString(key, null)
+
+        override fun put(key: String, value: String?) {
+            preferences.edit { if (value == null) remove(key) else putString(key, value) }
+        }
     }
 
     private class Connection(private val context: Context) : ServiceConnection {

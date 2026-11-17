@@ -18,6 +18,10 @@ public enum class ElmStatus(internal val prefix: String) {
     FB_ERROR("FBERROR"),
     LV_RESET("LVRESET"),
     UNKNOWN_COMMAND("?"),
+    ;
+
+    /** The adapter could not reach the vehicle bus: nothing the car says can arrive until that changes. */
+    public val isBusFault: Boolean get() = this == UNABLE_TO_CONNECT || this == CAN_ERROR || this == BUS_ERROR
 }
 
 public sealed interface ElmLine {
@@ -84,6 +88,9 @@ public class ElmStreamFramer {
         }
         return completed ?: emptyList()
     }
+
+    /** The text received since the last prompt, which is the start of a reply that is not complete yet. */
+    public fun pending(): String = buffer.toString()
 
     public fun reset() {
         buffer.clear()

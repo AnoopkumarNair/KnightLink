@@ -76,6 +76,7 @@ dependencies {
     implementation(projects.core.telemetry)
     implementation(projects.core.transport)
     implementation(projects.core.vehicle)
+    implementation(projects.platform.bleAndroid)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 

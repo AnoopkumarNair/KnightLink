@@ -52,7 +52,7 @@ internal class StackHarness {
 
     /** Init script, probe and a handful of scheduled polls. Polling is optional because a BY_COMMAND replay may not have them. */
     suspend fun TestScope.session(stream: ByteStream, polls: Int = POLLS): SessionOutcome {
-        val driver = Elm327Driver(stream, backgroundScope)
+        val driver = Elm327Driver(stream, backgroundScope, config = Elm327Driver.Config(timeSource = testTimeSource))
         val banner = driver.initialize(adapterDefinition.initScript).banner
         val report = CapabilityProbe(driver, testTimeSource).run()
         val readings = LinkedHashMap<String, Double>()
@@ -118,7 +118,9 @@ class SessionRoundTripTest {
         assertEquals(EventKind.OPEN, events.first().kind)
         assertEquals(EventKind.CLOSE, events.last().kind)
         val sent = events.filter { it.kind == EventKind.TX }.map { it.bytes.decodeToString() }
-        assertEquals(harness.adapterDefinition.initScript.map { it + "\r" }, sent.take(harness.adapterDefinition.initScript.size))
+        // The warm-up first (the echo switched off twice), then the definition's script.
+        val script = listOf("ATE0", "ATE0") + harness.adapterDefinition.initScript
+        assertEquals(script.map { it + "\r" }, sent.take(script.size))
         // The simulator delivers in 20-byte chunks, as a BLE adapter would; the recording keeps that.
         assertTrue(events.filter { it.kind == EventKind.RX }.all { it.bytes.size <= 20 })
         assertEquals(events.map { it.timeMs }.sorted(), events.map { it.timeMs })

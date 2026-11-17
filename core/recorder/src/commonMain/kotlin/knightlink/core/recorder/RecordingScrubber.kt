@@ -85,7 +85,15 @@ public object RecordingScrubber {
         sweepBytes(events, EventKind.TX, vins)
         sweepBytes(events, EventKind.RX, vins)
         val header = RecordingHeader(recording.header.adapter?.let { it.scrubText(vins) }, recording.header.note?.let { it.scrubText(vins) })
-        val scrubbed = events.filterNotNull().map { if (it.kind == EventKind.ERROR) it.copy(payload = it.payload.scrubText(vins)) else it }
+        val scrubbed = events.filterNotNull().map {
+            if (it.kind == EventKind.ERROR ||
+                it.kind == EventKind.EVENT
+            ) {
+                it.copy(payload = it.payload.scrubText(vins))
+            } else {
+                it
+            }
+        }
         return ScrubResult(Recording(header, scrubbed, recording.truncated), warnings)
     }
 

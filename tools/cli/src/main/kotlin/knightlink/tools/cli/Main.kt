@@ -172,7 +172,7 @@ private fun simulateWith(
         val vehicle = simulation.buildVehicle()
         val adapter = VirtualElm327(vehicle, VirtualElm327.Config(responseDelay = 45.milliseconds))
         val link = recordingLink(adapter, sink, adapterDefinition, "simulated: ${simulation.id}")
-        val driver = Elm327Driver(link, this)
+        val driver = Elm327Driver(link, this, config = adapterDefinition.driverConfig())
         println("adapter: ${driver.initialize(adapterDefinition.initScript).banner}")
 
         val loop = PollingLoop(DiagnosticRequester(driver::request), PollScheduler(catalog.pollItems(primaryEcu) { 1.seconds }))
@@ -234,11 +234,13 @@ private fun probe(rawArgs: List<String>) {
         runBlocking {
             val adapter = VirtualElm327(simulation.buildVehicle(), VirtualElm327.Config(responseDelay = 45.milliseconds))
             val link = recordingLink(adapter, sink, adapterDefinition, "simulated: ${simulation.id}, probe session")
-            val driver = Elm327Driver(link, this)
+            val driver = Elm327Driver(link, this, config = adapterDefinition.driverConfig())
             try {
                 // Progress goes to stderr so that stdout stays valid JSON with --json. A recording also holds one poll of
                 // every confirmed parameter: that is the session `replay` runs, so the file replays strictly too.
-                runSession(driver, adapterDefinition.initScript, catalog, poll = sink != null) { System.err.println("probe: $it") }
+                runSession(driver, adapterDefinition.initScript, catalog, poll = sink != null, adapterDefinition.probeScript, adapterDefinition.pollScript) {
+                    System.err.println("probe: $it")
+                }
             } finally {
                 // Stops the reader coroutine so runBlocking can return.
                 link.close()

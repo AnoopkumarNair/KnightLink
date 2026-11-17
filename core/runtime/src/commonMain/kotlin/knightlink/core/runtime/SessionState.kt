@@ -24,6 +24,16 @@ public sealed interface SessionState {
     public data class Probing(val stage: ProbeStage) : SessionState
 
     /**
+     * The link is open and the adapter is set up, but no ECU answered the probe: typically the ignition is off. The link is kept
+     * and the probe repeated until something answers, then the session goes on to [Polling].
+     *
+     * @property probes how many probes have found nothing so far
+     * @property busFault the adapter said it could not reach the vehicle bus (the status word, e.g. `CAN_ERROR`), which points at the
+     *   vehicle side rather than at a sleeping car; null when the probe was simply unanswered
+     */
+    public data class WaitingForIgnition(val probes: Int, val busFault: String?) : SessionState
+
+    /**
      * Live data is being polled.
      *
      * @property report what the probe found on this vehicle. Contains the full VIN: never log or export it unredacted
@@ -31,6 +41,16 @@ public sealed interface SessionState {
      * @property coverage how the vehicle definition compares with [report]; only its confirmed parameters are polled
      */
     public data class Polling(val report: CapabilityReport, val coverage: DefinitionCoverage) : SessionState
+
+    /**
+     * Polling got no positive answer for the silence window, or the adapter kept failing: the adapter is being initialised
+     * again on the same link. Goes back to [Polling] as soon as something answers; after [VehicleSession.Config.maxReinits] tries
+     * that did not help, the connection is closed and opened again ([Reconnecting]).
+     *
+     * @property attempt 1 for the first re-initialisation of an outage
+     * @property reason what was noticed, in words (for example that the vehicle bus could not be reached)
+     */
+    public data class Recovering(val attempt: Int, val reason: String) : SessionState
 
     /**
      * The link could not be opened or was lost, and the session is waiting before it tries again.

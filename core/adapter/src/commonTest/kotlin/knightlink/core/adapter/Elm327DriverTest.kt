@@ -63,13 +63,14 @@ class Elm327DriverTest {
         val adapter = ScriptedAdapter(initReplies, echo = true)
         val driver = Elm327Driver(adapter, backgroundScope)
         assertEquals(AdapterIdentity("ELM327 v2.3"), driver.initialize(srsInit))
-        assertEquals(srsInit, adapter.written)
+        // The warm-up: the echo switched off twice before the script (never a bare carriage return, which repeats the last command).
+        assertEquals(listOf("ATE0", "ATE0") + srsInit, adapter.written)
     }
 
     @Test
-    fun initFailsWhenAdapterRejectsACommand() = runTest {
-        val driver = Elm327Driver(ScriptedAdapter(initReplies - "ATAT1"), backgroundScope)
-        assertTrue(assertFailsWith<AdapterException> { driver.initialize(srsInit) }.message!!.contains("ATAT1"))
+    fun initFailsWhenAdapterRejectsAnEssentialCommand() = runTest {
+        val driver = Elm327Driver(ScriptedAdapter(initReplies - "ATH1"), backgroundScope)
+        assertTrue(assertFailsWith<AdapterException> { driver.initialize(srsInit) }.message!!.contains("ATH1"))
     }
 
     @Test

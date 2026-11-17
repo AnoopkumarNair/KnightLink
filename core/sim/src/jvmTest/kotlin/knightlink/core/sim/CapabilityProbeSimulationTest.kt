@@ -44,7 +44,7 @@ class CapabilityProbeSimulationTest {
         val simulation = SimulationFile.parse(File(root, "fixtures/sim/harrier-dpf-regen.json").readText())
         val adapterDefinition = AdapterDefinition.parse(File(root, "definitions/adapters/vgate-icar-pro-2s.json").readText())
         val adapter = VirtualElm327(simulation.buildVehicle(), VirtualElm327.Config(responseDelay = 45.milliseconds))
-        val driver = Elm327Driver(adapter, backgroundScope)
+        val driver = Elm327Driver(adapter, backgroundScope, config = Elm327Driver.Config(timeSource = testTimeSource))
         driver.initialize(adapterDefinition.initScript)
         val stages = ArrayList<ProbeStage>()
         val report = CapabilityProbe(driver, testTimeSource, CapabilityProbe.Config()).run(onProgress = { stages += it })
@@ -130,6 +130,8 @@ class CapabilityProbeSimulationTest {
         assertTrue(diagnostic.isNotEmpty())
         for (command in outcome.adapter.received) {
             when {
+                // The bare carriage return that opens initialisation.
+                command.isEmpty() -> Unit
                 command.startsWith("ATSH") -> assertTrue(command.removePrefix("ATSH") in allowedHeaders, command)
                 command.startsWith("AT") -> Unit
                 // Service is the first byte; the response-count suffix may add a digit.

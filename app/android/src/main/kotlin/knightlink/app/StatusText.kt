@@ -11,6 +11,9 @@ fun ConnectionStatus.text(resources: Resources): String = when (this) {
     is ConnectionStatus.Connecting -> resources.getString(R.string.status_connecting, attempt)
     ConnectionStatus.Initialising -> resources.getString(R.string.status_initialising)
     is ConnectionStatus.Probing -> resources.getString(R.string.status_probing, resources.getString(stage.textRes()))
+    is ConnectionStatus.WaitingForIgnition ->
+        resources.getString(if (busFault) R.string.status_bus_not_reachable else R.string.status_waiting_for_ignition, probes)
+    is ConnectionStatus.Recovering -> resources.getString(R.string.status_recovering, attempt, reason)
     ConnectionStatus.Live -> resources.getString(R.string.status_live)
     is ConnectionStatus.Reconnecting -> resources.getString(R.string.status_reconnecting, retryInSeconds, cause)
     is ConnectionStatus.Failed -> resources.getString(R.string.status_failed, reason)

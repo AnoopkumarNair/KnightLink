@@ -2,6 +2,7 @@ package knightlink.core.scheduler
 
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmResponse
+import knightlink.core.protocol.ElmStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -25,10 +26,13 @@ public class PollResult(
     public val roundTrip: Duration,
 ) {
     public val answered: Boolean get() = response?.messages?.any { it is DiagnosticResponse.Positive } == true
+
+    /** The status word that says the vehicle bus could not be reached, when the reply held one. */
+    public val busFault: ElmStatus? get() = response?.busFault
 }
 
 /** Thrown when the adapter stops answering; the session layer should reconnect. */
-public class PollingStalledException(failures: Int, cause: Throwable) :
+public class PollingStalledException(public val failures: Int, cause: Throwable) :
     Exception("Adapter failed $failures requests in a row", cause)
 
 /**

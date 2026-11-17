@@ -12,9 +12,10 @@ kotlin {
             api(projects.core.scheduler)
             api(projects.core.telemetry)
             api(projects.core.vehicle)
-            implementation(projects.core.adapter)
+            // The driver's configuration is part of the session's, and the event sink is a constructor argument.
+            api(projects.core.adapter)
+            api(projects.core.common)
             implementation(projects.core.protocol)
-            implementation(projects.core.common)
         }
     }
 }

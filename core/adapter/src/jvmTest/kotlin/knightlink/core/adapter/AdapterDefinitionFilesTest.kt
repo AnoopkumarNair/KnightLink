@@ -20,6 +20,14 @@ class AdapterDefinitionFilesTest {
                 definition.initScript.any { it.replace(" ", "").equals("ATH1", ignoreCase = true) },
                 "${definition.id}: headers must be switched on (ATH1); the protocol layer depends on them",
             )
+            // What the driver may skip must not be what the layers above depend on.
+            val script = definition.initScript.map { it.replace(" ", "").uppercase() }
+            for (essential in listOf("ATE0", "ATH1")) {
+                assertTrue(definition.essentialCommands.any { essential.startsWith(it.uppercase()) }, "${definition.id}: $essential must be essential")
+            }
+            // A probe script without a poll script would leave the adapter on the probe's timing for good.
+            assertEquals(definition.probeScript.isNotEmpty(), definition.pollScript.isNotEmpty(), "${definition.id}: probeScript and pollScript go together")
+            assertTrue(script.isNotEmpty())
         }
     }
 }

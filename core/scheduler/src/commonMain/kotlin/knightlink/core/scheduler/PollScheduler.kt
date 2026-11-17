@@ -92,6 +92,18 @@ public class PollScheduler(
     }
 
     /**
+     * Forgets everything learned about the items: every one is due at once and none is backed off. For a new start of the polling
+     * (after the adapter was initialised again, when a silence taught nothing about the items) and for a loop whose clock has restarted.
+     */
+    public fun restart() {
+        for (entry in entries) {
+            entry.lastPolled = null
+            entry.misses = 0
+            entry.backoff = 1
+        }
+    }
+
+    /**
      * Records the outcome of a poll.
      * @param sentAt when the request was sent. Periods run from send to send, so the time a reply
      *   takes does not stretch the interval.

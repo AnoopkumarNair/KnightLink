@@ -144,12 +144,59 @@ class SessionControllerTest {
         rig.controller.disconnect()
 
         val recording = rig.sinks.sinks.single().toRecording()
-        assertEquals(EventKind.CLOSE, recording.events.last().kind)
+        // The traffic ends with the close; what follows is the session saying why it ended.
+        assertEquals(EventKind.CLOSE, recording.events.last { it.kind != EventKind.EVENT }.kind)
+        assertTrue(recording.events.last().let { it.kind == EventKind.EVENT && it.payload.startsWith("end:") }, recording.events.last().toString())
+        // Recording starts with the first attempt, before any traffic: the connect attempt is already on record.
+        assertTrue(recording.events.first().let { it.kind == EventKind.EVENT && it.payload.contains("Connecting") }, recording.events.first().toString())
         assertTrue(recording.events.any { it.kind == EventKind.TX })
         assertTrue(recording.events.any { it.kind == EventKind.RX })
         assertTrue(rig.sinks.finished >= 1, "the sink was released")
         // The header names the adapter definition, so a replay knows which init script produced it.
         assertEquals(config.adapterDefinition, recording.header.adapter)
+    }
+
+    @Test
+    fun theConnectionLogTellsTheStoryOfASessionAndHoldsNoVin() = runTest {
+        val directory = kotlin.io.path.createTempDirectory("connection-log").toFile()
+        try {
+            val log = ConnectionLog(directory)
+            val controller = SessionController(
+                backgroundScope,
+                { config },
+                store,
+                DemoTransportFactory(store::simulation),
+                MemorySinks(),
+                testTimeSource,
+                connectionLog = log,
+            )
+            controller.connect(demo)
+            awaitLive(controller)
+            advanceTimeBy(3.seconds)
+            controller.disconnect()
+
+            val text = log.files().joinToString("\n") { it.readText() }
+            val expected = listOf(
+                "app: connect requested: demo",
+                "connect-attempt: attempt 1",
+                "link-up",
+                "init-end: ok",
+                "probe-result: 3 ECUs",
+                "state: Polling",
+                "end: the session was stopped",
+                "app: disconnected",
+            )
+            for (line in expected) assertTrue(line in text, "missing '$line' in:\n$text")
+            // The session ended and so did the attempt: the next one starts a new file.
+            controller.connect(demo)
+            assertEquals(2, log.files().size)
+            controller.disconnect()
+            val scenarioVin = store.simulation(config.demoScenario).ecus.firstNotNullOf { it.vin }
+            assertFalse(scenarioVin in log.shareable())
+            assertFalse(scenarioVin.drop(3) in log.shareable())
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 
     @Test

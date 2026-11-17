@@ -52,7 +52,8 @@ class CommittedRecordingTest {
     @Test
     fun replayedByCommandThroughTheRealDriverAndProbeItReportsTheSimulatedCar() = runTest {
         val stream = ReplayByteStream(recording, ReplayMode.BY_COMMAND)
-        val driver = Elm327Driver(stream, backgroundScope)
+        // The file predates the warm-up, so it holds none: the driver is told not to send one, or the replay would not know it.
+        val driver = Elm327Driver(stream, backgroundScope, config = Elm327Driver.Config(warmUp = false))
         driver.initialize(harness.adapterDefinition.initScript)
         val report = CapabilityProbe(driver, testTimeSource).run()
 

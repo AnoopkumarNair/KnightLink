@@ -75,13 +75,22 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
 
 /** A simulated vehicle: a set of ECUs on one 11-bit CAN bus. */
 public class VirtualVehicle(public val ecus: List<VirtualEcu>) {
+    /** False simulates a car with the ignition off: the adapter works, but no ECU answers anything. */
+    public var awake: Boolean = true
+
     public fun ecu(requestId: Int): VirtualEcu =
         ecus.firstOrNull { it.requestId == requestId }
             ?: throw IllegalArgumentException("No simulated ECU at ${requestId.toString(16).uppercase()}")
 
     /** ECUs addressed by [header]: all of them for the functional address, otherwise the matching one. */
     internal fun targets(header: Int): List<VirtualEcu> =
-        if (header == FUNCTIONAL_ADDRESS) ecus else ecus.filter { it.requestId == header }
+        if (!awake) {
+            emptyList()
+        } else if (header == FUNCTIONAL_ADDRESS) {
+            ecus
+        } else {
+            ecus.filter { it.requestId == header }
+        }
 
     public companion object {
         public const val FUNCTIONAL_ADDRESS: Int = 0x7DF

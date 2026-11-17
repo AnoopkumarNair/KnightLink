@@ -226,10 +226,12 @@ public class ReplayByteStream(
         var previousTime = events.firstOrNull()?.timeMs ?: 0L
         var previousWasTx = false
         for ((index, event) in events.withIndex()) {
+            // Notes are not traffic: they neither play nor change the timing between the lines that do.
+            if (event.kind == EventKind.EVENT) continue
             val gap = maxOf(0L, event.timeMs - previousTime)
             previousTime = event.timeMs
             when (event.kind) {
-                EventKind.OPEN -> Unit
+                EventKind.OPEN, EventKind.EVENT -> Unit
                 EventKind.TX -> {
                     val chunk = event.bytes
                     // Nothing for the consumer to match; an empty write is not a command.
@@ -263,7 +265,7 @@ public class ReplayByteStream(
             }
         }
         // Skipping the leading `open` events keeps remainingEvents at 0 for a session that was replayed completely.
-        consumed = events.takeWhile { it.kind == EventKind.OPEN }.size
+        consumed = events.takeWhile { it.kind == EventKind.OPEN || it.kind == EventKind.EVENT }.size
         leading.forEach { deliveries.trySend(it) }
     }
 

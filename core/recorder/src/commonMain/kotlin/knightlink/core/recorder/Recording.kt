@@ -45,6 +45,14 @@ public enum class EventKind(internal val carriesBytes: Boolean = false) {
      */
     @SerialName("eof")
     EOF,
+
+    /**
+     * Something the session or the adapter driver wanted on record, as one line of text: a step of the init script, a state change,
+     * a reset, a reconnect. Not traffic, so a replay skips it; it is what explains why the traffic looks the way it does. Files
+     * that hold these are schema 2 (see [Recording]).
+     */
+    @SerialName("ev")
+    EVENT,
 }
 
 /**
@@ -91,6 +99,9 @@ public data class RecordingEvent(val timeMs: Long, val kind: EventKind, val payl
         public fun error(timeMs: Long, message: String): RecordingEvent = RecordingEvent(timeMs, EventKind.ERROR, message)
 
         public fun eof(timeMs: Long): RecordingEvent = RecordingEvent(timeMs, EventKind.EOF)
+
+        /** A session event; [text] is one line for a person, without a VIN or an address. */
+        public fun event(timeMs: Long, text: String): RecordingEvent = RecordingEvent(timeMs, EventKind.EVENT, text)
     }
 }
 
@@ -104,6 +115,10 @@ public data class RecordingEvent(val timeMs: Long, val kind: EventKind, val payl
  * `eof` was added without a new schema version: a reader that predates it rejects the unknown `d` value with a
  * [RecordingFormatException] instead of misreading the file, which is what a version bump would have achieved.
  *
+ * Schema 2 adds the `ev` kind (see [EventKind.EVENT]); its `x` is a line of text. A file is written as schema 2 only when it
+ * holds such events, so every file without them stays byte-for-byte what schema 1 wrote, and a reader that only knows schema 1
+ * refuses a schema 2 file with a clear message. This reader accepts both.
+ *
  * @param truncated true when [parse] dropped an incomplete last line, i.e. the session ended in a crash.
  */
 public data class Recording(
@@ -113,12 +128,17 @@ public data class Recording(
 ) {
     /** The file text: header line, then one line per event, each ended by a newline. */
     public fun toText(): String = buildString {
-        append(headerLine(header)).append('\n')
+        val schema = if (events.any { it.kind == EventKind.EVENT }) SCHEMA_VERSION else BASE_SCHEMA_VERSION
+        append(headerLine(header, schema)).append('\n')
         events.forEach { append(eventLine(it)).append('\n') }
     }
 
     public companion object {
-        public const val SCHEMA_VERSION: Int = 1
+        /** The newest schema this build reads and writes. */
+        public const val SCHEMA_VERSION: Int = 2
+
+        /** What a file without session events says; see the class comment. */
+        internal const val BASE_SCHEMA_VERSION: Int = 1
         internal const val KIND: String = "knightlink-session"
 
         // Strict on purpose: an unknown key means the file came from a different format, and guessing would hide that.
@@ -134,8 +154,8 @@ public data class Recording(
         @Serializable
         private class EventLine(val t: Long, val d: EventKind, val x: String = "")
 
-        internal fun headerLine(header: RecordingHeader): String =
-            json.encodeToString(HeaderLine.serializer(), HeaderLine(SCHEMA_VERSION, KIND, header.adapter, header.note))
+        internal fun headerLine(header: RecordingHeader, schemaVersion: Int = BASE_SCHEMA_VERSION): String =
+            json.encodeToString(HeaderLine.serializer(), HeaderLine(schemaVersion, KIND, header.adapter, header.note))
 
         internal fun eventLine(event: RecordingEvent): String =
             json.encodeToString(EventLine.serializer(), EventLine(event.timeMs, event.kind, event.payload))

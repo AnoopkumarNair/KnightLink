@@ -63,7 +63,10 @@ public class ElmResponse(
     public val statuses: List<ElmStatus>,
     public val protocolErrors: List<String>,
     public val text: List<String>,
-)
+) {
+    /** The first status that says the vehicle bus could not be reached (CAN ERROR, BUS ERROR, UNABLE TO CONNECT), or null. */
+    public val busFault: ElmStatus? get() = statuses.firstOrNull { it.isBusFault }
+}
 
 /**
  * What the layers above an adapter driver need from it. Declared here, not in the driver's module, so

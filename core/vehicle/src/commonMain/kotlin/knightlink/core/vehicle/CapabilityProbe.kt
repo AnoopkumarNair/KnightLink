@@ -2,6 +2,7 @@ package knightlink.core.vehicle
 
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmResponse
+import knightlink.core.protocol.ElmStatus
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.DurationUnit
@@ -35,6 +36,9 @@ public class CapabilityProbe(
         val label: String get() = requestId.toCanIdHex()
     }
 
+    /** The first status word met that says the vehicle bus could not be reached; reset by every [run]. */
+    private var busFault: ElmStatus? = null
+
     private class VehicleInfo(val vin: String?, val calibrationIds: List<String>, val name: String?)
 
     /**
@@ -43,9 +47,10 @@ public class CapabilityProbe(
      * @param onProgress called when each stage starts.
      * @throws ProbeException when the adapter does not answer, or no request address could be tried successfully.
      */
-    public suspend fun run(onProgress: (ProbeStage) -> Unit = {}): CapabilityReport {
+    public suspend fun run(onProgress: suspend (ProbeStage) -> Unit = {}): CapabilityReport {
         val started = timeSource.markNow()
         val warnings = ArrayList<String>()
+        busFault = null
 
         onProgress(ProbeStage.ADAPTER)
         val adapter = readAdapter()
@@ -73,6 +78,9 @@ public class CapabilityProbe(
                 vin = info[i].vin,
             )
         }
+        // Bus status words only mean something when no ECU answered at all: one that does answer proves the bus is up.
+        val unreachable = busFault.takeIf { ecus.isEmpty() }
+        if (unreachable != null) warnings += "vehicle bus not reachable: the adapter said ${unreachable.name.replace('_', ' ')}"
         val median = roundTrips.takeIf { it.isNotEmpty() }?.let(::median)
         val medianMs = median?.toDouble(DurationUnit.MILLISECONDS)
         return CapabilityReport(
@@ -86,6 +94,7 @@ public class CapabilityProbe(
             ecus = ecus,
             derived = DerivedFacts.of(ecus),
             warnings = warnings,
+            busFault = unreachable?.name,
         )
     }
 
@@ -134,6 +143,7 @@ public class CapabilityProbe(
                 warnings += "${requestId.toCanIdHex()}: request failed: ${e.message ?: e::class.simpleName}"
                 continue
             }
+            noteBusFault(response)
             val reply = response.positiveReply(SERVICE_LIVE_DATA, 0x00) ?: continue
             found += Found(requestId, reply.sourceId, reply.bitmap())
         }
@@ -219,7 +229,12 @@ public class CapabilityProbe(
             warnings += "${ecu.label}: ${service.toPidHex()} ${pid.toPidHex()} failed: ${e.message ?: e::class.simpleName}"
             return null
         }
+        noteBusFault(response)
         return response.positiveReply(service, pid, from = ecu.responseId)
+    }
+
+    private fun noteBusFault(response: ElmResponse) {
+        if (busFault == null) busFault = response.busFault
     }
 
     private fun payload(service: Int, pid: Int): ByteArray = byteArrayOf(service.toByte(), pid.toByte())

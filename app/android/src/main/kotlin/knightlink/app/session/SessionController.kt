@@ -2,6 +2,8 @@ package knightlink.app.session
 
 import knightlink.app.data.AppConfig
 import knightlink.app.data.DefinitionStore
+import knightlink.core.common.SessionEventSink
+import knightlink.core.common.plus
 import knightlink.core.recorder.RecordingHeader
 import knightlink.core.recorder.RecordingTransport
 import knightlink.core.runtime.SessionState
@@ -50,6 +52,8 @@ import kotlin.time.TimeSource
  * @param uiRefresh how often the screen state is rebuilt while nothing else changed: this is what ages values into "stale",
  *   and it caps how often the list is rebuilt (readings arrive many times per second)
  * @param staleAfter a value older than this is shown as stale
+ * @param connectionLog the rolling text log that the session's events are also written to; null for none
+ * @param sessionConfig the session's settings; the adapter definition's scripts and timing are put on top of them at each connect
  */
 class SessionController(
     private val scope: CoroutineScope,
@@ -60,6 +64,8 @@ class SessionController(
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val uiRefresh: Duration = DEFAULT_UI_REFRESH,
     private val staleAfter: Duration = DEFAULT_STALE_AFTER,
+    private val connectionLog: ConnectionLog? = null,
+    private val sessionConfig: VehicleSession.Config = VehicleSession.Config(),
 ) {
     /** One connection request, from [connect] to the end of [disconnect]. */
     private class Run(val scope: CoroutineScope) {
@@ -88,6 +94,7 @@ class SessionController(
                 Run(CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))).also { current = it }
             }
         } ?: return false
+        connectionLog?.app("connect requested: ${target.describe()}")
         _uiState.value = UiState(ConnectionStatus.Connecting(1), vehicle = null, liveValues = emptyList())
         run.scope.launch { start(run, target) }
         return true
@@ -104,6 +111,8 @@ class SessionController(
             run.session?.stop()
             run.scope.coroutineContext.job.cancelAndJoin()
             recordings.finishCurrent()
+            connectionLog?.app("disconnected")
+            connectionLog?.endAttempt()
             // Only now may another connection start: two sessions must never share an adapter. Idle is published before the
             // slot is freed, so it cannot overwrite the "Connecting" of a connect that slips in right after.
             synchronized(lock) {
@@ -120,10 +129,11 @@ class SessionController(
         // a throw there must show as Failed, not leave the screen on "Connecting".
         val session = try {
             val setup = prepare(target)
-            VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource)
+            VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            connectionLog?.app("could not start the session: ${e.message ?: e::class.simpleName}")
             _uiState.value = UiState(ConnectionStatus.Failed(e.message ?: e::class.simpleName ?: "unknown error"), vehicle = null, liveValues = emptyList())
             return
         }
@@ -135,7 +145,13 @@ class SessionController(
         session.start()
     }
 
-    private class Setup(val transport: RecordingTransport, val initScript: List<String>, val catalog: SignalCatalog)
+    private class Setup(
+        val transport: RecordingTransport,
+        val initScript: List<String>,
+        val catalog: SignalCatalog,
+        val config: VehicleSession.Config,
+        val events: SessionEventSink,
+    )
 
     private fun prepare(target: ConnectionTarget): Setup {
         val config = config()
@@ -147,7 +163,11 @@ class SessionController(
             is ConnectionTarget.Ble -> "app, bluetooth"
         }
         val transport = RecordingTransport(transports.create(target), { recordings.newSink() }, timeSource, RecordingHeader(adapter.id, note))
-        return Setup(transport, adapter.initScript, catalog)
+        // The adapter definition decides the scripts and the adapter-specific timing; everything else is the app's.
+        val sessionSettings = sessionConfig.copy(probeScript = adapter.probeScript, pollScript = adapter.pollScript, driver = adapter.driverConfig())
+        // The recording gets every event (it is the replayable record); the text log gets the same ones.
+        val events: SessionEventSink = connectionLog?.let { transport + it.sink } ?: transport
+        return Setup(transport, adapter.initScript, catalog, sessionSettings, events)
     }
 
     /**
@@ -176,4 +196,10 @@ class SessionController(
         val DEFAULT_UI_REFRESH: Duration = 250.milliseconds
         val DEFAULT_STALE_AFTER: Duration = 5.seconds
     }
+}
+
+/** What kind of link, for the log. Never an address. */
+private fun ConnectionTarget.describe(): String = when (this) {
+    is ConnectionTarget.Demo -> "demo ($scenarioId)"
+    is ConnectionTarget.Ble -> "bluetooth"
 }

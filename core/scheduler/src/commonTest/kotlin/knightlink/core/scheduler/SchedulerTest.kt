@@ -109,6 +109,25 @@ class PollSchedulerTest {
     }
 
     @Test
+    fun restartMakesEveryItemDueAtOnceAndForgetsItsBackoff() {
+        val dead = item("dead", 200.milliseconds)
+        val scheduler = PollScheduler(listOf(dead))
+        // A long silence: the item is backed off to its maximum and was last polled at 60 s.
+        Simulated(scheduler, cost = 50.milliseconds) { false }.run(60.seconds)
+        val waiting = scheduler.next(60.seconds + 100.milliseconds)
+        assertIs<PollDecision.Wait>(waiting)
+        assertTrue(waiting.duration > 1.seconds, "backed off: ${waiting.duration}")
+
+        scheduler.restart()
+
+        // Also when the clock of the loop that drives it has started again from zero.
+        assertIs<PollDecision.Poll>(scheduler.next(Duration.ZERO))
+        scheduler.onResult(dead, Duration.ZERO, answered = true)
+        assertIs<PollDecision.Wait>(scheduler.next(10.milliseconds))
+        assertEquals(190.milliseconds, (scheduler.next(10.milliseconds) as PollDecision.Wait).duration)
+    }
+
+    @Test
     fun prefersTheSelectedEcuToAvoidHeaderSwitches() {
         fun decide(tcmPeriod: Duration, current: Int?): String {
             val ecm = item("ecm", 200.milliseconds, 0x7E0)

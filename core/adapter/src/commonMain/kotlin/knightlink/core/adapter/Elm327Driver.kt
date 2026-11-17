@@ -1,22 +1,32 @@
 package knightlink.core.adapter
 
+import knightlink.core.common.SessionEventSink
+import knightlink.core.common.SessionEvents
+import knightlink.core.common.emit
 import knightlink.core.common.toHex
 import knightlink.core.protocol.DiagnosticLink
+import knightlink.core.protocol.ElmLine
+import knightlink.core.protocol.ElmLineParser
 import knightlink.core.protocol.ElmResponse
 import knightlink.core.protocol.ElmResponseDecoder
+import knightlink.core.protocol.ElmStatus
 import knightlink.core.protocol.ElmStreamFramer
 import knightlink.core.transport.ByteStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 public open class AdapterException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
@@ -33,8 +43,35 @@ public class AdapterTimeoutException(command: String, timeout: Duration) :
 public class AdapterDisconnectedException(public val reason: String, cause: Throwable? = null) :
     AdapterException("Adapter disconnected: $reason", cause)
 
-/** What the adapter said about itself during initialisation. */
-public data class AdapterIdentity(val banner: String?)
+/**
+ * The adapter reset itself (typically a voltage dip while the engine was cranked) and, after the driver had initialised it
+ * again, reset once more during the retried request. Whoever polls should treat the adapter as unreliable for now.
+ */
+public class AdapterResetException(public val hint: String) :
+    AdapterException("The adapter reset itself again right after it was initialised again ($hint)")
+
+/**
+ * What the adapter said about itself during initialisation.
+ *
+ * @property banner the first reply line that mentions the adapter's chip (the answer to the reset command)
+ * @property unsupportedCommands the script commands the adapter answered with `?`; they were skipped
+ */
+public data class AdapterIdentity(val banner: String?, val unsupportedCommands: List<String> = emptyList())
+
+/** Counters of what the driver had to work around. Everything is counted from the creation of the driver. */
+public data class DriverStats(
+    /** Resets of the adapter noticed during requests (each followed by a re-initialisation). */
+    val adapterResets: Int = 0,
+    /** Initialisations after the first one, whatever the reason. */
+    val reinits: Int = 0,
+    val bufferFull: Int = 0,
+    /** Replies that said the vehicle bus could not be reached. */
+    val busFaults: Int = 0,
+    /** Waits that were extended because the adapter was still searching for the protocol. */
+    val searchingWaits: Int = 0,
+    /** Commands sent a second time because the adapter had said STOPPED. */
+    val resends: Int = 0,
+)
 
 /**
  * Talks to an ELM327-compatible adapter over any [ByteStream].
@@ -42,19 +79,96 @@ public data class AdapterIdentity(val banner: String?)
  * The adapter is strictly half-duplex: one command, then wait for the `>` prompt. All access goes
  * through a single lock, so callers on different coroutines can never interleave commands.
  *
+ * Cheap and clone adapters misbehave in ways the real chip does not, so the driver is tolerant on purpose (all of it
+ * tunable through [Config], which the adapter definition fills in):
+ *  - initialisation starts with a warm-up that flushes whatever the adapter is still saying, and an unknown `?` command is
+ *    skipped unless it is essential;
+ *  - the reader's partial line is dropped at the start of every exchange, so noise from a previous command cannot corrupt
+ *    the next reply;
+ *  - after a reset command the driver waits for the adapter to settle;
+ *  - a command that is answered with `STOPPED` is sent once more;
+ *  - while the adapter is searching for the vehicle's protocol the wait is longer;
+ *  - an adapter that reset itself mid-session (echo is back, the banner appears, `LV RESET`, or replies without headers) is
+ *    initialised again on the same link and the request is retried once.
+ *
  * @param scope owns the reader coroutine; cancel it to stop the driver.
+ * @param events receives what happened (init steps, resets, re-inits, bus faults, counters); never a VIN or an address.
  */
 public class Elm327Driver(
     private val stream: ByteStream,
     scope: CoroutineScope,
     private val extendedIds: Boolean = false,
-    private val defaultTimeout: Duration = 3.seconds,
+    private val config: Config = Config(),
+    private val events: SessionEventSink = SessionEventSink.None,
 ) : DiagnosticLink {
+    /**
+     * How the driver treats the adapter. The defaults suit a generic ELM327; an adapter definition overrides them.
+     *
+     * @property commandTimeout how long one command may take
+     * @property resetTimeout how long the reset command may take (the adapter prints its banner after a pause)
+     * @property searchingTimeout how long one exchange may take once the adapter has said it is searching for the protocol
+     * @property warmUp whether initialisation starts with two echo-off commands whose replies are discarded
+     * @property warmUpDelay the pause between the warm-up commands
+     * @property postResetDelay the pause after the reset command's reply, before the next command
+     * @property stoppedRetryDelay the pause before a command that was answered with STOPPED is sent again
+     * @property essentialCommands command prefixes (upper case, no spaces) whose rejection with `?` fails initialisation; every
+     *   other rejected command is recorded as unsupported and skipped
+     * @property detectResets whether replies are checked for signs that the adapter reset itself
+     * @property minRequestInterval the shortest time between the starts of two diagnostic requests: a hard ceiling on the load
+     *   KnightLink puts on the vehicle bus (20 ms = at most 50 requests a second), whatever the scheduler asks for. One request
+     *   is in flight at a time anyway, so a real ELM327 over Bluetooth stays well below it.
+     * @property timeSource the clock of [minRequestInterval]
+     */
+    public data class Config(
+        val commandTimeout: Duration = 3.seconds,
+        val resetTimeout: Duration = 6.seconds,
+        val searchingTimeout: Duration = 8.seconds,
+        val warmUp: Boolean = true,
+        val warmUpDelay: Duration = 300.milliseconds,
+        val postResetDelay: Duration = 500.milliseconds,
+        val stoppedRetryDelay: Duration = 200.milliseconds,
+        val essentialCommands: List<String> = listOf("ATE0", "ATH1", "ATSP"),
+        val detectResets: Boolean = true,
+        val minRequestInterval: Duration = DEFAULT_MIN_REQUEST_INTERVAL,
+        val timeSource: TimeSource = TimeSource.Monotonic,
+    ) {
+        init {
+            require(commandTimeout > Duration.ZERO) { "commandTimeout must be positive" }
+            require(resetTimeout > Duration.ZERO) { "resetTimeout must be positive" }
+            require(searchingTimeout > Duration.ZERO) { "searchingTimeout must be positive" }
+            require(minRequestInterval >= MIN_REQUEST_INTERVAL_FLOOR) { "minRequestInterval must be at least $MIN_REQUEST_INTERVAL_FLOOR" }
+        }
+
+        public companion object {
+            public val DEFAULT_MIN_REQUEST_INTERVAL: Duration = 20.milliseconds
+
+            /** No configuration may lift the ceiling above 100 requests a second. */
+            public val MIN_REQUEST_INTERVAL_FLOOR: Duration = 10.milliseconds
+        }
+    }
+
+    private var lastRequestStart: TimeMark? = null
+
     private val framer = ElmStreamFramer()
+    private val framerLock = Mutex()
     private val decoder = ElmResponseDecoder(extendedIds)
+    private val parser = ElmLineParser(extendedIds)
     private val responses = Channel<List<String>>(Channel.UNLIMITED)
     private val lock = Mutex()
     private var currentHeader: Int? = null
+
+    // What the init script switched on, so that a reply can be recognised as coming from an adapter that has forgotten it.
+    private var activeScript: List<String>? = null
+    private var echoIsOff = false
+    private var headersAreOn = false
+    private var initialised = false
+    private val unsupported = LinkedHashSet<String>()
+
+    /** An adapter banner or `LV RESET` arrived between two exchanges, which only a reset explains. Cleared by every initialisation. */
+    private var unsolicitedReset = false
+
+    @Volatile
+    private var counters = DriverStats()
 
     /** Set once, when the stream ends for any reason. Read under [lock], written by the reader or its completion handler. */
     @Volatile
@@ -62,7 +176,10 @@ public class Elm327Driver(
 
     private val reader: Job = scope.launch {
         try {
-            stream.incoming.collect { chunk -> framer.feed(chunk).forEach { responses.send(it) } }
+            stream.incoming.collect { chunk ->
+                // Feeding and queueing under one lock: an exchange that clears the framer and the queue sees neither half of a reply.
+                framerLock.withLock { framer.feed(chunk).forEach { responses.send(it) } }
+            }
             disconnect(AdapterDisconnectedException("the adapter closed the connection"))
         } catch (e: CancellationException) {
             throw e
@@ -79,34 +196,58 @@ public class Elm327Driver(
         reader.invokeOnCompletion { disconnect(AdapterDisconnectedException("the driver was stopped")) }
     }
 
-    override suspend fun command(text: String): List<String> = command(text, defaultTimeout)
+    /** The commands of the init scripts that the adapter rejected as unknown and that were therefore skipped, in the order met. */
+    public val unsupportedCommands: List<String> get() = unsupported.toList()
+
+    /** What the driver has had to work around so far. */
+    public val stats: DriverStats get() = counters
+
+    override suspend fun command(text: String): List<String> = command(text, config.commandTimeout)
 
     /** Sends one command and returns the reply lines, without the echo. */
     public suspend fun command(text: String, timeout: Duration): List<String> =
-        lock.withLock { exchange(text, timeout) }
+        lock.withLock { exchange(text, timeout).lines }
 
     /**
-     * Runs the adapter's initialisation script (from its definition file).
-     * @throws AdapterException if the adapter rejects a command.
+     * Runs the adapter's initialisation script (from its definition file), after the warm-up if [Config.warmUp] is set. The
+     * script is remembered: [reinitialize] and the automatic re-initialisation after a reset run it again.
+     *
+     * A command the adapter answers with `?` is skipped and listed in [unsupportedCommands] unless it is one of
+     * [Config.essentialCommands].
+     *
+     * @throws AdapterException if the adapter rejects an essential command or does not answer.
      */
-    public suspend fun initialize(script: List<String>, resetTimeout: Duration = 6.seconds): AdapterIdentity =
-        lock.withLock {
-            currentHeader = null
-            var banner: String? = null
-            for (step in script) {
-                val isReset = step.compact() == "ATZ"
-                val reply = exchange(step, if (isReset) resetTimeout else defaultTimeout)
-                if (reply.any { it.trim() == "?" }) throw AdapterException("Adapter rejected '$step'")
-                reply.firstOrNull { it.contains("ELM", ignoreCase = true) }?.let { banner = it }
-            }
-            AdapterIdentity(banner)
-        }
+    public suspend fun initialize(script: List<String>): AdapterIdentity = lock.withLock {
+        note(SessionEvents.INIT_START, "${script.size} commands")
+        runInit(script)
+    }
+
+    /**
+     * Initialises the adapter again with the script given to [initialize] (or [applyScript] after it), on the same link.
+     * Forgets the selected header. [reason] goes into the log.
+     *
+     * @throws IllegalStateException if the driver was never initialised.
+     */
+    public suspend fun reinitialize(reason: String): AdapterIdentity = lock.withLock { reinitLocked(reason) }
+
+    /**
+     * Sends [send] with the tolerance rules of [initialize] and makes [script] the script that a re-initialisation runs from
+     * now on. The session uses it to move from the probing configuration to the polling one without a reset.
+     */
+    public suspend fun applyScript(script: List<String>, send: List<String>): Unit = lock.withLock {
+        for (step in send) runStep(step)
+        activeScript = script
+        expect(script)
+    }
 
     /**
      * Sends a diagnostic request to one ECU by its physical request identifier.
      *
+     * If the reply shows that the adapter reset itself, the adapter is initialised again and the request is sent once more.
+     *
      * @param expectedResponses when set, tells the adapter to stop waiting after that many replies,
      *   which removes the adapter's timeout from every poll.
+     * @throws AdapterResetException when the adapter resets again right after being initialised again.
      */
     public suspend fun request(
         requestId: Int,
@@ -116,18 +257,18 @@ public class Elm327Driver(
     ): ElmResponse = lock.withLock {
         require(!extendedIds) { "29-bit header selection is not implemented yet" }
         require(expectedResponses == null || expectedResponses in 1..15) { "expectedResponses must be 1..15" }
-        if (currentHeader != requestId) {
-            val header = requestId.toString(16).uppercase().padStart(3, '0')
-            val reply = exchange("ATSH$header", timeout)
-            if (reply.none { it.compact() == "OK" }) throw AdapterException("Adapter refused header $header: $reply")
-            currentHeader = requestId
-        }
-        val suffix = expectedResponses?.toString(16)?.uppercase().orEmpty()
-        decoder.decode(exchange(payload.toHex() + suffix, timeout))
+        val first = attempt(requestId, payload, expectedResponses, timeout)
+        if (first.response != null) return@withLock first.response
+        val hint = checkNotNull(first.resetHint)
+        counters = counters.copy(adapterResets = counters.adapterResets + 1)
+        note(SessionEvents.ADAPTER_RESET, hint)
+        reinitLocked("the adapter reset itself: $hint")
+        val second = attempt(requestId, payload, expectedResponses, timeout)
+        second.response ?: throw AdapterResetException(checkNotNull(second.resetHint))
     }
 
     override suspend fun request(requestId: Int, payload: ByteArray, expectedResponses: Int?): ElmResponse =
-        request(requestId, payload, expectedResponses, defaultTimeout)
+        request(requestId, payload, expectedResponses, config.commandTimeout)
 
     public fun stop() {
         reader.cancel()
@@ -140,17 +281,247 @@ public class Elm327Driver(
         responses.close()
     }
 
-    private suspend fun exchange(text: String, timeout: Duration): List<String> {
+    // Initialisation -----------------------------------------------------------------------------------------
+
+    private suspend fun reinitLocked(reason: String): AdapterIdentity {
+        checkNotNull(activeScript) { "The adapter was never initialised" }
+        counters = counters.copy(reinits = counters.reinits + 1)
+        note(SessionEvents.REINIT, reason)
+        return runInit(activeScript!!)
+    }
+
+    private suspend fun runInit(script: List<String>): AdapterIdentity {
+        currentHeader = null
+        if (config.warmUp) warmUp()
+        var banner: String? = null
+        val skipped = ArrayList<String>()
+        var echoWasSwitchedOff = false
+        var echoPersists = false
+        for (step in script) {
+            val outcome = runStep(step)
+            if (outcome.unsupported) skipped += step
+            outcome.banner?.let { banner = it }
+            if (step.compact() == "ATE0") {
+                echoWasSwitchedOff = true
+            } else if (echoWasSwitchedOff && outcome.echoed) {
+                echoPersists = true
+            }
+        }
+        activeScript = script
+        expect(script)
+        // An adapter that says OK to ATE0 and echoes anyway (some clones) must not be taken for a reset on every command.
+        if (echoPersists) echoIsOff = false
+        initialised = true
+        // Whatever the adapter said while it was being set up (a late banner) is not a sign of a reset during polling.
+        unsolicitedReset = false
+        note(SessionEvents.INIT_END, if (skipped.isEmpty()) "ok" else "ok, unsupported: ${skipped.joinToString(" ")}")
+        return AdapterIdentity(banner, unsupported.toList())
+    }
+
+    /**
+     * The echo switched off twice. The replies are worthless; the point is to drain and to quiet the adapter.
+     *
+     * Deliberately no bare carriage return: an ELM327 answers one by repeating its previous command, and on a fresh link that
+     * command was sent by whoever used the adapter last (another app), so it could be anything, including a write. KnightLink
+     * is read-only towards the vehicle and must never replay a command it did not choose.
+     */
+    private suspend fun warmUp() {
+        val steps = listOf("ATE0", "ATE0")
+        for ((index, step) in steps.withIndex()) {
+            if (index > 0) delay(config.warmUpDelay)
+            try {
+                exchange(step, minOf(config.commandTimeout, WARM_UP_TIMEOUT))
+            } catch (_: AdapterTimeoutException) {
+                // An adapter that is still starting up may not answer yet; the script that follows will tell.
+            }
+        }
+        note(SessionEvents.INIT_STEP, "warm-up done")
+    }
+
+    private class StepOutcome(val banner: String?, val unsupported: Boolean, val echoed: Boolean)
+
+    private suspend fun runStep(step: String): StepOutcome {
+        val isReset = step.compact() == "ATZ"
+        val reply = exchange(step, if (isReset) config.resetTimeout else config.commandTimeout)
+        val rejected = reply.lines.any { it.trim() == "?" }
+        if (rejected && isEssential(step)) {
+            note(SessionEvents.INIT_STEP, "$step -> rejected, essential")
+            throw AdapterException("Adapter rejected '$step'")
+        }
+        if (rejected) {
+            unsupported += step
+            note(SessionEvents.INIT_STEP, "$step -> not supported, skipped")
+        } else {
+            note(SessionEvents.INIT_STEP, "$step -> ${reply.lines.firstOrNull()?.take(MAX_LOGGED_REPLY).orEmpty()}")
+        }
+        // The adapter prints its banner after a reset and may not be ready for the next command at once.
+        if (isReset) delay(config.postResetDelay)
+        return StepOutcome(reply.lines.firstOrNull { it.contains("ELM", ignoreCase = true) }, rejected, reply.echoed)
+    }
+
+    private fun isEssential(step: String): Boolean {
+        val key = step.compact()
+        return config.essentialCommands.any { key.startsWith(it.compact()) }
+    }
+
+    /** Remembers what the script set up, so a later reply can be told apart from one by an adapter that lost those settings. */
+    private fun expect(script: List<String>) {
+        var echoOff = false
+        var headersOn = false
+        for (step in script) {
+            when (step.compact()) {
+                "ATZ", "ATD" -> {
+                    echoOff = false
+                    headersOn = false
+                }
+                "ATE0" -> echoOff = true
+                "ATE1" -> echoOff = false
+                "ATH1" -> headersOn = true
+                "ATH0" -> headersOn = false
+            }
+        }
+        echoIsOff = echoOff
+        headersAreOn = headersOn
+    }
+
+    // Requests -----------------------------------------------------------------------------------------------
+
+    private class Attempt(val response: ElmResponse?, val resetHint: String?)
+
+    private suspend fun attempt(requestId: Int, payload: ByteArray, expectedResponses: Int?, timeout: Duration): Attempt {
+        if (currentHeader != requestId) {
+            val header = requestId.toString(16).uppercase().padStart(3, '0')
+            val reply = exchange("ATSH$header", timeout)
+            resetHint(reply, diagnostic = false)?.let { return Attempt(null, it) }
+            if (reply.lines.none { it.compact() == "OK" }) throw AdapterException("Adapter refused header $header: ${reply.lines}")
+            currentHeader = requestId
+        }
+        val suffix = expectedResponses?.toString(16)?.uppercase().orEmpty()
+        lastRequestStart?.let { start ->
+            val wait = config.minRequestInterval - start.elapsedNow()
+            if (wait.isPositive()) delay(wait)
+        }
+        lastRequestStart = config.timeSource.markNow()
+        val reply = exchange(payload.toHex() + suffix, timeout)
+        resetHint(reply, diagnostic = true)?.let { return Attempt(null, it) }
+        val response = decoder.decode(reply.lines)
+        countStatuses(response, requestId)
+        return Attempt(response, null)
+    }
+
+    /** A sign in [reply] that the adapter lost its settings since the init script ran, in words; null when there is none. */
+    private fun resetHint(reply: Reply, diagnostic: Boolean): String? {
+        if (!config.detectResets || !initialised) return null
+        val unsolicited = unsolicitedReset
+        unsolicitedReset = false
+        if (unsolicited) return "the adapter printed its start-up banner between two commands"
+        if (reply.echoed && echoIsOff) return "the command was echoed although echo is off"
+        if (reply.lines.any { it.contains(BANNER, ignoreCase = true) }) return "the reply holds the adapter's start-up banner"
+        if (reply.lines.any { isLowVoltageReset(it) }) return "the adapter reported LV RESET"
+        if (diagnostic && headersAreOn && reply.lines.any(::isHeaderlessData)) return "the reply has no CAN headers although headers are on"
+        return null
+    }
+
+    private fun isLowVoltageReset(line: String): Boolean = (parser.parse(line) as? ElmLine.Status)?.status == ElmStatus.LV_RESET
+
+    /** Hex digits only, and not a frame (which needs headers): what an adapter with headers off prints for a reply. */
+    private fun isHeaderlessData(line: String): Boolean {
+        if (parser.parse(line) !is ElmLine.Text) return false
+        val compact = line.compact()
+        return compact.length >= 2 && compact.all { it in '0'..'9' || it in 'A'..'F' }
+    }
+
+    private suspend fun countStatuses(response: ElmResponse, requestId: Int) {
+        val id = requestId.toString(16).uppercase()
+        response.busFault?.let { fault ->
+            val count = counters.busFaults + 1
+            counters = counters.copy(busFaults = count)
+            // Every one is counted, but a car with a dead bus would otherwise fill the log with one line per poll.
+            if (shouldLog(count)) note(SessionEvents.BUS_FAULT, "${fault.name} answering $id (count $count)")
+        }
+        if (ElmStatus.BUFFER_FULL in response.statuses) {
+            val count = counters.bufferFull + 1
+            counters = counters.copy(bufferFull = count)
+            if (shouldLog(count)) note(SessionEvents.BUFFER_FULL, "adapter buffer full (count $count)")
+        }
+    }
+
+    private fun shouldLog(count: Int): Boolean = count <= LOG_FIRST || count % LOG_EVERY == 0
+
+    // One exchange -------------------------------------------------------------------------------------------
+
+    private class Reply(val lines: List<String>, val echoed: Boolean)
+
+    /** One command and its reply, with the one resend that STOPPED earns. */
+    private suspend fun exchange(text: String, timeout: Duration): Reply {
+        val first = exchangeOnce(text, timeout)
+        if (first.lines.none(::isStopped)) return first
+        counters = counters.copy(resends = counters.resends + 1)
+        note(SessionEvents.RESEND, "'${text.trim()}' was answered with STOPPED; sending it again")
+        delay(config.stoppedRetryDelay)
+        return exchangeOnce(text, timeout)
+    }
+
+    private fun isStopped(line: String): Boolean = (parser.parse(line) as? ElmLine.Status)?.status == ElmStatus.STOPPED
+
+    private suspend fun exchangeOnce(text: String, timeout: Duration): Reply {
+        // The only write to the adapter is below, so this is the one place the read-only guarantee is enforced.
+        ReadOnlyPolicy.violation(text)?.let { reason ->
+            note(SessionEvents.INIT_STEP, "refused (read-only): $reason")
+            throw ReadOnlyViolationException("Refused to send a command: $reason")
+        }
         disconnection?.let { throw it }
-        // Anything still queued belongs to a command that timed out earlier.
-        while (responses.tryReceive().isSuccess) Unit
+        framerLock.withLock {
+            // A partial line belongs to a command that was given up on; anything queued is a reply nobody is waiting for.
+            framer.reset()
+            while (true) {
+                val stale = responses.tryReceive().getOrNull() ?: break
+                if (stale.any { it.contains(BANNER, ignoreCase = true) || isLowVoltageReset(it) }) unsolicitedReset = true
+            }
+        }
         stream.write((text + "\r").encodeToByteArray())
-        // receiveCatching, not receive: a closed channel is the stream ending, which is not an ordinary failure to wait out.
-        val result = withTimeoutOrNull(timeout) { responses.receiveCatching() } ?: throw AdapterTimeoutException(text, timeout)
-        val lines = result.getOrNull() ?: throw checkNotNull(disconnection) { "responses closed without a reason" }
+        val lines = awaitReply(text, timeout)
         val sent = text.compact()
-        return lines.filterNot { it.compact() == sent }
+        val echoed = sent.isNotEmpty() && lines.any { it.compact() == sent }
+        return Reply(lines.filterNot { it.compact() == sent }, echoed)
+    }
+
+    private suspend fun awaitReply(text: String, timeout: Duration): List<String> {
+        var waited = timeout
+        var result = withTimeoutOrNull(timeout) { responses.receiveCatching() }
+        if (result == null && config.searchingTimeout > timeout && isSearching()) {
+            // The adapter is trying protocols one after the other, which takes seconds; the shorter wait would give up on a working car.
+            val extra = config.searchingTimeout - timeout
+            counters = counters.copy(searchingWaits = counters.searchingWaits + 1)
+            note(SessionEvents.SEARCHING, "the adapter is searching for the protocol; waiting up to ${config.searchingTimeout} for '${text.trim()}'")
+            waited = config.searchingTimeout
+            result = withTimeoutOrNull(extra) { responses.receiveCatching() }
+        }
+        // receiveCatching, not receive: a closed channel is the stream ending, which is not an ordinary failure to wait out.
+        val received = result ?: throw AdapterTimeoutException(text, waited)
+        return received.getOrNull() ?: throw checkNotNull(disconnection) { "responses closed without a reason" }
+    }
+
+    private suspend fun isSearching(): Boolean = framerLock.withLock { framer.pending().contains(SEARCHING_WORD, ignoreCase = true) }
+
+    private suspend fun note(name: String, detail: String) {
+        try {
+            events.emit(name, detail)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // A broken log must not break the conversation with the adapter.
+        }
     }
 
     private fun String.compact(): String = filterNot { it.isWhitespace() }.uppercase()
+
+    private companion object {
+        const val BANNER = "ELM327"
+        const val SEARCHING_WORD = "SEARCHING"
+        const val MAX_LOGGED_REPLY = 40
+        const val LOG_FIRST = 3
+        const val LOG_EVERY = 25
+        val WARM_UP_TIMEOUT: Duration = 1500.milliseconds
+    }
 }
