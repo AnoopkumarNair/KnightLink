@@ -108,7 +108,13 @@ class FullStackSimulationTest {
             assertEquals("sim/${file.nameWithoutExtension}", simulation.id)
             val catalog = catalogFor(simulation.definition)
             val vehicle = simulation.buildVehicle()
-            assertEquals(catalog.ecus.map { it.requestCanId }.toSet(), vehicle.ecus.map { it.requestId }.toSet())
+            // A scenario may hold control units the definition does not know (the full scan finds those), but never lacks one it names.
+            assertTrue(
+                vehicle.ecus.map {
+                    it.requestId
+                }.toSet().containsAll(catalog.ecus.map { it.requestCanId }),
+                "${simulation.id}: lacks an ECU of its definition",
+            )
             assertTrue(simulation.timeline.all { step -> simulation.ecus.any { it.id == step.ecu } }, "${simulation.id}: timeline names an unknown ECU")
         }
     }

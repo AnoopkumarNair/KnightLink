@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -42,9 +43,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import knightlink.app.R
 import knightlink.app.ble.LastAdapter
+import knightlink.app.fraction
 import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.LiveValue
 import knightlink.app.session.RecordingsSummary
+import knightlink.app.session.ScanStatus
 import knightlink.app.session.UiState
 import knightlink.app.session.ValueGroup
 import knightlink.app.session.VehicleSummary
@@ -63,7 +66,13 @@ class ConnectionActions(
     val onConnectLast: (LastAdapter) -> Unit,
     val onChooseAdapter: () -> Unit,
     val onDisconnect: () -> Unit,
+    val onStartScan: () -> Unit = {},
+    val onCancelScan: () -> Unit = {},
+    val onDismissScan: () -> Unit = {},
 )
+
+/** What the drive-data card shows and can do: whether the phone's location is being recorded, and how to allow it. */
+class DriveDataActions(val locationAllowed: Boolean, val onAllowLocation: () -> Unit)
 
 /**
  * The one screen. Portrait: a single scrolling list (cards, then the live values). Landscape: the cards on the left, the live
@@ -80,6 +89,7 @@ fun HomeScreen(
     onShareLatest: () -> Unit,
     onShareLog: () -> Unit,
     modifier: Modifier = Modifier,
+    driveData: DriveDataActions = DriveDataActions(locationAllowed = false, onAllowLocation = {}),
 ) {
     // Grouping is a function of the values only; it is redone when they change, not on every recomposition.
     val groups = remember(state.liveValues) { groupByPrefix(state.liveValues) }
@@ -88,7 +98,7 @@ fun HomeScreen(
         if (maxWidth >= WIDE_LAYOUT_MIN_WIDTH) {
             Row(Modifier.fillMaxSize()) {
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                    summaryItems(state, recordings, lastAdapter, actions, onShareLatest, onShareLog)
+                    summaryItems(state, recordings, lastAdapter, actions, driveData, onShareLatest, onShareLog)
                 }
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
                     liveItems(groups)
@@ -96,7 +106,7 @@ fun HomeScreen(
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                summaryItems(state, recordings, lastAdapter, actions, onShareLatest, onShareLog)
+                summaryItems(state, recordings, lastAdapter, actions, driveData, onShareLatest, onShareLog)
                 liveItems(groups)
             }
         }
@@ -108,16 +118,18 @@ private fun LazyListScope.summaryItems(
     recordings: RecordingsSummary,
     lastAdapter: LastAdapter?,
     actions: ConnectionActions,
+    driveData: DriveDataActions,
     onShareLatest: () -> Unit,
     onShareLog: () -> Unit,
 ) {
-    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, lastAdapter, actions) }
-    state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle) } }
+    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
+    state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
+    item(key = "drive-data", contentType = "card") { DriveDataCard(driveData) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
 }
 
 @Composable
-private fun ConnectionCard(status: ConnectionStatus, lastAdapter: LastAdapter?, actions: ConnectionActions) {
+private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapter: LastAdapter?, actions: ConnectionActions) {
     // LocalResources, unlike LocalContext.current.resources, is invalidated by a configuration change, so the text follows a language change.
     val resources = LocalResources.current
     val idle = status == ConnectionStatus.Idle
@@ -148,6 +160,7 @@ private fun ConnectionCard(status: ConnectionStatus, lastAdapter: LastAdapter?, 
                     Text(stringResource(R.string.action_start_demo))
                 }
             } else {
+                if (status == ConnectionStatus.Live) ScanSection(scan, resources, actions)
                 // One button for both kinds of link.
                 Button(onClick = actions.onDisconnect, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.action_disconnect))
@@ -157,8 +170,57 @@ private fun ConnectionCard(status: ConnectionStatus, lastAdapter: LastAdapter?, 
     }
 }
 
+/** The full scan on the connection card: the button while the car is live, then progress (or the pause notice), then what it found. */
 @Composable
-private fun VehicleCard(vehicle: VehicleSummary) {
+private fun ScanSection(scan: ScanStatus, resources: android.content.res.Resources, actions: ConnectionActions) {
+    val text = scan.text(resources)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (text != null) {
+            // A live region: a screen reader says the progress, and above all the pause notice, without being asked.
+            Text(
+                text,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        }
+        when (scan) {
+            is ScanStatus.Running -> {
+                scan.fraction()?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
+                OutlinedButton(onClick = actions.onCancelScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_cancel_scan)) }
+            }
+            ScanStatus.Starting ->
+                OutlinedButton(onClick = actions.onCancelScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_cancel_scan)) }
+            ScanStatus.Unavailable -> Unit
+            ScanStatus.Ready, is ScanStatus.Finished, is ScanStatus.Failed -> {
+                OutlinedButton(onClick = actions.onStartScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_full_scan)) }
+                if (scan == ScanStatus.Ready) Text(stringResource(R.string.scan_hint), style = MaterialTheme.typography.bodySmall)
+                if (scan !is ScanStatus.Ready) {
+                    OutlinedButton(onClick = actions.onDismissScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_dismiss_scan)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DriveDataCard(driveData: DriveDataActions) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.drive_data_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.drive_data_motion), style = MaterialTheme.typography.bodyMedium)
+            Text(
+                stringResource(if (driveData.locationAllowed) R.string.drive_data_location_on else R.string.drive_data_location_off),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (!driveData.locationAllowed) {
+                OutlinedButton(onClick = driveData.onAllowLocation, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_allow_location)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VehicleCard(vehicle: VehicleSummary, pollingRate: Double?) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(stringResource(R.string.vehicle_title), style = MaterialTheme.typography.titleMedium)
@@ -185,6 +247,7 @@ private fun VehicleCard(vehicle: VehicleSummary) {
                 vehicle.requestsPerSecond?.let { stringResource(R.string.vehicle_rate, "%.1f".format(it)) } ?: stringResource(R.string.vehicle_rate_unknown),
                 style = MaterialTheme.typography.bodyMedium,
             )
+            pollingRate?.let { Text(stringResource(R.string.vehicle_polling_rate, "%.1f".format(it)), style = MaterialTheme.typography.bodyMedium) }
             Text(stringResource(R.string.vehicle_fuel, stringResource(vehicle.fuelMethod.textRes())), style = MaterialTheme.typography.bodyMedium)
             Text(stringResource(if (vehicle.hasDpfData) R.string.vehicle_dpf_yes else R.string.vehicle_dpf_no), style = MaterialTheme.typography.bodyMedium)
             Text(

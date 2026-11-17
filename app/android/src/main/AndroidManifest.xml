@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
       Foreground service permissions. They are declared for the real adapter link, which runs as a connectedDevice
@@ -11,6 +12,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- Android 13 and later: asked for at runtime; the app works without it, only the notification is missing. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      Optional: the phone's position is recorded next to the drive's data when the user allows it (and only then). The Bluetooth module
+      declares this permission for Android 11 and older only, so the limit is removed here. The position stays in the app's private
+      recordings; a shared copy has it rounded to about a kilometre.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:remove="android:maxSdkVersion" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:allowBackup="false"

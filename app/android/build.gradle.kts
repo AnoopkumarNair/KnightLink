@@ -71,6 +71,7 @@ dependencies {
     implementation(projects.core.protocol)
     implementation(projects.core.recorder)
     implementation(projects.core.runtime)
+    implementation(projects.core.scan)
     implementation(projects.core.signals)
     implementation(projects.core.sim)
     implementation(projects.core.telemetry)

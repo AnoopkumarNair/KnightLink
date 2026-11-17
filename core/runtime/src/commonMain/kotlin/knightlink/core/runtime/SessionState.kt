@@ -67,3 +67,27 @@ public sealed interface SessionState {
     /** [VehicleSession.stop] has completed (or the scope the session runs in was cancelled). Terminal. */
     public data object Stopped : SessionState
 }
+
+/**
+ * Where the full scan is, next to the session's own [SessionState]. The scan runs inside the session, between two stretches of polling, and
+ * only while the car is parked.
+ */
+public sealed interface ScanState {
+    /** This session has no sweep plan, so it cannot scan. */
+    public data object Unavailable : ScanState
+
+    /** No scan has run in this session yet, or the last one was dismissed. */
+    public data object Idle : ScanState
+
+    /** A scan was asked for and starts as soon as the polling loop has handed the adapter over. */
+    public data object Starting : ScanState
+
+    /** The scan is running; [progress] says where, and whether it waits for a car that moves. */
+    public data class Running(val progress: knightlink.core.scan.ScanProgress) : ScanState
+
+    /** The scan ended; the result says how. */
+    public data class Finished(val result: knightlink.core.scan.ScanResult) : ScanState
+
+    /** The scan was not started or failed at once; [reason] is in words. */
+    public data class Failed(val reason: String) : ScanState
+}

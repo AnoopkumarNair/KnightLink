@@ -8,7 +8,11 @@ import knightlink.core.common.SessionEvents
 import knightlink.core.common.emit
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmStatus
+import knightlink.core.scan.DidSweepPlan
+import knightlink.core.scan.FullScan
+import knightlink.core.scan.ScanRefusedException
 import knightlink.core.scheduler.DiagnosticRequester
+import knightlink.core.scheduler.PollItem
 import knightlink.core.scheduler.PollResult
 import knightlink.core.scheduler.PollScheduler
 import knightlink.core.scheduler.PollingLoop
@@ -27,13 +31,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -44,6 +51,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
@@ -92,8 +100,13 @@ public class VehicleSession(
     private val events: SessionEventSink = SessionEventSink.None,
 ) {
     public data class Config(
-        /** Wanted interval per parameter; return null to leave a parameter out. The adapter's speed may make the achieved rate lower. */
-        val pollPeriod: (CompiledParameter) -> Duration? = { 1.seconds },
+        /**
+         * Wanted interval per parameter; return null to leave a parameter out. The default is the period of the parameter's
+         * [knightlink.core.signals.PollTier], which its definition names. The adapter's speed may make the achieved rate lower.
+         */
+        val pollPeriod: (CompiledParameter) -> Duration? = { it.tier.period },
+        /** Most PIDs asked in one service 01 request; 1 asks every PID alone. See [PollScheduler]. */
+        val maxBatch: Int = PollScheduler.MAX_BATCH,
         /**
          * Catalog id of the ECU that is asked for parameters the definitions do not tie to one ECU, when it answers them.
          * Null means the first ECU of the catalog.
@@ -120,8 +133,15 @@ public class VehicleSession(
         val maxReinits: Int = 2,
         /** Wait between probes while no ECU answers. */
         val ignitionProbeInterval: Duration = 4.seconds,
+        /** What a full scan sweeps (see [startScan]); null means this session cannot scan. */
+        val scanPlan: DidSweepPlan? = null,
+        /** The scan's own settings: pace, how often the speed is read, and so on. */
+        val scan: FullScan.Config = FullScan.Config(),
+        /** While a scan waits for a car that moves, the session polls normally for this long between two readings of the speed. */
+        val scanPauseSlice: Duration = 5.seconds,
     ) {
         init {
+            require(maxBatch in 1..PollScheduler.MAX_BATCH) { "maxBatch must be 1..${PollScheduler.MAX_BATCH}" }
             require(initialBackoff > Duration.ZERO) { "initialBackoff must be positive" }
             require(maxBackoff >= initialBackoff) { "maxBackoff must not be shorter than initialBackoff" }
             require(backoffFactor >= 1.0) { "backoffFactor must be at least 1" }
@@ -129,6 +149,7 @@ public class VehicleSession(
             require(silenceWindow > Duration.ZERO) { "silenceWindow must be positive" }
             require(maxReinits >= 1) { "maxReinits must be at least 1" }
             require(ignitionProbeInterval > Duration.ZERO) { "ignitionProbeInterval must be positive" }
+            require(scanPauseSlice > Duration.ZERO) { "scanPauseSlice must be positive" }
         }
     }
 
@@ -160,6 +181,18 @@ public class VehicleSession(
     @Volatile
     private var busFaultSinceAnswer: ElmStatus? = null
 
+    private val _rates = MutableStateFlow(PollRates.EMPTY)
+    private val _scan = MutableStateFlow<ScanState>(if (config.scanPlan == null) ScanState.Unavailable else ScanState.Idle)
+
+    // A request for a scan reaches the polling loop through this channel; CONFLATED, so asking twice is asking once.
+    private val scanRequests = Channel<Unit>(Channel.CONFLATED)
+
+    @Volatile
+    private var scanJob: Deferred<*>? = null
+
+    /** The data identifiers the last scan found, polled raw from then on; kept across reconnects, like [knowledge]. */
+    private var discoveryItems: List<PollItem> = emptyList()
+
     /** Where the session is in its life. */
     public val state: StateFlow<SessionState> = _state.asStateFlow()
 
@@ -168,6 +201,12 @@ public class VehicleSession(
      * [knightlink.core.telemetry.TimedReading.at] shows how old it is.
      */
     public val telemetry: StateFlow<TelemetrySnapshot> = _telemetry.asStateFlow()
+
+    /** Where the full scan is. See [startScan]. */
+    public val scan: StateFlow<ScanState> = _scan.asStateFlow()
+
+    /** What polling achieved over the last few seconds: requests per second and each signal's update rate. Refreshed about once a second. */
+    public val rates: StateFlow<PollRates> = _rates.asStateFlow()
 
     /**
      * Every poll result, for diagnostics and recording, including failed requests. No replay: a collector sees
@@ -187,6 +226,36 @@ public class VehicleSession(
     /** Starts connecting. Does nothing if the session was already started, has failed or has been stopped. */
     public fun start() {
         main.start()
+    }
+
+    /**
+     * Asks for a full scan: a one-shot, parked, read-only sweep of everything the car answers (see [FullScan]). Polling stops while it runs, and
+     * restarts afterwards with the data identifiers the scan found added as raw items (see [discoveryPollItems]). Progress is in [scan].
+     *
+     * @return false, and does nothing, when the session has no sweep plan, is not polling the car, or a scan is under way already
+     */
+    public fun startScan(): Boolean {
+        if (config.scanPlan == null) return false
+        if (_state.value !is SessionState.Polling) return false
+        val current = _scan.value
+        if (current is ScanState.Starting || current is ScanState.Running) return false
+        _scan.value = ScanState.Starting
+        return scanRequests.trySend(Unit).isSuccess
+    }
+
+    /** Stops a running scan (or withdraws a request that has not started); polling goes on. The scan's partial result is kept in [scan]. Does nothing otherwise. */
+    public fun cancelScan() {
+        if (_scan.value is ScanState.Starting) {
+            scanRequests.tryReceive()
+            _scan.value = ScanState.Idle
+        }
+        scanJob?.cancel()
+    }
+
+    /** Clears a finished or failed scan from [scan]. Does nothing while one is under way. */
+    public fun dismissScan() {
+        val current = _scan.value
+        if (current is ScanState.Finished || current is ScanState.Failed) _scan.value = if (config.scanPlan == null) ScanState.Unavailable else ScanState.Idle
     }
 
     /**
@@ -297,6 +366,9 @@ public class VehicleSession(
 
     /** Initialise, probe (or reuse), then poll until something throws. Never returns normally. */
     private suspend fun drive(stream: ByteStream, driverScope: CoroutineScope, onPolling: () -> Unit) {
+        // A scan asked for on an earlier connection is not started on this one, possibly much later and with the car on the road.
+        scanRequests.tryReceive()
+        if (_scan.value is ScanState.Starting) _scan.value = ScanState.Failed("The connection was lost before the scan could start")
         setState(SessionState.Initialising)
         // The rate ceiling runs on the session's clock, so it measures the same time as everything else here.
         val driver = Elm327Driver(stream, driverScope, config = config.driver.copy(timeSource = timeSource), events = events)
@@ -310,14 +382,15 @@ public class VehicleSession(
         }
         val items = confirmedPollItems(catalog, known.coverage, primaryEcu, config.pollPeriod)
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
-        val scheduler = PollScheduler(items)
+        val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(discoveryItems) }
         val loop = PollingLoop(requester, scheduler, timeSource)
         val decoder = TelemetryDecoder(catalog)
 
         onPolling()
         setState(SessionState.Polling(known.report, known.coverage))
         // With nothing to ask for, silence means nothing: initialising the adapter again would only disturb a link that works.
-        pollWithRecovery(driver, loop, scheduler, decoder, known, watchSilence = items.isNotEmpty())
+        // Items that are asked once leave nothing to watch after the first round.
+        pollWithRecovery(driver, loop, scheduler, decoder, known, watchSilence = items.any { it.period.isFinite() })
     }
 
     /**
@@ -360,12 +433,88 @@ public class VehicleSession(
         var failedReinits = 0
         while (true) {
             val answersBefore = answers
-            val trouble = pollUntilTrouble(loop, scheduler, decoder, watchSilence)
+            val end = pollUntilTrouble(loop, scheduler, decoder, watchSilence, listenForScan = true)
+            if (end is PollEnd.ScanRequested) {
+                runScan(driver, loop, scheduler, decoder, watchSilence)
+                lastAnswer = timeSource.markNow()
+                continue
+            }
+            val trouble = (end as? PollEnd.Trouble)?.reason ?: continue
             // Something answered since the last re-initialisation: that outage is over, this is a new one.
             if (answers > answersBefore) failedReinits = 0
             reinitialiseOrGiveUp(driver, trouble, failedReinits).also { failedReinits = it }
             lastAnswer = timeSource.markNow()
             setState(SessionState.Polling(known.report, known.coverage))
+        }
+    }
+
+    // The full scan -------------------------------------------------------------------------------------------
+
+    /**
+     * Runs the scan that [startScan] asked for. The adapter belongs to the scan meanwhile: the polling loop is not running. When the car
+     * moves, the scan puts the adapter back and calls the hook below, which polls normally for a while before the scan looks at the
+     * speed again. Afterwards the identifiers the scan found are added to the poll list.
+     */
+    private suspend fun runScan(driver: Elm327Driver, loop: PollingLoop, scheduler: PollScheduler, decoder: TelemetryDecoder, watchSilence: Boolean) {
+        val plan = config.scanPlan
+        if (plan == null) {
+            _scan.value = ScanState.Failed("This session has no sweep plan")
+            return
+        }
+        val scan = FullScan(
+            link = driver,
+            plan = plan,
+            events = events,
+            timeSource = timeSource,
+            config = config.scan,
+            whileMoving = { _ ->
+                // Polling is what the car is for while it moves; a stretch of it, then the scan looks at the speed again. Trouble found here is
+                // met by the ordinary recovery when the scan has ended, so it is not handled in this hook.
+                pollUntilTrouble(loop, scheduler, decoder, watchSilence, limit = config.scanPauseSlice, listenForScan = false)
+            },
+        )
+        try {
+            coroutineScope {
+                val watcher = launch {
+                    scan.progress.collect { if (it.running) _scan.value = ScanState.Running(it) }
+                }
+                val job = async { scan.run() }
+                scanJob = job
+                try {
+                    job.await()
+                } catch (e: CancellationException) {
+                    // Only the scan was cancelled (by the user): the session itself is still alive and goes on polling.
+                    if (!currentCoroutineContext().isActive) throw e
+                } finally {
+                    scanJob = null
+                    watcher.cancel()
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ScanRefusedException) {
+            _scan.value = ScanState.Failed(e.message ?: "The scan was refused")
+            return
+        } catch (e: AdapterDisconnectedException) {
+            _scan.value = ScanState.Failed("The link was lost during the scan")
+            throw e
+        } catch (e: TransportException) {
+            _scan.value = ScanState.Failed("The link was lost during the scan")
+            throw e
+        } catch (e: Exception) {
+            // The adapter stopped answering, say: what the scan found so far is in its result; polling goes on and the silence watchdog judges the link.
+            note(SessionEvents.SCAN, "the scan failed: ${describe(e)}")
+        }
+        val result = scan.result.value
+        if (result == null) {
+            _scan.value = ScanState.Failed("The scan did not finish")
+            return
+        }
+        _scan.value = ScanState.Finished(result)
+        if (result.sweeps.isNotEmpty()) {
+            discoveryItems = discoveryPollItems(result, plan)
+            scheduler.replaceExtras(discoveryItems)
+            note(SessionEvents.SCAN, "polling ${discoveryItems.size} identifiers that the scan found, raw, about every ${discoveryPeriod(discoveryItems.size)}")
         }
     }
 
@@ -398,23 +547,61 @@ public class VehicleSession(
         }
     }
 
-    /** Polls until the silence window passes or the adapter fails repeatedly; returns what was noticed. A lost link throws instead. */
+    /** Why [pollUntilTrouble] returned. */
+    private sealed interface PollEnd {
+        /** The silence window passed, or the adapter kept failing. */
+        class Trouble(val reason: String) : PollEnd
+
+        /** A scan was asked for. */
+        data object ScanRequested : PollEnd
+
+        /** The time limit that the caller gave passed. */
+        data object TimeUp : PollEnd
+    }
+
+    /**
+     * Polls until the silence window passes or the adapter fails repeatedly (a [PollEnd.Trouble]), a scan is asked for (when [listenForScan]),
+     * or [limit] has passed. A lost link throws instead.
+     */
     private suspend fun pollUntilTrouble(
         loop: PollingLoop,
         scheduler: PollScheduler,
         decoder: TelemetryDecoder,
         watchSilence: Boolean,
-    ): String = coroutineScope {
+        limit: Duration? = null,
+        listenForScan: Boolean = false,
+    ): PollEnd = coroutineScope {
         // A silence backs every item off and a new collection of the loop starts its clock again: begin with a clean slate.
         scheduler.restart()
+        val meter = RateMeter(start = sessionStart.elapsedNow())
+        var ratesShown = sessionStart.elapsedNow()
+        var ratesLogged = ratesShown
         lastAnswer = timeSource.markNow()
         busFaultSinceAnswer = null
-        val trouble = CompletableDeferred<String>()
+        val trouble = CompletableDeferred<PollEnd>()
         val collector = launch {
             try {
-                loop.results().collect { publish(it, decoder) }
+                loop.results().collect { result ->
+                    publish(result, decoder, meter)
+                    val now = sessionStart.elapsedNow()
+                    if (now - ratesShown >= RATES_REFRESH) {
+                        ratesShown = now
+                        _rates.value = meter.rates(now, RATES_WINDOW)
+                        if (now - ratesLogged >= RATES_LOG_INTERVAL) {
+                            ratesLogged = now
+                            note(
+                                SessionEvents.RATES,
+                                meter.rates(now, RATES_LOG_INTERVAL).summary(
+                                    scheduler.singleRequestOnly.map {
+                                        it.toString(16).uppercase()
+                                    },
+                                ),
+                            )
+                        }
+                    }
+                }
             } catch (e: PollingStalledException) {
-                trouble.complete(unreachableOr("the adapter failed ${e.failures} requests in a row"))
+                trouble.complete(PollEnd.Trouble(unreachableOr("the adapter failed ${e.failures} requests in a row")))
             }
         }
         val watchdog = if (!watchSilence) {
@@ -425,15 +612,33 @@ public class VehicleSession(
                     delay(WATCHDOG_TICK)
                     val quiet = lastAnswer?.elapsedNow() ?: Duration.ZERO
                     if (quiet >= config.silenceWindow) {
-                        trouble.complete(unreachableOr("nothing answered for ${config.silenceWindow}"))
+                        trouble.complete(PollEnd.Trouble(unreachableOr("nothing answered for ${config.silenceWindow}")))
                         return@launch
                     }
                 }
             }
         }
+        val scanWatcher = if (!listenForScan) {
+            null
+        } else {
+            launch {
+                scanRequests.receive()
+                trouble.complete(PollEnd.ScanRequested)
+            }
+        }
+        val timer = if (limit == null) {
+            null
+        } else {
+            launch {
+                delay(limit)
+                trouble.complete(PollEnd.TimeUp)
+            }
+        }
         val reason = trouble.await()
         collector.cancelAndJoin()
         watchdog?.cancelAndJoin()
+        scanWatcher?.cancelAndJoin()
+        timer?.cancelAndJoin()
         reason
     }
 
@@ -443,8 +648,10 @@ public class VehicleSession(
         return "vehicle bus not reachable (${fault.name.replace('_', ' ')}); $reason"
     }
 
-    private suspend fun publish(result: PollResult, decoder: TelemetryDecoder) {
+    private suspend fun publish(result: PollResult, decoder: TelemetryDecoder, meter: RateMeter) {
         _pollResults.tryEmit(result)
+        // The meter counts every request sent, answered or not: it measures the load on the bus.
+        meter.request(sessionStart.elapsedNow(), result.items.size)
         val error = result.error
         // The link is gone: reconnect now instead of letting the loop count to its failure limit first.
         if (error is AdapterDisconnectedException || error is TransportException) throw error
@@ -457,7 +664,11 @@ public class VehicleSession(
         val readings = result.response?.messages.orEmpty()
             .filterIsInstance<DiagnosticResponse.Positive>()
             .flatMap(decoder::decode)
-        if (readings.isNotEmpty()) _telemetry.update { it.with(readings, sessionStart.elapsedNow()) }
+        if (readings.isNotEmpty()) {
+            val at = sessionStart.elapsedNow()
+            readings.forEach { meter.reading(it.signal.id, at) }
+            _telemetry.update { it.with(readings, at) }
+        }
     }
 
     private suspend fun setState(state: SessionState) {
@@ -537,5 +748,10 @@ public class VehicleSession(
 
         /** How often the silence watchdog looks at the clock. */
         val WATCHDOG_TICK: Duration = 250.milliseconds
+
+        /** How often [rates] is refreshed, how many seconds it averages over, and how often the rates are written to the log. */
+        val RATES_REFRESH: Duration = 1.seconds
+        val RATES_WINDOW: Duration = 10.seconds
+        val RATES_LOG_INTERVAL: Duration = 30.seconds
     }
 }

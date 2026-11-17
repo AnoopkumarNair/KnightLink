@@ -1,6 +1,7 @@
 package knightlink.app.data
 
 import knightlink.core.adapter.AdapterDefinition
+import knightlink.core.scan.DidSweepPlan
 import knightlink.core.signals.DefinitionException
 import knightlink.core.signals.DefinitionFile
 import knightlink.core.signals.DefinitionJson
@@ -57,6 +58,20 @@ class DefinitionStore(private val assets: AssetSource) {
         }
     }
 
+    /**
+     * What the full scan sweeps: `definitions/discovery/did-sweep.json`.
+     *
+     * @throws DefinitionStoreException if the file is missing or invalid.
+     */
+    fun sweepPlan(): DidSweepPlan {
+        val text = read(assets, "$DEFINITIONS_ROOT/$SWEEP_PLAN.json")
+        return try {
+            DidSweepPlan.parse(text)
+        } catch (e: IllegalArgumentException) {
+            throw DefinitionStoreException("Invalid sweep plan: ${e.message}", e)
+        }
+    }
+
     /** @throws DefinitionStoreException if the file is missing or invalid. */
     fun simulation(id: String): SimulationFile {
         if (!id.startsWith("$SIM_ROOT/")) throw DefinitionStoreException("'$id' is not a simulation scenario id")
@@ -104,6 +119,7 @@ class DefinitionStore(private val assets: AssetSource) {
     companion object {
         private const val DEFINITIONS_ROOT = "definitions"
         private const val SIM_ROOT = "sim"
+        private const val SWEEP_PLAN = "discovery/did-sweep"
         private const val VEHICLES_PREFIX = "vehicles/"
         private const val ADAPTERS_PREFIX = "adapters/"
         private const val JSON = ".json"

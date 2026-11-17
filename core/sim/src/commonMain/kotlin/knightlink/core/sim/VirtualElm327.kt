@@ -18,6 +18,10 @@ import kotlin.time.Duration
  * Models: echo, linefeed, space and header settings, header selection, functional vs physical
  * addressing, ISO-TP segmentation of long replies, the response-count suffix, `NO DATA`, and
  * delivery in small chunks with a configurable delay.
+ *
+ * The response-count suffix is modelled as a real adapter behaves: the adapter stops after that many CAN frames, so with a count of 1 a
+ * multi-frame reply is cut to its first frame and the adapter never sends flow control. A request for a reply longer than one frame
+ * must therefore be sent without the suffix.
  */
 public class VirtualElm327(
     private val vehicle: VirtualVehicle,
@@ -29,6 +33,11 @@ public class VirtualElm327(
         val chunkSize: Int = 20,
         /** Time the adapter takes to answer one command. */
         val responseDelay: Duration = Duration.ZERO,
+        /**
+         * Extra time a diagnostic request without a response count takes: the adapter cannot know that no further ECU will answer, so
+         * it listens until its timeout. A request with a count returns as soon as the replies are in.
+         */
+        val listenWithoutCount: Duration = Duration.ZERO,
     )
 
     private val channel = Channel<ByteArray>(Channel.UNLIMITED)
@@ -39,6 +48,15 @@ public class VirtualElm327(
     private var spaces = true
     private var headers = false
     private var header = VirtualVehicle.FUNCTIONAL_ADDRESS
+
+    // Which CAN identifiers the adapter listens to: after a reset only 7E8..7EF (the OBD responses), as on a real ELM327 on an 11-bit bus.
+    private var receiveFilter = DEFAULT_RECEIVE_FILTER
+    private var receiveMask = DEFAULT_RECEIVE_MASK
+
+    // Flow control: automatic (mode 0) answers the ECU it asked; in mode 1 the frames go to the identifier and carry the data set by the user.
+    private var flowControlMode = 0
+    private var flowControlHeader: Int? = null
+    private var flowControlData: String? = null
 
     /**
      * A status word the adapter answers every diagnostic request with instead of asking the vehicle (`CAN ERROR`, `UNABLE TO CONNECT`),
@@ -84,6 +102,8 @@ public class VirtualElm327(
                 reset()
             }
             delay(config.responseDelay)
+            val compact = command.filterNot { it.isWhitespace() }
+            if (config.listenWithoutCount.isPositive() && compact.length % 2 == 0 && compact.all { it.isHexDigit() }) delay(config.listenWithoutCount)
             // The link may have dropped while the adapter was "thinking": the answer is then lost, as on a real link.
             ensureLinked()
             // Characters are echoed as they arrive, so the echo setting in force before the command applies.
@@ -156,8 +176,24 @@ public class VirtualElm327(
             "S1" -> spaces = true
             "H0" -> headers = false
             "H1" -> headers = true
+            "AR" -> {
+                receiveFilter = DEFAULT_RECEIVE_FILTER
+                receiveMask = DEFAULT_RECEIVE_MASK
+            }
             else -> {
-                if (body.startsWith("SH")) {
+                if (body.startsWith("CF") && !body.startsWith("CFC")) {
+                    receiveFilter = hex3(body.substring(2)) ?: return listOf("?")
+                } else if (body.startsWith("CM")) {
+                    receiveMask = hex3(body.substring(2)) ?: return listOf("?")
+                } else if (body.startsWith("FCSH")) {
+                    flowControlHeader = hex3(body.substring(4)) ?: return listOf("?")
+                } else if (body.startsWith("FCSD")) {
+                    val data = body.substring(4)
+                    if (data.isEmpty() || data.length % 2 != 0 || !data.all { it.isHexDigit() }) return listOf("?")
+                    flowControlData = data
+                } else if (body.startsWith("FCSM")) {
+                    flowControlMode = body.substring(4).toIntOrNull()?.takeIf { it in 0..2 } ?: return listOf("?")
+                } else if (body.startsWith("SH")) {
                     val id = body.substring(2)
                     if (id.length != 3 || !id.all { it.isHexDigit() }) return listOf("?")
                     header = id.toInt(16)
@@ -176,24 +212,43 @@ public class VirtualElm327(
         if (request.isEmpty()) return listOf("?")
         busFault?.let { return listOf(it) }
 
-        var replies = vehicle.targets(header).mapNotNull { ecu -> ecu.respond(request)?.let { ecu.responseId to it } }
-        if (limit != null) replies = replies.take(limit)
+        // An ECU whose reply the adapter is not listening to is as good as silent.
+        val replies = vehicle.targets(header)
+            .filter { ecu -> (ecu.responseId xor receiveFilter) and receiveMask == 0 }
+            .mapNotNull { ecu -> ecu.respond(request)?.let { ecu.responseId to it } }
         if (replies.isEmpty()) return listOf("NO DATA")
-        return replies.flatMap { (id, payload) -> format(id, payload) }
+        // A long reply goes on after its first frame only if the ECU gets a flow-control frame it understands: user-defined flow control
+        // that is addressed to another identifier than the request leaves the ECU waiting for ever.
+        val flowControlWorks = flowControlMode != 1 || (flowControlHeader == header && flowControlData?.startsWith("30") == true)
+        if (limit ==
+            null
+        ) {
+            return replies.flatMap { (id, payload) -> format(id, payload, firstFrameOnly = !flowControlWorks && payload.size > SINGLE_FRAME_MAX) }
+        }
+
+        // The count is in CAN frames: a long reply is cut to its first frame, and the replies after that are not sent at all.
+        val lines = ArrayList<String>()
+        var frames = 0
+        for ((id, payload) in replies) {
+            if (frames >= limit) break
+            lines += format(id, payload, firstFrameOnly = payload.size > SINGLE_FRAME_MAX)
+            frames++
+        }
+        return lines
     }
 
-    private fun format(id: Int, payload: ByteArray): List<String> {
+    private fun format(id: Int, payload: ByteArray, firstFrameOnly: Boolean = false): List<String> {
         val separator = if (spaces) " " else ""
         fun bytes(data: ByteArray) = data.joinToString(separator) { byteArrayOf(it).toHex() }
         val idText = id.toString(16).uppercase().padStart(3, '0')
 
-        if (headers) return segment(payload).map { idText + separator + bytes(it) }
+        if (headers) return segment(payload).let { if (firstFrameOnly) it.take(1) else it }.map { idText + separator + bytes(it) }
         if (payload.size <= SINGLE_FRAME_MAX) return listOf(bytes(payload))
         // Headers off, long reply: the ELM prints the length, then numbered rows.
         val rows = listOf(payload.copyOfRange(0, FIRST_FRAME_DATA)) +
             payload.copyOfRange(FIRST_FRAME_DATA, payload.size).asList().chunked(SINGLE_FRAME_MAX).map { it.toByteArray() }
         return listOf(payload.size.toString(16).uppercase().padStart(3, '0')) +
-            rows.mapIndexed { i, row -> "${(i and 0x0F).toString(16).uppercase()}:$separator${bytes(row)}" }
+            rows.mapIndexed { i, row -> "${(i and 0x0F).toString(16).uppercase()}:$separator${bytes(row)}" }.let { if (firstFrameOnly) it.take(1) else it }
     }
 
     /** ISO 15765-2 segmentation into CAN frame payloads. */
@@ -219,12 +274,22 @@ public class VirtualElm327(
         spaces = true
         headers = false
         header = VirtualVehicle.FUNCTIONAL_ADDRESS
+        receiveFilter = DEFAULT_RECEIVE_FILTER
+        receiveMask = DEFAULT_RECEIVE_MASK
+        flowControlMode = 0
+        flowControlHeader = null
+        flowControlData = null
     }
+
+    /** An 11-bit identifier of exactly three hex digits, or null. */
+    private fun hex3(text: String): Int? = if (text.length == 3 && text.all { it.isHexDigit() }) text.toInt(16) else null
 
     private companion object {
         val OK = listOf("OK")
         const val SINGLE_FRAME_MAX = 7
         const val FIRST_FRAME_DATA = 6
+        const val DEFAULT_RECEIVE_FILTER = 0x7E8
+        const val DEFAULT_RECEIVE_MASK = 0x7F8
 
         /** Settings the simulator accepts without modelling their effect. */
         val ACCEPTED_PREFIXES = listOf("SP", "TP", "AT", "ST", "CAF", "CFC", "AL", "M", "WS")

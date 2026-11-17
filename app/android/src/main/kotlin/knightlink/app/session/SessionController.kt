@@ -2,10 +2,14 @@ package knightlink.app.session
 
 import knightlink.app.data.AppConfig
 import knightlink.app.data.DefinitionStore
+import knightlink.app.data.DefinitionStoreException
 import knightlink.core.common.SessionEventSink
+import knightlink.core.common.SessionEvents
+import knightlink.core.common.emit
 import knightlink.core.common.plus
 import knightlink.core.recorder.RecordingHeader
 import knightlink.core.recorder.RecordingTransport
+import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleSession
 import knightlink.core.signals.SignalCatalog
@@ -16,12 +20,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -54,6 +61,7 @@ import kotlin.time.TimeSource
  * @param staleAfter a value older than this is shown as stale
  * @param connectionLog the rolling text log that the session's events are also written to; null for none
  * @param sessionConfig the session's settings; the adapter definition's scripts and timing are put on top of them at each connect
+ * @param samples the phone's own sensors, recorded next to the link's traffic while a session runs; null for none
  */
 class SessionController(
     private val scope: CoroutineScope,
@@ -66,11 +74,16 @@ class SessionController(
     private val staleAfter: Duration = DEFAULT_STALE_AFTER,
     private val connectionLog: ConnectionLog? = null,
     private val sessionConfig: VehicleSession.Config = VehicleSession.Config(),
+    private val samples: SampleSource? = null,
 ) {
     /** One connection request, from [connect] to the end of [disconnect]. */
     private class Run(val scope: CoroutineScope) {
         @Volatile
         var session: VehicleSession? = null
+
+        /** Stops the phone's sensors; set while they run. */
+        @Volatile
+        var stopSamples: (() -> Unit)? = null
     }
 
     private val lock = Any()
@@ -107,6 +120,7 @@ class SessionController(
     suspend fun disconnect() {
         val run = synchronized(lock) { current } ?: return
         withContext(NonCancellable) {
+            run.stopSamples?.invoke()
             // The session first: it waits for its own teardown, so the stream is closed when this returns.
             run.session?.stop()
             run.scope.coroutineContext.job.cancelAndJoin()
@@ -127,8 +141,12 @@ class SessionController(
     private suspend fun start(run: Run, target: ConnectionTarget) {
         // The session's constructor validates its inputs too (the catalog against the config), so it belongs inside the try:
         // a throw there must show as Failed, not leave the screen on "Connecting".
+        var catalog: SignalCatalog? = null
+        var recorded: RecordingTransport? = null
         val session = try {
             val setup = prepare(target)
+            catalog = setup.catalog
+            recorded = setup.transport
             VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events)
         } catch (e: CancellationException) {
             throw e
@@ -141,8 +159,49 @@ class SessionController(
         run.scope.coroutineContext.ensureActive()
         val started = timeSource.markNow()
         run.session = session
-        run.scope.launch { publish(session, started) }
+        run.scope.launch { publish(session, started, signalPeriods(checkNotNull(catalog))) }
+        run.scope.launch { keepScanResults(session) }
+        startSamples(run, checkNotNull(recorded))
         session.start()
+    }
+
+    /** The scan's result goes beside the recording of the link it ran on (VIN masked), where it can be pulled from the phone. */
+    private suspend fun keepScanResults(session: VehicleSession) {
+        session.scan.filterIsInstance<ScanState.Finished>().collect { finished ->
+            recordings.writeSidecar(SCAN_RESULT_SUFFIX, finished.result.toJson(pretty = true))
+            connectionLog?.app("full scan ended: ${finished.result.outcome.name.lowercase()}")
+        }
+    }
+
+    /** Samples of the phone's sensors go into the recording while the session runs; a full buffer drops the oldest, never the session's time. */
+    private fun startSamples(run: Run, transport: RecordingTransport) {
+        val source = samples ?: return
+        val lines = Channel<String>(SAMPLE_BUFFER, BufferOverflow.DROP_OLDEST)
+        run.scope.launch { for (line in lines) transport.external(line) }
+        source.start { line -> lines.trySend(line) }
+        run.stopSamples = {
+            source.stop()
+            lines.close()
+        }
+    }
+
+    /** Asks the live session for a full scan; false when there is none, or it cannot scan now (see [VehicleSession.startScan]). */
+    fun startFullScan(): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        val accepted = session.startScan()
+        connectionLog?.app("full scan requested: ${if (accepted) "started" else "not possible now"}")
+        return accepted
+    }
+
+    /** Stops a running full scan; polling goes on. */
+    fun cancelFullScan() {
+        synchronized(lock) { current }?.session?.cancelScan()
+        connectionLog?.app("full scan cancelled")
+    }
+
+    /** Removes the result of a finished scan from the screen. */
+    fun dismissFullScan() {
+        synchronized(lock) { current }?.session?.dismissScan()
     }
 
     private class Setup(
@@ -162,11 +221,30 @@ class SessionController(
             is ConnectionTarget.Demo -> "app, demo: ${target.scenarioId}"
             is ConnectionTarget.Ble -> "app, bluetooth"
         }
-        val transport = RecordingTransport(transports.create(target), { recordings.newSink() }, timeSource, RecordingHeader(adapter.id, note))
-        // The adapter definition decides the scripts and the adapter-specific timing; everything else is the app's.
-        val sessionSettings = sessionConfig.copy(probeScript = adapter.probeScript, pollScript = adapter.pollScript, driver = adapter.driverConfig())
-        // The recording gets every event (it is the replayable record); the text log gets the same ones.
-        val events: SessionEventSink = connectionLog?.let { transport + it.sink } ?: transport
+        val transport = RecordingTransport(
+            transports.create(target),
+            { recordings.newSink() },
+            timeSource,
+            RecordingHeader(adapter.id, note),
+            externalSamples = samples != null,
+        )
+        // The adapter definition decides the scripts and the adapter-specific timing; everything else is the app's. A missing sweep plan only
+        // means no full scan: it is not a reason to refuse the connection.
+        val plan = try {
+            store.sweepPlan()
+        } catch (e: DefinitionStoreException) {
+            connectionLog?.app("no full scan in this session: ${e.message}")
+            null
+        }
+        val sessionSettings = sessionConfig.copy(
+            probeScript = adapter.probeScript,
+            pollScript = adapter.pollScript,
+            driver = adapter.driverConfig(),
+            scanPlan = plan,
+        )
+        // The recording gets every event (it is the replayable record); the text log gets the same ones, except the scan's result, which is
+        // a long line of JSON that belongs in the recording and its sidecar, not in a log that is meant to be read on a phone.
+        val events: SessionEventSink = connectionLog?.let { transport + it.withoutScanResult() } ?: transport
         return Setup(transport, adapter.initScript, catalog, sessionSettings, events)
     }
 
@@ -174,7 +252,7 @@ class SessionController(
      * Rebuilds [uiState] whenever the session's state changes and every [uiRefresh] otherwise. Readings are pulled at that
      * pace instead of being collected, which bounds the work however fast they arrive.
      */
-    private suspend fun publish(session: VehicleSession, started: TimeMark) {
+    private suspend fun publish(session: VehicleSession, started: TimeMark, periods: Map<String, Duration>) {
         var vehicle: VehicleSummary? = null
         var summarised: CapabilityReport? = null
         val ticks = flow {
@@ -188,11 +266,26 @@ class SessionController(
                 summarised = state.report
                 vehicle = vehicleSummary(state.report, state.coverage)
             }
-            _uiState.value = UiState(state.toStatus(), vehicle, liveValues(session.telemetry.value, started.elapsedNow(), staleAfter))
+            // The rate is only meaningful while polling; elsewhere (reconnecting, recovering) the old number would mislead.
+            val rate = session.rates.value.takeIf { state is SessionState.Polling && it.window.isPositive() }?.requestsPerSecond
+            _uiState.value = UiState(
+                state.toStatus(),
+                vehicle,
+                liveValues(session.telemetry.value, started.elapsedNow(), staleAfter, periods),
+                rate,
+                session.scan.value.toStatus(),
+            )
         }
     }
 
+    /** How often each signal is asked for, from its definition's poll tier, so a value that is refreshed every few seconds is not shown as stale. */
+    private fun signalPeriods(catalog: SignalCatalog): Map<String, Duration> =
+        catalog.parameters.flatMap { parameter -> parameter.signals.map { it.definition.id to parameter.tier.period } }.toMap()
+
     companion object {
+        /** Sensor lines held for the recording at most; at 2 motion lines a second this is minutes of a recorder that is stuck. */
+        private const val SAMPLE_BUFFER = 512
+        const val SCAN_RESULT_SUFFIX = ".scan.json"
         val DEFAULT_UI_REFRESH: Duration = 250.milliseconds
         val DEFAULT_STALE_AFTER: Duration = 5.seconds
     }
@@ -202,4 +295,13 @@ class SessionController(
 private fun ConnectionTarget.describe(): String = when (this) {
     is ConnectionTarget.Demo -> "demo ($scenarioId)"
     is ConnectionTarget.Ble -> "bluetooth"
+}
+
+/** The log's sink for the session's events, leaving out the scan's result line (see [SessionController]); a short note stands in for it. */
+private fun ConnectionLog.withoutScanResult(): SessionEventSink = SessionEventSink { event ->
+    if (event.name == SessionEvents.SCAN_RESULT) {
+        sink.emit(SessionEvents.SCAN_RESULT, "(written to the recording)")
+    } else {
+        sink.emit(event)
+    }
 }

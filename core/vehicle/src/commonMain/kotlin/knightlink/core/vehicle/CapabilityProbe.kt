@@ -222,7 +222,7 @@ public class CapabilityProbe(
     /** Positive reply from [ecu] to `service pid`, or null when it stayed silent, refused or the request failed. */
     private suspend fun ask(ecu: Found, service: Int, pid: Int, warnings: MutableList<String>): DiagnosticResponse.Positive? {
         val response: ElmResponse = try {
-            link.request(ecu.requestId, payload(service, pid), expectedResponses = 1)
+            link.request(ecu.requestId, payload(service, pid), expectedResponses = countFor(pid))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -236,6 +236,13 @@ public class CapabilityProbe(
     private fun noteBusFault(response: ElmResponse) {
         if (busFault == null) busFault = response.busFault
     }
+
+    /**
+     * The adapter's response-count digit: 1 only for a bitmap, whose reply (service, PID and four bytes) fits one CAN frame. The VIN,
+     * calibration ids and ECU name are multi-frame: with a count the adapter stops after the first frame and never sends flow control,
+     * so the rest of the reply would never arrive.
+     */
+    private fun countFor(pid: Int): Int? = if (pid % PIDS_PER_RANGE == 0) 1 else null
 
     private fun payload(service: Int, pid: Int): ByteArray = byteArrayOf(service.toByte(), pid.toByte())
 

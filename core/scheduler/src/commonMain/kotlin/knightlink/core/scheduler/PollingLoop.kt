@@ -17,6 +17,7 @@ public fun interface DiagnosticRequester {
 }
 
 public class PollResult(
+    /** The item the request was made for; in a batch the first of [items]. */
     public val item: PollItem,
     /** Null when the request failed; see [error]. */
     public val response: ElmResponse?,
@@ -24,6 +25,10 @@ public class PollResult(
     /** Time since the loop started. */
     public val at: Duration,
     public val roundTrip: Duration,
+    /** Every item the request served: just [item] unless the request was a batch. */
+    public val items: List<PollItem> = listOf(item),
+    /** The items whose data the reply held. For a batch this can be fewer than [items]. */
+    public val answeredItems: List<PollItem> = if (response?.messages?.any { it is DiagnosticResponse.Positive } == true) items else emptyList(),
 ) {
     public val answered: Boolean get() = response?.messages?.any { it is DiagnosticResponse.Positive } == true
 
@@ -52,10 +57,11 @@ public class PollingLoop(
         var failures = 0
 
         while (true) {
-            val item = when (val decision = scheduler.next(start.elapsedNow(), currentRequestId)) {
-                is PollDecision.Poll -> decision.item
+            val poll = when (val decision = scheduler.next(start.elapsedNow(), currentRequestId)) {
+                is PollDecision.Poll -> decision
                 is PollDecision.Wait -> {
-                    delay(decision.duration)
+                    // A wait of "forever" (only items that are asked once) still looks again now and then.
+                    delay(minOf(decision.duration, idleDelay))
                     continue
                 }
                 PollDecision.Idle -> {
@@ -68,8 +74,8 @@ public class PollingLoop(
             var response: ElmResponse? = null
             var error: Throwable? = null
             try {
-                response = requester.request(item.requestId, item.payload, item.expectedResponses)
-                currentRequestId = item.requestId
+                response = requester.request(poll.requestId, poll.payload, poll.expectedResponses)
+                currentRequestId = poll.requestId
                 failures = 0
             } catch (e: CancellationException) {
                 throw e
@@ -81,9 +87,33 @@ public class PollingLoop(
             }
 
             val now = start.elapsedNow()
-            val result = PollResult(item, response, error, now, now - sent)
-            scheduler.onResult(item, sent, result.answered)
+            val answered = answeredItems(poll, response)
+            val result = PollResult(poll.item, response, error, now, now - sent, poll.items, answered)
+            scheduler.onResult(poll, sent, answered.toSet())
             emit(result)
         }
     }
+}
+
+/**
+ * The items of [poll] whose data [response] holds. A single request is answered by any positive reply. A batch's reply is
+ * `<pid> <data> <pid> <data> ...` for the PIDs the ECU supports, in request order, cut by the items' lengths; it is read until it ends
+ * or something unexpected comes (an unknown PID, a reply cut short), so what arrived before is still counted.
+ */
+public fun answeredItems(poll: PollDecision.Poll, response: ElmResponse?): List<PollItem> {
+    val positives = response?.messages?.filterIsInstance<DiagnosticResponse.Positive>().orEmpty()
+    if (poll.items.size == 1) return if (positives.isEmpty()) emptyList() else poll.items
+    val answered = ArrayList<PollItem>()
+    for (message in positives) {
+        if (message.service != PollItem.SERVICE_LIVE_DATA.toInt()) continue
+        var offset = 0
+        while (offset < message.data.size) {
+            val item = poll.items.firstOrNull { it.pidByte == message.data[offset] } ?: break
+            val end = offset + 1 + checkNotNull(item.dataLength)
+            if (end > message.data.size) break
+            if (item !in answered) answered += item
+            offset = end
+        }
+    }
+    return answered
 }

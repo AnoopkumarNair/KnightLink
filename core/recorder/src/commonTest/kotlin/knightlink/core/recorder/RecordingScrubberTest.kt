@@ -265,4 +265,103 @@ class RecordingScrubberTest {
         val original = session("09021\r", chunks(response(0x7E8 to vin, spaces = true), listOf(9))).copy(truncated = true)
         assertTrue(RecordingScrubber.scrub(original).recording.truncated)
     }
+
+    // UDS: the VIN read as data identifier F190 -----------------------------------------------------------------
+
+    private fun udsVinPayload(text: String) = byteArrayOf(0x62, 0xF1.toByte(), 0x90.toByte()) + text.encodeToByteArray()
+
+    private fun udsResponse(id: Int, payload: ByteArray, spaces: Boolean): String =
+        segment(payload).joinToString("") { frame -> id.toString(16).uppercase() + (if (spaces) " " else "") + hex(frame, spaces) + "\r" } + "\r>"
+
+    private fun udsSession(command: String, reply: String): Recording = Recording(
+        RecordingHeader("adapters/x", "a note"),
+        listOf(
+            RecordingEvent.open(0),
+            tx(10, "ATSH700\r"),
+            rx(40, "OK\r\r>"),
+            tx(100, command),
+            rx(140, reply),
+            tx(400, "0100\r"),
+            rx(450, "7E8 06 41 00 BE 3F A8 13\r\r>"),
+            RecordingEvent.close(900),
+        ),
+    )
+
+    @Test
+    fun theVinReadAsDataIdentifierF190IsScrubbedLikeTheOneFromServiceNine() {
+        for (spaces in listOf(true, false)) {
+            val original = udsSession("22F190\r", udsResponse(0x708, udsVinPayload(vin), spaces))
+            val result = RecordingScrubber.scrub(original)
+            assertTrue(result.warnings.isEmpty(), result.warnings.toString())
+            assertFalse(rxBytes(result.recording).contains(vin))
+            val payload = decodedUdsPayloads(result.recording).single()
+            assertEquals(
+                "62F190" + scrubbedVin.encodeToByteArray().joinToString("") {
+                    (it.toInt() and 0xFF).toString(16).uppercase().padStart(2, '0')
+                },
+                payload,
+            )
+            assertEverythingButTheVinIsUnchanged(original, result.recording)
+        }
+    }
+
+    private fun decodedUdsPayloads(recording: Recording): List<String> {
+        val framer = ElmStreamFramer()
+        val decoder = ElmResponseDecoder(extendedIds = false)
+        return recording.events.filter { it.kind == EventKind.RX }.flatMap { framer.feed(it.bytes) }
+            .flatMap { lines -> decoder.decode(lines).messages.filterIsInstance<DiagnosticResponse.Positive>() }
+            .filter { it.service == 0x22 }
+            .map { "62" + it.data.joinToString("") { b -> (b.toInt() and 0xFF).toString(16).uppercase().padStart(2, '0') } }
+    }
+
+    @Test
+    fun theF190VinIsAlsoRemovedWhereverElseItAppearsAsText() {
+        val base = udsSession("22F1901\r", udsResponse(0x708, udsVinPayload(vin), spaces = true))
+        val original = Recording(
+            base.header.copy(note = "drive of $vin"),
+            base.events + RecordingEvent.event(950, "scan: unit 700 says $vin"),
+        )
+        val result = RecordingScrubber.scrub(original).recording
+        assertFalse(result.header.note!!.contains(vin))
+        assertFalse(result.events.last().payload.contains(vin))
+        assertTrue(result.events.last().payload.contains(scrubbedVin))
+    }
+
+    @Test
+    fun aRefusalOrASilenceInAnswerToF190IsLeftAlone() {
+        for (reply in listOf("708 03 7F 22 31\r\r>", "NO DATA\r\r>")) {
+            val original = udsSession("22F190\r", reply)
+            val result = RecordingScrubber.scrub(original)
+            assertTrue(result.warnings.isEmpty(), result.warnings.toString())
+            assertEquals(original.events, result.recording.events, reply)
+        }
+    }
+
+    @Test
+    fun anF190ReplyCutToItsFirstFrameHoldsOnlyTheManufacturerCodeAndIsKept() {
+        // The scan asks with "one frame is enough": the adapter stops after the first frame, which has three characters of the VIN.
+        val firstFrameOnly = "708 10 14 62 F1 90 ${vin.take(3).encodeToByteArray().joinToString(" ") { (it.toInt() and 0xFF).toString(16).uppercase() }}\r\r>"
+        val original = udsSession("22F1901\r", firstFrameOnly)
+        val result = RecordingScrubber.scrub(original)
+        assertTrue(result.warnings.isEmpty(), result.warnings.toString())
+        assertEquals(original.events, result.recording.events)
+    }
+
+    @Test
+    fun anF190ReplyThatIsNotAVinButAnUnprogrammedControlUnitsPaddingIsKept() {
+        val padding = udsResponse(0x708, byteArrayOf(0x62, 0xF1.toByte(), 0x90.toByte()) + ByteArray(17) { 0xFF.toByte() }, spaces = true)
+        val original = udsSession("22F190\r", padding)
+        val result = RecordingScrubber.scrub(original)
+        assertTrue(result.warnings.isEmpty(), result.warnings.toString())
+        assertEquals(original.events, result.recording.events)
+    }
+
+    @Test
+    fun anF190ReplyThatCannotBeReadWithConfidenceFailsClosed() {
+        // A reply of the wrong length for a VIN: not rewritten, replaced.
+        val original = udsSession("22F190\r", udsResponse(0x708, udsVinPayload(vin + "X"), spaces = true))
+        val result = RecordingScrubber.scrub(original)
+        assertEquals(1, result.warnings.size)
+        assertFalse(rxBytes(result.recording).contains(vin.take(10)))
+    }
 }

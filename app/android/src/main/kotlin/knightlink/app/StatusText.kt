@@ -2,6 +2,9 @@ package knightlink.app
 
 import android.content.res.Resources
 import knightlink.app.session.ConnectionStatus
+import knightlink.app.session.ScanStatus
+import knightlink.core.scan.ScanOutcome
+import knightlink.core.scan.ScanStage
 import knightlink.core.vehicle.FuelMethod
 import knightlink.core.vehicle.ProbeStage
 
@@ -34,3 +37,48 @@ fun FuelMethod.textRes(): Int = when (this) {
     FuelMethod.SPEED_DENSITY -> R.string.fuel_speed_density
     FuelMethod.UNKNOWN -> R.string.fuel_unknown
 }
+
+/**
+ * The scan's progress or result in sentences, for the screen (and, later, to be spoken): what it is doing and how far, a notice when the
+ * car moves, and at the end what it found. Null when there is nothing to say (no scan, or one that can be started).
+ */
+fun ScanStatus.text(resources: Resources): String? = when (this) {
+    ScanStatus.Unavailable, ScanStatus.Ready -> null
+    ScanStatus.Starting -> resources.getString(R.string.scan_starting)
+    is ScanStatus.Running -> when {
+        paused && speedKmh != null -> resources.getString(R.string.scan_paused, speedKmh)
+        paused -> resources.getString(R.string.scan_paused_unknown)
+        else -> when (stage) {
+            ScanStage.PROBE -> resources.getString(R.string.scan_stage_probe, subject.orEmpty()).trim()
+            ScanStage.READINESS -> resources.getString(R.string.scan_stage_readiness, subject.orEmpty(), done + 1, total)
+            ScanStage.DISCOVERY -> resources.getString(R.string.scan_stage_discovery, done, total)
+            ScanStage.IDENTIFICATION -> resources.getString(R.string.scan_stage_identification, subject.orEmpty(), done, total)
+            ScanStage.FAULTS -> resources.getString(R.string.scan_stage_faults, subject.orEmpty(), done + 1, total)
+            ScanStage.SWEEP -> resources.getString(R.string.scan_stage_sweep, subject.orEmpty(), done, total)
+            null -> resources.getString(R.string.scan_stage_working)
+        }
+    }
+    is ScanStatus.Finished -> {
+        val found = summary
+        val identifiers = found.didsPerEcu.entries.joinToString(", ") { "${it.key}: ${it.value}" }
+        when (outcome) {
+            ScanOutcome.COMPLETED ->
+                resources.getString(
+                    R.string.scan_finished,
+                    minutes,
+                    found.ecus,
+                    found.confirmed,
+                    found.pending,
+                    found.warningLamp,
+                    found.notCompleted,
+                ) + if (identifiers.isNotEmpty()) " " + resources.getString(R.string.scan_finished_ids, identifiers) else ""
+            ScanOutcome.CANCELLED ->
+                resources.getString(R.string.scan_stopped_by_user, minutes, found.ecus)
+            ScanOutcome.STOPPED -> resources.getString(R.string.scan_stopped_early, minutes, detail ?: "", found.ecus)
+        }
+    }
+    is ScanStatus.Failed -> resources.getString(R.string.scan_failed, reason)
+}
+
+/** How far the stage of a running scan has got, 0 to 1; null when that is not known. */
+fun ScanStatus.Running.fraction(): Float? = if (paused || total <= 0) null else (done.toFloat() / total).coerceIn(0f, 1f)

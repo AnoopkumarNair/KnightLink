@@ -63,6 +63,12 @@ public class ElmResponse(
     public val statuses: List<ElmStatus>,
     public val protocolErrors: List<String>,
     public val text: List<String>,
+    /**
+     * Identifiers of every ECU that sent at least one CAN frame, in order of first appearance, whether or not its reply was
+     * completed. A reply cut to its first frame (the adapter stopped listening, or flow control did not work) is no message but
+     * still proves that the ECU is there.
+     */
+    public val respondingIds: List<Int> = emptyList(),
 ) {
     /** The first status that says the vehicle bus could not be reached (CAN ERROR, BUS ERROR, UNABLE TO CONNECT), or null. */
     public val busFault: ElmStatus? get() = statuses.firstOrNull { it.isBusFault }
@@ -79,7 +85,9 @@ public interface DiagnosticLink {
     /**
      * Sends a diagnostic request to the ECU with physical request id [requestId].
      *
-     * @param expectedResponses when set, the adapter stops waiting after that many replies.
+     * @param expectedResponses when set, the adapter stops waiting after that many CAN frames. Only for a reply that fits one CAN frame:
+     *   the adapter counts frames, so with a count it stops after the first frame of a longer (ISO-TP) reply and never sends flow
+     *   control, and the rest of the reply is lost. Leave it null for anything longer or of unknown length.
      */
     public suspend fun request(requestId: Int, payload: ByteArray, expectedResponses: Int? = null): ElmResponse
 }
@@ -94,11 +102,12 @@ public class ElmResponseDecoder(extendedIds: Boolean) {
         val statuses = ArrayList<ElmStatus>()
         val errors = ArrayList<String>()
         val text = ArrayList<String>()
+        val responders = LinkedHashSet<Int>()
         for (line in lines) {
             when (val parsed = parser.parse(line)) {
                 is ElmLine.Status -> statuses += parsed.status
                 is ElmLine.Text -> text += parsed.text
-                is ElmLine.Frame -> when (val result = reassembler.accept(parsed.frame)) {
+                is ElmLine.Frame -> when (val result = reassembler.accept(parsed.frame).also { responders += parsed.frame.id }) {
                     IsoTpResult.Incomplete -> Unit
                     is IsoTpResult.Error -> errors += "${result.sourceId.toString(16).uppercase()}: ${result.reason}"
                     is IsoTpResult.Complete -> {
@@ -108,6 +117,6 @@ public class ElmResponseDecoder(extendedIds: Boolean) {
                 }
             }
         }
-        return ElmResponse(messages, statuses, errors, text)
+        return ElmResponse(messages, statuses, errors, text, responders.toList())
     }
 }

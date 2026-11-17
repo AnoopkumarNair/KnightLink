@@ -18,6 +18,9 @@ kotlin {
             implementation(projects.core.vehicle)
             // The session tests run the whole runtime against the simulator.
             implementation(projects.core.runtime)
+            // The full-scan tests run the scan, through the real driver, against the simulated vehicle.
+            implementation(projects.core.scan)
+            implementation(projects.core.protocol)
         }
     }
 }

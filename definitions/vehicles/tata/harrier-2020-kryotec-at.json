@@ -23,33 +23,11 @@
       "description": "Bosch Denoxtronic SCR. AdBlue level, temperature, concentration." }
   ],
   "parameters": [
-    { "service": "01", "pid": "78", "ecu": "ecm", "provenance": "verified",
-      "notes": "SRS 2.3. Byte A is the sensor-supported bitmap; 0x0F means all four sensors present.",
-      "signals": [
-        { "id": "exhaust.egt_supported_mask", "formula": "A&15", "unit": "bitmap" },
-        { "id": "exhaust.egt_b1s1", "formula": "(256*B+C)/10-40", "unit": "degC", "min": -40, "max": 1200 },
-        { "id": "exhaust.egt_b1s2", "formula": "(256*D+E)/10-40", "unit": "degC", "min": -40, "max": 1200 },
-        { "id": "exhaust.egt_b1s3", "formula": "(256*F+G)/10-40", "unit": "degC", "min": -40, "max": 1200 },
-        { "id": "exhaust.egt_b1s4", "formula": "(256*H+I)/10-40", "unit": "degC", "min": -40, "max": 1200 }
-      ] },
-    { "service": "01", "pid": "8B", "ecu": "ecm", "provenance": "verified",
-      "notes": "SRS 2.3. Status 2 = active regeneration. Observed: regen starts at 100 % soot and ends near 17.65 % after about 16 minutes.",
-      "signals": [
-        { "id": "dpf.regen_status", "formula": "B", "unit": "enum" },
-        { "id": "dpf.soot_pct", "formula": "C/2.55", "unit": "percent", "min": 0, "max": 100 },
-        { "id": "dpf.avg_regen_interval_min", "formula": "256*D+E", "unit": "min" },
-        { "id": "dpf.avg_regen_distance_km", "formula": "256*F+G", "unit": "km" }
-      ] },
-    { "service": "01", "pid": "9B", "ecu": "rdcm", "provenance": "verified",
-      "notes": "SRS 2.3. Read from the reductant controller, not the engine ECU.",
+    { "service": "01", "pid": "9B", "ecu": "rdcm", "provenance": "verified", "length": 4, "poll": "slow",
+      "notes": "SRS 2.3, and the 2026-11-17 recording. Read from the reductant controller, not the engine ECU. Byte B is not decoded.",
       "signals": [
         { "id": "def.temp", "formula": "C-40", "unit": "degC", "min": -40, "max": 215 },
         { "id": "def.level_pct", "formula": "D/2.55", "unit": "percent", "min": 0, "max": 100 }
-      ] },
-    { "service": "01", "pid": "9D", "ecu": "ecm", "provenance": "verified",
-      "notes": "SRS 2.3. Litres per hour = g/s * 3.6 / fuel density.",
-      "signals": [
-        { "id": "fuel.rate_gps", "formula": "(256*A+B)/50", "unit": "g/s", "min": 0, "max": 1310.7 }
       ] }
   ]
 }

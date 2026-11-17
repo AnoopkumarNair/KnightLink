@@ -27,6 +27,34 @@
     <string name="action_connect_last_unnamed">Connect to last adapter</string>
     <string name="action_choose_another">Choose another adapter</string>
 
+    <!-- Full scan -->
+    <string name="action_full_scan">Full scan (parked)</string>
+    <string name="scan_hint">Park the car with the ignition on, then start the scan. It reads everything the car answers, changes nothing, and takes about ten minutes. It pauses by itself if the car moves.</string>
+    <string name="action_cancel_scan">Stop the scan</string>
+    <string name="action_dismiss_scan">Dismiss</string>
+    <string name="scan_starting">Starting the full scan.</string>
+    <string name="scan_stage_probe">Scan: reading the standard data. %1$s</string>
+    <string name="scan_stage_readiness">Scan: checking readiness and on-board tests on control unit %1$s, %2$d of %3$d.</string>
+    <string name="scan_stage_discovery">Scanning control units %1$d/%2$d</string>
+    <string name="scan_stage_identification">Reading identification of control unit %1$s, %2$d/%3$d</string>
+    <string name="scan_stage_faults">Reading fault codes from control unit %1$s, %2$d of %3$d.</string>
+    <string name="scan_stage_sweep">Reading identifiers on %1$s %2$d/%3$d</string>
+    <string name="scan_stage_working">Scan under way.</string>
+    <string name="scan_paused">Scan paused: the car is moving at %1$d km/h. It goes on when you park.</string>
+    <string name="scan_paused_unknown">Scan paused: the car is moving. It goes on when you park.</string>
+    <string name="scan_finished">Scan finished. Minutes taken: %1$d. Control units found: %2$d. Fault codes, confirmed: %3$d, pending: %4$d, asking for the warning lamp: %5$d. Further codes that only say a test has not run, which are not faults: %6$d.</string>
+    <string name="scan_finished_ids">Identifiers that answered: %1$s.</string>
+    <string name="scan_stopped_early">Scan stopped early: %2$s. What it found so far is kept. Minutes taken: %1$d. Control units found: %3$d.</string>
+    <string name="scan_stopped_by_user">Scan stopped by you. What it found so far is kept. Minutes taken: %1$d. Control units found: %2$d.</string>
+    <string name="scan_failed">The scan did not start: %1$s</string>
+
+    <!-- Drive data -->
+    <string name="drive_data_title">Drive data</string>
+    <string name="drive_data_motion">KnightLink records the motion sensors of the phone with each drive, so the data of the car can be read next to how the car moved.</string>
+    <string name="drive_data_location_on">The location of the phone is recorded too. It stays on this phone; a shared copy has it rounded to about a kilometre.</string>
+    <string name="drive_data_location_off">Location is not recorded. Allow it to record where the drive was, for speed and bearing checks. It stays on this phone; a shared copy has it rounded to about a kilometre.</string>
+    <string name="action_allow_location">Allow location</string>
+
     <!-- Adapter picker -->
     <string name="picker_title">Choose adapter</string>
     <string name="picker_scanning">Looking for adapters nearby…</string>
@@ -55,8 +83,9 @@
     <string name="vehicle_vin_unknown">VIN: not reported</string>
     <string name="vehicle_adapter">Adapter: %1$s</string>
     <string name="vehicle_adapter_unknown">Adapter: unknown</string>
-    <string name="vehicle_rate">Measured rate: %1$s requests per second</string>
-    <string name="vehicle_rate_unknown">Measured rate: not available</string>
+    <string name="vehicle_rate">Adapter speed: about %1$s requests per second</string>
+    <string name="vehicle_rate_unknown">Adapter speed: not available</string>
+    <string name="vehicle_polling_rate">Polling now: %1$s requests per second</string>
     <string name="vehicle_fuel">Fuel data: %1$s</string>
     <string name="fuel_direct_rate">reported by the vehicle</string>
     <string name="fuel_maf">estimated from air flow</string>

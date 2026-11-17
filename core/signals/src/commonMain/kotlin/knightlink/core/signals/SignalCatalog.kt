@@ -21,6 +21,12 @@ public class CompiledParameter internal constructor(
     public val service: Int = definition.service.toInt(16)
     public val pid: String = definition.pid.uppercase()
 
+    /** Data bytes after the PID in a reply, when the definition says. */
+    public val length: Int? get() = definition.length
+
+    /** How often this parameter is wanted. */
+    public val tier: PollTier get() = definition.poll ?: PollTier.NORMAL
+
     /**
      * Decodes the data bytes that follow the PID. Signals whose bytes are missing (short reply) or whose
      * formula yields a non-finite number are left out rather than reported as zero.
@@ -78,6 +84,9 @@ public class SignalCatalog private constructor(
                     check(layer, parameter.signals.isNotEmpty()) {
                         "parameter ${parameter.service} ${parameter.pid} has no signals"
                     }
+                    check(layer, parameter.length == null || parameter.length in 1..MAX_REPLY_BYTES) {
+                        "parameter ${parameter.service} ${parameter.pid}: length must be 1..$MAX_REPLY_BYTES"
+                    }
                     val compiled = parameter.signals.map { signal ->
                         val expression = try {
                             Expression.compile(signal.formula)
@@ -91,6 +100,9 @@ public class SignalCatalog private constructor(
             }
             return SignalCatalog(ecus.values.toList(), byKey)
         }
+
+        /** The longest service 01 reply data: an ISO-TP message holds 4095 bytes, but formulas read A..Z. */
+        private const val MAX_REPLY_BYTES = 26
 
         private inline fun check(layer: DefinitionFile, condition: Boolean, message: () -> String) {
             if (!condition) throw DefinitionException("${layer.id}: ${message()}")

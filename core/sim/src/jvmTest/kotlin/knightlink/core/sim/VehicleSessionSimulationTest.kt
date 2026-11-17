@@ -206,11 +206,9 @@ class VehicleSessionSimulationTest {
         assertTrue("ATSH7DF" !in adapter.received)
 
         // What is polled (support maps, which end in 00/20/40..., belong to the probe): exactly the confirmed parameters.
-        val polled = requests.filter { it.startsWith("01") && it.substring(2).toInt(16) % 0x20 != 0 }.toSet()
-        assertEquals(
-            setOf("0105", "010B", "010C", "010D", "0110", "012F", "0131", "0142", "0146", "0178", "018B", "019D", "019B"),
-            polled,
-        )
+        // A request may carry several PIDs (`01 0C 0D 04`): split them.
+        val polled = requests.filter { it.startsWith("01") }.flatMap { request -> request.drop(2).chunked(2) }.filter { it.toInt(16) % 0x20 != 0 }.toSet()
+        assertEquals(setOf("05", "0B", "0C", "0D", "10", "2F", "31", "42", "46", "78", "8B", "9D", "9B"), polled)
         assertTrue(requests.all { it.startsWith("01") || it.startsWith("09") }, "only services 01 and 09 may be sent: $requests")
     }
 

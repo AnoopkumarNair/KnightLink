@@ -4,33 +4,624 @@
   "kind": "standard",
   "title": "SAE J1979 service 01 live data",
   "parameters": [
-    { "service": "01", "pid": "04", "provenance": "standard", "signals": [
-      { "id": "engine.load_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 } ] },
-    { "service": "01", "pid": "05", "provenance": "standard", "signals": [
-      { "id": "engine.coolant_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] },
-    { "service": "01", "pid": "0B", "provenance": "standard", "signals": [
-      { "id": "intake.map_kpa", "formula": "A", "unit": "kPa", "min": 0, "max": 255 } ] },
-    { "service": "01", "pid": "0C", "provenance": "standard", "signals": [
-      { "id": "engine.rpm", "formula": "(256*A+B)/4", "unit": "rpm", "min": 0, "max": 16383.75 } ] },
-    { "service": "01", "pid": "0D", "provenance": "standard", "signals": [
-      { "id": "vehicle.speed", "formula": "A", "unit": "km/h", "min": 0, "max": 255 } ] },
-    { "service": "01", "pid": "0F", "provenance": "standard", "signals": [
-      { "id": "intake.air_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] },
-    { "service": "01", "pid": "10", "provenance": "standard", "signals": [
-      { "id": "intake.maf", "formula": "(256*A+B)/100", "unit": "g/s", "min": 0, "max": 655.35 } ] },
-    { "service": "01", "pid": "11", "provenance": "standard", "signals": [
-      { "id": "engine.throttle_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 } ] },
-    { "service": "01", "pid": "2F", "provenance": "standard", "signals": [
-      { "id": "fuel.level_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 } ] },
-    { "service": "01", "pid": "31", "provenance": "standard", "signals": [
-      { "id": "distance.since_dtc_clear_km", "formula": "256*A+B", "unit": "km", "min": 0, "max": 65535 } ] },
-    { "service": "01", "pid": "33", "provenance": "standard", "signals": [
-      { "id": "ambient.pressure_kpa", "formula": "A", "unit": "kPa", "min": 0, "max": 255 } ] },
-    { "service": "01", "pid": "42", "provenance": "standard", "signals": [
-      { "id": "electrical.module_voltage", "formula": "(256*A+B)/1000", "unit": "V", "min": 0, "max": 65.535 } ] },
-    { "service": "01", "pid": "46", "provenance": "standard", "signals": [
-      { "id": "ambient.air_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] },
-    { "service": "01", "pid": "5C", "provenance": "standard", "signals": [
-      { "id": "engine.oil_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 } ] }
+    { "service": "01", "pid": "01", "provenance": "standard", "length": 4, "poll": "slow",
+      "notes": "Monitor status since DTCs cleared. Bytes B..D (readiness monitors) are not decoded.",
+      "signals": [
+        { "id": "diag.mil_on", "formula": "(A>>7)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "diag.dtc_count", "formula": "A&127", "unit": "count", "min": 0, "max": 127 }
+      ] },
+    { "service": "01", "pid": "03", "provenance": "standard", "length": 2, "poll": "slow",
+      "notes": "Fuel system status as the standard's bit-coded enumeration (open loop, closed loop, ...).",
+      "signals": [
+        { "id": "fuel.system1_status", "formula": "A", "unit": "enum" },
+        { "id": "fuel.system2_status", "formula": "B", "unit": "enum" }
+      ] },
+    { "service": "01", "pid": "04", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.load_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "05", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "engine.coolant_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "06", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "fuel.trim_short_b1_pct", "formula": "A*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "07", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "fuel.trim_long_b1_pct", "formula": "A*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "08", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "fuel.trim_short_b2_pct", "formula": "A*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "09", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "fuel.trim_long_b2_pct", "formula": "A*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "0A", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "fuel.pressure_gauge_kpa", "formula": "3*A", "unit": "kPa", "min": 0, "max": 765 }
+      ] },
+    { "service": "01", "pid": "0B", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "intake.map_kpa", "formula": "A", "unit": "kPa", "min": 0, "max": 255 }
+      ] },
+    { "service": "01", "pid": "0C", "provenance": "standard", "length": 2, "poll": "fast",
+      "signals": [
+        { "id": "engine.rpm", "formula": "(256*A+B)/4", "unit": "rpm", "min": 0, "max": 16383.75 }
+      ] },
+    { "service": "01", "pid": "0D", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "vehicle.speed", "formula": "A", "unit": "km/h", "min": 0, "max": 255 }
+      ] },
+    { "service": "01", "pid": "0E", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "engine.timing_advance_deg", "formula": "A/2-64", "unit": "deg", "min": -64, "max": 63.5 }
+      ] },
+    { "service": "01", "pid": "0F", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "intake.air_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "10", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "intake.maf", "formula": "(256*A+B)/100", "unit": "g/s", "min": 0, "max": 655.35 }
+      ] },
+    { "service": "01", "pid": "11", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.throttle_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "12", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "exhaust.secondary_air_status", "formula": "A", "unit": "enum" }
+      ] },
+    { "service": "01", "pid": "13", "provenance": "standard", "length": 1, "poll": "once",
+      "notes": "Bit n set: sensor present (bank 1 sensors 1-4 in the low nibble, bank 2 in the high nibble).",
+      "signals": [
+        { "id": "o2.sensors_present_2bank", "formula": "A", "unit": "bitmap" }
+      ] },
+    { "service": "01", "pid": "14", "provenance": "standard", "length": 2, "poll": "normal",
+      "notes": "Conventional O2 sensor. Byte B is 0xFF when the sensor is not used in the trim calculation.",
+      "signals": [
+        { "id": "o2.b1s1_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b1s1_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "15", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s2_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b1s2_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "16", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s3_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b1s3_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "17", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s4_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b1s4_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "18", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s1_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b2s1_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "19", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s2_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b2s2_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "1A", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s3_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b2s3_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "1B", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s4_voltage", "formula": "A/200", "unit": "V", "min": 0, "max": 1.275 },
+        { "id": "o2.b2s4_trim_pct", "formula": "B*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "1C", "provenance": "standard", "length": 1, "poll": "once",
+      "signals": [
+        { "id": "obd.standard", "formula": "A", "unit": "enum" }
+      ] },
+    { "service": "01", "pid": "1D", "provenance": "standard", "length": 1, "poll": "once",
+      "signals": [
+        { "id": "o2.sensors_present_4bank", "formula": "A", "unit": "bitmap" }
+      ] },
+    { "service": "01", "pid": "1E", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "engine.pto_active", "formula": "A&1", "unit": "enum", "min": 0, "max": 1 }
+      ] },
+    { "service": "01", "pid": "1F", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "engine.run_time_s", "formula": "256*A+B", "unit": "s", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "21", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "distance.with_mil_km", "formula": "256*A+B", "unit": "km", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "22", "provenance": "inferred", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "fuel.rail_pressure_vacuum_kpa", "formula": "0.079*(256*A+B)", "unit": "kPa", "min": 0, "max": 5177.265 }
+      ] },
+    { "service": "01", "pid": "23", "provenance": "inferred", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "fuel.rail_pressure_kpa", "formula": "10*(256*A+B)", "unit": "kPa", "min": 0, "max": 655350 }
+      ] },
+    { "service": "01", "pid": "24", "provenance": "standard", "length": 4, "poll": "normal",
+      "notes": "Wide-range O2 sensor, equivalence ratio and voltage.",
+      "signals": [
+        { "id": "o2.b1s1_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s1_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "25", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s2_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s2_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "26", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s3_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s3_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "27", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s4_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s4_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "28", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s1_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s1_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "29", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s2_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s2_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "2A", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s3_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s3_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "2B", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s4_wr_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s4_wr_voltage", "formula": "(256*C+D)/8192", "unit": "V", "min": 0, "max": 8 }
+      ] },
+    { "service": "01", "pid": "2C", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "egr.commanded_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "2D", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "egr.error_pct", "formula": "A*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "2E", "provenance": "standard", "length": 1, "poll": "normal",
+      "signals": [
+        { "id": "evap.purge_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "2F", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "fuel.level_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "30", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "engine.warmups_since_clear", "formula": "A", "unit": "count", "min": 0, "max": 255 }
+      ] },
+    { "service": "01", "pid": "31", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "distance.since_dtc_clear_km", "formula": "256*A+B", "unit": "km", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "33", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "ambient.pressure_kpa", "formula": "A", "unit": "kPa", "min": 0, "max": 255 }
+      ] },
+    { "service": "01", "pid": "34", "provenance": "standard", "length": 4, "poll": "normal",
+      "notes": "Wide-range O2 sensor, equivalence ratio and current.",
+      "signals": [
+        { "id": "o2.b1s1_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s1_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "35", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s2_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s2_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "36", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s3_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s3_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "37", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b1s4_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b1s4_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "38", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s1_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s1_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "39", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s2_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s2_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "3A", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s3_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s3_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "3B", "provenance": "standard", "length": 4, "poll": "normal",
+      "signals": [
+        { "id": "o2.b2s4_wrc_lambda", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 },
+        { "id": "o2.b2s4_wrc_current_ma", "formula": "(256*C+D)/256-128", "unit": "mA", "min": -128, "max": 127.996 }
+      ] },
+    { "service": "01", "pid": "3C", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "catalyst.b1s1_temp", "formula": "(256*A+B)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "3D", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "catalyst.b2s1_temp", "formula": "(256*A+B)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "3E", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "catalyst.b1s2_temp", "formula": "(256*A+B)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "3F", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "catalyst.b2s2_temp", "formula": "(256*A+B)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "42", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "electrical.module_voltage", "formula": "(256*A+B)/1000", "unit": "V", "min": 0, "max": 65.535 }
+      ] },
+    { "service": "01", "pid": "43", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "engine.load_absolute_pct", "formula": "(256*A+B)*100/255", "unit": "percent", "min": 0, "max": 25700 }
+      ] },
+    { "service": "01", "pid": "44", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "engine.lambda_commanded", "formula": "(256*A+B)/32768", "unit": "ratio", "min": 0, "max": 2 }
+      ] },
+    { "service": "01", "pid": "45", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.throttle_rel_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "46", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "ambient.air_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "47", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.throttle_abs_b_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "48", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.throttle_abs_c_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "49", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.pedal_d_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "4A", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.pedal_e_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "4B", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.pedal_f_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "4C", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.throttle_commanded_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "4D", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "time.with_mil_min", "formula": "256*A+B", "unit": "min", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "4E", "provenance": "standard", "length": 2, "poll": "slow",
+      "signals": [
+        { "id": "time.since_dtc_clear_min", "formula": "256*A+B", "unit": "min", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "4F", "provenance": "inferred", "length": 4, "poll": "once",
+      "notes": "Maximum values for the sensor readings.",
+      "signals": [
+        { "id": "limits.max_lambda", "formula": "A", "unit": "ratio", "min": 0, "max": 255 },
+        { "id": "limits.max_o2_voltage", "formula": "B", "unit": "V", "min": 0, "max": 255 },
+        { "id": "limits.max_o2_current_ma", "formula": "C", "unit": "mA", "min": 0, "max": 255 },
+        { "id": "limits.max_map_kpa", "formula": "D*10", "unit": "kPa", "min": 0, "max": 2550 }
+      ] },
+    { "service": "01", "pid": "50", "provenance": "inferred", "length": 4, "poll": "once",
+      "notes": "Bytes B..D are reserved.",
+      "signals": [
+        { "id": "limits.max_maf_gps", "formula": "A*10", "unit": "g/s", "min": 0, "max": 2550 }
+      ] },
+    { "service": "01", "pid": "51", "provenance": "standard", "length": 1, "poll": "once",
+      "signals": [
+        { "id": "fuel.type", "formula": "A", "unit": "enum" }
+      ] },
+    { "service": "01", "pid": "52", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "fuel.ethanol_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "59", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "fuel.rail_pressure_abs_kpa", "formula": "10*(256*A+B)", "unit": "kPa", "min": 0, "max": 655350 }
+      ] },
+    { "service": "01", "pid": "5A", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.pedal_rel_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "5B", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "hybrid.battery_life_pct", "formula": "A/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "5C", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "engine.oil_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "5D", "provenance": "inferred", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "fuel.injection_timing_deg", "formula": "(256*A+B)/128-210", "unit": "deg", "min": -210, "max": 301.992 }
+      ] },
+    { "service": "01", "pid": "5E", "provenance": "standard", "length": 2, "poll": "normal",
+      "signals": [
+        { "id": "fuel.rate_lph", "formula": "(256*A+B)/20", "unit": "L/h", "min": 0, "max": 3276.75 }
+      ] },
+    { "service": "01", "pid": "5F", "provenance": "standard", "length": 1, "poll": "once",
+      "signals": [
+        { "id": "obd.emission_requirements", "formula": "A", "unit": "enum" }
+      ] },
+    { "service": "01", "pid": "61", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.torque_demand_pct", "formula": "A-125", "unit": "percent", "min": -125, "max": 130 }
+      ] },
+    { "service": "01", "pid": "62", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.torque_actual_pct", "formula": "A-125", "unit": "percent", "min": -125, "max": 130 }
+      ] },
+    { "service": "01", "pid": "63", "provenance": "standard", "length": 2, "poll": "once",
+      "signals": [
+        { "id": "engine.torque_reference_nm", "formula": "256*A+B", "unit": "Nm", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "64", "provenance": "standard", "length": 5, "poll": "once",
+      "notes": "Maximum torque at idle and at four engine speed points.",
+      "signals": [
+        { "id": "engine.torque_curve_idle_pct", "formula": "A-125", "unit": "percent", "min": -125, "max": 130 },
+        { "id": "engine.torque_curve_p1_pct", "formula": "B-125", "unit": "percent", "min": -125, "max": 130 },
+        { "id": "engine.torque_curve_p2_pct", "formula": "C-125", "unit": "percent", "min": -125, "max": 130 },
+        { "id": "engine.torque_curve_p3_pct", "formula": "D-125", "unit": "percent", "min": -125, "max": 130 },
+        { "id": "engine.torque_curve_p4_pct", "formula": "E-125", "unit": "percent", "min": -125, "max": 130 }
+      ] },
+    { "service": "01", "pid": "66", "provenance": "inferred", "length": 5, "poll": "normal",
+      "notes": "Two MAF sensors; bit 0 of byte A is sensor A, bit 1 sensor B.",
+      "signals": [
+        { "id": "intake.maf_supported_mask", "formula": "A&3", "unit": "bitmap" },
+        { "id": "intake.maf_a", "formula": "(256*B+C)/32", "unit": "g/s", "min": 0, "max": 2047.97 },
+        { "id": "intake.maf_b", "formula": "(256*D+E)/32", "unit": "g/s", "min": 0, "max": 2047.97 }
+      ] },
+    { "service": "01", "pid": "67", "provenance": "inferred", "length": 3, "poll": "slow",
+      "signals": [
+        { "id": "engine.coolant_temp_supported_mask", "formula": "A&3", "unit": "bitmap" },
+        { "id": "engine.coolant_temp_s1", "formula": "B-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "engine.coolant_temp_s2", "formula": "C-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "68", "provenance": "standard", "length": 7, "poll": "slow",
+      "notes": "Intake air temperature, up to three sensors per bank. The Harrier reports this instead of PID 0F.",
+      "signals": [
+        { "id": "intake.air_temp_supported_mask", "formula": "A&63", "unit": "bitmap" },
+        { "id": "intake.air_temp_b1s1", "formula": "B-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "intake.air_temp_b1s2", "formula": "C-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "intake.air_temp_b1s3", "formula": "D-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "intake.air_temp_b2s1", "formula": "E-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "intake.air_temp_b2s2", "formula": "F-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "intake.air_temp_b2s3", "formula": "G-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "69", "provenance": "inferred", "length": 7, "poll": "normal",
+      "notes": "Two EGR systems, A and B: commanded, actual and error.",
+      "signals": [
+        { "id": "egr.supported_mask", "formula": "A&63", "unit": "bitmap" },
+        { "id": "egr.a_commanded_pct", "formula": "B/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "egr.a_actual_pct", "formula": "C/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "egr.a_error_pct", "formula": "D*100/128-100", "unit": "percent", "min": -100, "max": 99.22 },
+        { "id": "egr.b_commanded_pct", "formula": "E/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "egr.b_actual_pct", "formula": "F/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "egr.b_error_pct", "formula": "G*100/128-100", "unit": "percent", "min": -100, "max": 99.22 }
+      ] },
+    { "service": "01", "pid": "6A", "provenance": "inferred", "length": 5, "poll": "normal",
+      "notes": "Diesel intake air flow control: commanded and relative position of the actuators A and B.",
+      "signals": [
+        { "id": "intake.air_flow_supported_mask", "formula": "A&15", "unit": "bitmap" },
+        { "id": "intake.air_flow_a_commanded_pct", "formula": "B/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "intake.air_flow_a_position_pct", "formula": "C/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "intake.air_flow_b_commanded_pct", "formula": "D/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "intake.air_flow_b_position_pct", "formula": "E/2.55", "unit": "percent", "min": 0, "max": 100 }
+      ] },
+    { "service": "01", "pid": "6B", "provenance": "inferred", "length": 5, "poll": "slow",
+      "notes": "EGR temperature. The mapping of bytes B..E to bank and inlet/outlet is from public tables; not yet checked against a vehicle.",
+      "signals": [
+        { "id": "egr.temp_supported_mask", "formula": "A>>4", "unit": "bitmap" },
+        { "id": "egr.temp_b1_inlet", "formula": "B-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "egr.temp_b1_outlet", "formula": "C-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "egr.temp_b2_inlet", "formula": "D-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "egr.temp_b2_outlet", "formula": "E-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "6D", "provenance": "standard", "length": 11, "poll": "normal",
+      "notes": "Fuel pressure control system (rail pressure on a common-rail diesel); byte A says which fields are valid.",
+      "signals": [
+        { "id": "fuel.rail_a_commanded_kpa", "formula": "10*(256*B+C)", "unit": "kPa", "min": 0, "max": 655350 },
+        { "id": "fuel.rail_a_actual_kpa", "formula": "10*(256*D+E)", "unit": "kPa", "min": 0, "max": 655350 },
+        { "id": "fuel.rail_a_temp", "formula": "F-40", "unit": "degC", "min": -40, "max": 215 },
+        { "id": "fuel.rail_b_commanded_kpa", "formula": "10*(256*G+H)", "unit": "kPa", "min": 0, "max": 655350 },
+        { "id": "fuel.rail_b_actual_kpa", "formula": "10*(256*I+J)", "unit": "kPa", "min": 0, "max": 655350 },
+        { "id": "fuel.rail_b_temp", "formula": "K-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "71", "provenance": "inferred", "length": 6, "poll": "normal",
+      "notes": "Variable geometry turbocharger vane position, commanded and actual.",
+      "signals": [
+        { "id": "turbo.vgt_a_commanded_pct", "formula": "B/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "turbo.vgt_a_actual_pct", "formula": "C/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "turbo.vgt_b_commanded_pct", "formula": "D/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "turbo.vgt_b_actual_pct", "formula": "E/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "turbo.vgt_a_status", "formula": "F&3", "unit": "enum", "min": 0, "max": 3 },
+        { "id": "turbo.vgt_b_status", "formula": "(F>>2)&3", "unit": "enum", "min": 0, "max": 3 }
+      ] },
+    { "service": "01", "pid": "78", "provenance": "standard", "length": 9, "poll": "normal",
+      "notes": "EGT bank 1, sensors 1-4. Byte A bit n set: sensor n+1 present. Layout confirmed on a 2020 Harrier.",
+      "signals": [
+        { "id": "exhaust.egt_supported_mask", "formula": "A&15", "unit": "bitmap" },
+        { "id": "exhaust.egt_b1s1", "formula": "(256*B+C)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b1s2", "formula": "(256*D+E)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b1s3", "formula": "(256*F+G)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b1s4", "formula": "(256*H+I)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "79", "provenance": "standard", "length": 9, "poll": "normal",
+      "notes": "EGT bank 2, sensors 1-4.",
+      "signals": [
+        { "id": "exhaust.egt_b2_supported_mask", "formula": "A&15", "unit": "bitmap" },
+        { "id": "exhaust.egt_b2s1", "formula": "(256*B+C)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b2s2", "formula": "(256*D+E)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b2s3", "formula": "(256*F+G)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b2s4", "formula": "(256*H+I)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "7A", "provenance": "inferred", "length": 7, "poll": "normal",
+      "notes": "DPF bank 1 pressures. The differential pressure is a signed 16-bit value.",
+      "signals": [
+        { "id": "dpf.supported_mask", "formula": "A&7", "unit": "bitmap" },
+        { "id": "dpf.delta_pressure_kpa", "formula": "(((256*B+C+32768)&65535)-32768)/100", "unit": "kPa", "min": -327.68, "max": 327.67 },
+        { "id": "dpf.inlet_pressure_kpa", "formula": "(256*D+E)/100", "unit": "kPa", "min": 0, "max": 655.35 },
+        { "id": "dpf.outlet_pressure_kpa", "formula": "(256*F+G)/100", "unit": "kPa", "min": 0, "max": 655.35 }
+      ] },
+    { "service": "01", "pid": "7B", "provenance": "inferred", "length": 7, "poll": "normal",
+      "notes": "DPF bank 2 pressures.",
+      "signals": [
+        { "id": "dpf.b2_supported_mask", "formula": "A&7", "unit": "bitmap" },
+        { "id": "dpf.b2_delta_pressure_kpa", "formula": "(((256*B+C+32768)&65535)-32768)/100", "unit": "kPa", "min": -327.68, "max": 327.67 },
+        { "id": "dpf.b2_inlet_pressure_kpa", "formula": "(256*D+E)/100", "unit": "kPa", "min": 0, "max": 655.35 },
+        { "id": "dpf.b2_outlet_pressure_kpa", "formula": "(256*F+G)/100", "unit": "kPa", "min": 0, "max": 655.35 }
+      ] },
+    { "service": "01", "pid": "7C", "provenance": "standard", "length": 9, "poll": "normal",
+      "notes": "DPF inlet and outlet temperature, banks 1 and 2.",
+      "signals": [
+        { "id": "dpf.temp_supported_mask", "formula": "A&15", "unit": "bitmap" },
+        { "id": "dpf.inlet_temp", "formula": "(256*B+C)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "dpf.outlet_temp", "formula": "(256*D+E)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "dpf.b2_inlet_temp", "formula": "(256*F+G)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "dpf.b2_outlet_temp", "formula": "(256*H+I)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "83", "provenance": "inferred", "length": 9, "poll": "normal",
+      "notes": "NOx sensor concentrations, bank 1 sensors 1-2, bank 2 sensors 1-2.",
+      "signals": [
+        { "id": "exhaust.nox_supported_mask", "formula": "A>>4", "unit": "bitmap" },
+        { "id": "exhaust.nox_b1s1_ppm", "formula": "256*B+C", "unit": "ppm", "min": 0, "max": 65535 },
+        { "id": "exhaust.nox_b1s2_ppm", "formula": "256*D+E", "unit": "ppm", "min": 0, "max": 65535 },
+        { "id": "exhaust.nox_b2s1_ppm", "formula": "256*F+G", "unit": "ppm", "min": 0, "max": 65535 },
+        { "id": "exhaust.nox_b2s2_ppm", "formula": "256*H+I", "unit": "ppm", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "84", "provenance": "standard", "length": 1, "poll": "slow",
+      "signals": [
+        { "id": "intake.manifold_surface_temp", "formula": "A-40", "unit": "degC", "min": -40, "max": 215 }
+      ] },
+    { "service": "01", "pid": "85", "provenance": "inferred", "length": 10, "poll": "slow",
+      "notes": "NOx control system (SCR): reagent consumption, demanded consumption, tank level, time the NOx warning indicator has been on.",
+      "signals": [
+        { "id": "def.supported_mask", "formula": "A>>4", "unit": "bitmap" },
+        { "id": "def.consumption_rate_lph", "formula": "(256*B+C)/200", "unit": "L/h", "min": 0, "max": 327.675 },
+        { "id": "def.demanded_rate_lph", "formula": "(256*D+E)/200", "unit": "L/h", "min": 0, "max": 327.675 },
+        { "id": "def.reagent_level_pct", "formula": "F/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "def.warning_time_s", "formula": "16777216*G+65536*H+256*I+J", "unit": "s", "min": 0, "max": 4294967295 }
+      ] },
+    { "service": "01", "pid": "88", "provenance": "inferred", "length": 13, "poll": "slow",
+      "notes": "SCR inducement system. Bit and distance assignments follow public tables and are not yet checked against a vehicle; the lN_* flags are the four inducement severity levels, the distances are to the next level in normal (n) or degraded (d) operation.",
+      "signals": [
+        { "id": "def.inducement_active", "formula": "(A>>7)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_reason_nox", "formula": "(A>>3)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_reason_consumption", "formula": "(A>>2)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_reason_reagent", "formula": "(A>>1)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_reason_level_low", "formula": "A&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l2_nox", "formula": "(B>>7)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l2_consumption", "formula": "(B>>6)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l2_reagent", "formula": "(B>>5)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l2_level_low", "formula": "(B>>4)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l1_nox", "formula": "(B>>3)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l1_consumption", "formula": "(B>>2)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l1_reagent", "formula": "(B>>1)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l1_level_low", "formula": "(B>>0)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l4_nox", "formula": "(C>>7)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l4_consumption", "formula": "(C>>6)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l4_reagent", "formula": "(C>>5)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l4_level_low", "formula": "(C>>4)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l3_nox", "formula": "(C>>3)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l3_consumption", "formula": "(C>>2)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l3_reagent", "formula": "(C>>1)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_l3_level_low", "formula": "(C>>0)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "def.inducement_dist_1n_km", "formula": "256*D+E", "unit": "km", "min": 0, "max": 65535 },
+        { "id": "def.inducement_dist_1d_km", "formula": "256*F+G", "unit": "km", "min": 0, "max": 65535 },
+        { "id": "def.inducement_dist_2n_km", "formula": "256*H+I", "unit": "km", "min": 0, "max": 65535 },
+        { "id": "def.inducement_dist_3n_km", "formula": "256*J+K", "unit": "km", "min": 0, "max": 65535 },
+        { "id": "def.inducement_dist_4n_km", "formula": "256*L+M", "unit": "km", "min": 0, "max": 65535 }
+      ] },
+    { "service": "01", "pid": "8B", "provenance": "standard", "length": 7, "poll": "normal",
+      "notes": "Diesel aftertreatment status. Observed on a 2020 Harrier: status 2 = active regeneration; regeneration starts at 100 % soot and ends near 17.65 % after about 16 minutes. Byte A (support flags) is not decoded.",
+      "signals": [
+        { "id": "dpf.regen_status", "formula": "B", "unit": "enum" },
+        { "id": "dpf.soot_pct", "formula": "C/2.55", "unit": "percent", "min": 0, "max": 100 },
+        { "id": "dpf.avg_regen_interval_min", "formula": "256*D+E", "unit": "min" },
+        { "id": "dpf.avg_regen_distance_km", "formula": "256*F+G", "unit": "km" }
+      ] },
+    { "service": "01", "pid": "8E", "provenance": "standard", "length": 1, "poll": "fast",
+      "signals": [
+        { "id": "engine.torque_friction_pct", "formula": "A-125", "unit": "percent", "min": -125, "max": 130 }
+      ] },
+    { "service": "01", "pid": "92", "provenance": "inferred", "length": 2, "poll": "slow",
+      "notes": "Fuel system control: whether fuel pressure, injection quantity, timing and injector balance are in closed loop, for systems A and B.",
+      "signals": [
+        { "id": "fuel.cl_pressure_a", "formula": "B&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "fuel.cl_quantity_a", "formula": "(B>>1)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "fuel.cl_timing_a", "formula": "(B>>2)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "fuel.cl_balance_a", "formula": "(B>>3)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "fuel.cl_pressure_b", "formula": "(B>>4)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "fuel.cl_quantity_b", "formula": "(B>>5)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "fuel.cl_timing_b", "formula": "(B>>6)&1", "unit": "enum", "min": 0, "max": 1 },
+        { "id": "fuel.cl_balance_b", "formula": "(B>>7)&1", "unit": "enum", "min": 0, "max": 1 }
+      ] },
+    { "service": "01", "pid": "98", "provenance": "inferred", "length": 9, "poll": "normal",
+      "notes": "EGT bank 1, sensors 5-8. The sensor numbering is from public tables; not yet checked against a vehicle.",
+      "signals": [
+        { "id": "exhaust.egt_b1_s58_supported_mask", "formula": "A&15", "unit": "bitmap" },
+        { "id": "exhaust.egt_b1s5", "formula": "(256*B+C)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b1s6", "formula": "(256*D+E)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b1s7", "formula": "(256*F+G)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b1s8", "formula": "(256*H+I)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "99", "provenance": "inferred", "length": 9, "poll": "normal",
+      "notes": "EGT bank 2, sensors 5-8.",
+      "signals": [
+        { "id": "exhaust.egt_b2_s58_supported_mask", "formula": "A&15", "unit": "bitmap" },
+        { "id": "exhaust.egt_b2s5", "formula": "(256*B+C)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b2s6", "formula": "(256*D+E)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b2s7", "formula": "(256*F+G)/10-40", "unit": "degC", "min": -40, "max": 6513.5 },
+        { "id": "exhaust.egt_b2s8", "formula": "(256*H+I)/10-40", "unit": "degC", "min": -40, "max": 6513.5 }
+      ] },
+    { "service": "01", "pid": "9D", "provenance": "standard", "length": 4, "poll": "normal",
+      "notes": "Engine fuel rate (bytes A, B) and vehicle fuel rate (C, D). Litres per hour = g/s * 3.6 / fuel density. Layout confirmed on a 2020 Harrier.",
+      "signals": [
+        { "id": "fuel.rate_gps", "formula": "(256*A+B)/50", "unit": "g/s", "min": 0, "max": 1310.7 },
+        { "id": "fuel.vehicle_rate_gps", "formula": "(256*C+D)/50", "unit": "g/s", "min": 0, "max": 1310.7 }
+      ] },
+    { "service": "01", "pid": "A1", "provenance": "inferred", "length": 9, "poll": "normal",
+      "notes": "NOx sensor concentrations corrected for the sensor's own offset and gain.",
+      "signals": [
+        { "id": "exhaust.nox_corrected_supported_mask", "formula": "A>>4", "unit": "bitmap" },
+        { "id": "exhaust.nox_corrected_b1s1_ppm", "formula": "256*B+C", "unit": "ppm", "min": 0, "max": 65535 },
+        { "id": "exhaust.nox_corrected_b1s2_ppm", "formula": "256*D+E", "unit": "ppm", "min": 0, "max": 65535 },
+        { "id": "exhaust.nox_corrected_b2s1_ppm", "formula": "256*F+G", "unit": "ppm", "min": 0, "max": 65535 },
+        { "id": "exhaust.nox_corrected_b2s2_ppm", "formula": "256*H+I", "unit": "ppm", "min": 0, "max": 65535 }
+      ] }
   ]
 }

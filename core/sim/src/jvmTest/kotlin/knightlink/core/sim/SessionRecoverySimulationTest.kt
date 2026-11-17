@@ -205,7 +205,7 @@ class SessionRecoverySimulationTest {
     @Test
     fun aCarWithNothingToPollIsNotMistakenForASilentOne() = runTest {
         // One ECU that answers, but supports only a parameter the vehicle definition does not know: there is nothing to ask for.
-        val ecu = VirtualEcu(0x7E0, 0x7E8).also { it.set("01A1", "00") }
+        val ecu = VirtualEcu(0x7E0, 0x7E8).also { it.set("01C5", "00") }
         val rig = rig(vehicle = VirtualVehicle(listOf(ecu)))
         rig.session.start()
         run(60.seconds)

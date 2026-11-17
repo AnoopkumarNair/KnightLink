@@ -15,6 +15,12 @@ interface RecordSinkFactory {
 
     /** No more lines will arrive for the current sink: release whatever it holds. Safe to call with no sink and more than once. */
     fun finishCurrent()
+
+    /**
+     * Writes [text] next to the current recording, under its name plus [suffix] (the full scan's result, `.scan.json`). Nothing happens when
+     * there is no recording. A file that cannot be written is not an error: it is a convenience beside the recording.
+     */
+    fun writeSidecar(suffix: String, text: String) = Unit
 }
 
 /** How many recordings there are on the device and how much room they take. */
@@ -40,9 +46,13 @@ class RecordingStore(val directory: File, private val keep: Int = DEFAULT_KEEP) 
 
     fun summary(): RecordingsSummary = list().let { files -> RecordingsSummary(files.size, files.sumOf { it.length() }) }
 
-    /** Deletes every recording beyond the newest [keep]. A file that cannot be deleted is left for the next call. */
+    /** Deletes every recording beyond the newest [keep], and the files written next to it. A file that cannot be deleted is left for the next call. */
     fun prune() {
-        list().drop(keep).forEach { it.delete() }
+        list().drop(keep).forEach { recording ->
+            recording.delete()
+            directory.listFiles { file -> file.name.startsWith(recording.name.removeSuffix(EXTENSION) + ".") && file.name != recording.name }
+                ?.forEach { it.delete() }
+        }
     }
 
     // Without the extension, so that "…Z" sorts before its collision-suffixed sibling "…Z_1" (a '.' would sort between them wrongly).
@@ -64,6 +74,7 @@ class RecordingStore(val directory: File, private val keep: Int = DEFAULT_KEEP) 
  */
 class FileRecordSinkFactory(private val store: RecordingStore, private val clock: Clock = Clock.systemUTC()) : RecordSinkFactory {
     private var current: FileSink? = null
+    private var currentFile: File? = null
 
     @Synchronized
     override fun newSink(): RecordSink {
@@ -71,7 +82,9 @@ class FileRecordSinkFactory(private val store: RecordingStore, private val clock
         current = null
         val sink = try {
             store.directory.mkdirs()
-            FileSink(createFile())
+            val file = createFile()
+            currentFile = file
+            FileSink(file)
         } catch (_: IOException) {
             // No recording is better than no connection: the car must stay readable when storage is unavailable.
             return RecordSink { }
@@ -86,6 +99,16 @@ class FileRecordSinkFactory(private val store: RecordingStore, private val clock
     override fun finishCurrent() {
         current?.close()
         current = null
+    }
+
+    @Synchronized
+    override fun writeSidecar(suffix: String, text: String) {
+        val file = currentFile ?: return
+        try {
+            File(file.parentFile, file.name.removeSuffix(RecordingStore.EXTENSION) + suffix).writeText(text, Charsets.UTF_8)
+        } catch (_: IOException) {
+            // Beside the recording, not part of it: losing it must not trouble the session.
+        }
     }
 
     private fun createFile(): File {

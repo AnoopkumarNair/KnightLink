@@ -72,6 +72,39 @@ class ReadOnlyGuardTest {
     }
 
     @Test
+    fun theReceiveAndFlowControlSettingsOfTheAdapterAreAllowed() {
+        val allowed = listOf(
+            "ATCF700", "AT CF 700", "ATCM700", "ATCM 7FF", "ATCF18DAF110", "ATFCSH700", "AT FC SH 700",
+            "ATFCSD300000", "AT FC SD 30 00 00", "ATFCSD30", "ATFCSM0", "ATFCSM1", "ATCFC0", "ATCFC1",
+        )
+        for (command in allowed) assertNull(ReadOnlyPolicy.violation(command), command)
+    }
+
+    @Test
+    fun theFlowControlDataMayOnlyBeClearToSendAndTheOtherSettingsOnlyTakeTheirOwnArguments() {
+        val refused = listOf(
+            "ATFCSD", // no data
+            "ATFCSD3", // odd length
+            "ATFCSD320000", // wait, not clear to send
+            "ATFCSD3100", // overflow
+            "ATFCSD0300", // does not start with 30
+            "ATFCSD30000000000000", // longer than a flow-control frame
+            "ATFCSM2", "ATFCSM", "ATFCSM01", // only the automatic and the user-defined mode
+            "ATFCSH", "ATFCSH70", "ATFCSH7000", "ATCF", "ATCM12", "ATCFXYZ", "ATCMGGG",
+            "ATFC", "ATFCSX1", // anything else under FC
+        )
+        for (command in refused) assertNotNull(ReadOnlyPolicy.violation(command), command)
+    }
+
+    @Test
+    fun theReceiveSettingsDoNotOpenTheDoorToTheDiagnosticServicesThatWrite() {
+        // They only change what the adapter listens to; a request is still judged by its service.
+        for (request in listOf("04", "1003", "2EF19000", "3101FF00", "2701", "14FFFFFF")) assertNotNull(ReadOnlyPolicy.violation(request), request)
+        assertNotNull(ReadOnlyPolicy.violation("ATPP0CSV01"))
+        assertNotNull(ReadOnlyPolicy.violation("ATWM8110F13E"))
+    }
+
+    @Test
     fun aBareCarriageReturnIsRefusedBecauseItRepeatsWhateverWasSentLast() {
         assertNotNull(ReadOnlyPolicy.violation(""))
         assertNotNull(ReadOnlyPolicy.violation("  "))

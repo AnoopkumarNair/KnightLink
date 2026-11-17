@@ -12,6 +12,17 @@ import knightlink.core.common.toHex
 public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
     private val replies = HashMap<String, ByteArray>()
 
+    /** False simulates an ECU that does not understand a service 01 request for several PIDs: it stays silent on one, as some older ECUs do. */
+    public var multiPid: Boolean = true
+
+    /** True simulates an ECU that has stopped answering (it crashed, or lost power): it stays silent on everything. */
+    public var silent: Boolean = false
+
+    /** False simulates an ECU that stays silent on a data identifier it does not have, instead of refusing it with "request out of range". */
+    public var refusesUnknownDids: Boolean = true
+
+    private val refusals = HashMap<String, Int>()
+
     /**
      * @param request service + PID/DID as hex, e.g. `010C` or `22F190`
      * @param data the bytes that follow the echoed request in a positive reply, as hex
@@ -22,14 +33,24 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
 
     public fun remove(request: String) {
         replies.remove(request.filterNot { it.isWhitespace() }.uppercase())
+        refusals.remove(request.filterNot { it.isWhitespace() }.uppercase())
+    }
+
+    /** Makes [request] (e.g. `221E12`) answer with the negative response [code] (`7F <service> <code>`), whatever it held before. */
+    public fun refuse(request: String, code: Int) {
+        refusals[request.filterNot { it.isWhitespace() }.uppercase()] = code
     }
 
     /** @return the reply payload (before ISO-TP framing), or null when this ECU stays silent. */
     public fun respond(request: ByteArray): ByteArray? {
-        if (request.isEmpty()) return null
+        if (request.isEmpty() || silent) return null
         val service = request[0].toInt() and 0xFF
         val positive = byteArrayOf((service + POSITIVE_OFFSET).toByte()) + request.copyOfRange(1, request.size)
+        refusals[request.toHex()]?.let { return byteArrayOf(NEGATIVE, service.toByte(), it.toByte()) }
         replies[request.toHex()]?.let { return positive + it }
+
+        // Several PIDs in one request: the ECU answers the ones it supports, in the order asked, and stays silent when it supports none.
+        if (service == SERVICE_LIVE_DATA && request.size > 2) return if (!multiPid) null else answerMultiPid(request)?.let { byteArrayOf(positive[0]) + it }
 
         if ((service == SERVICE_LIVE_DATA || service == SERVICE_VEHICLE_INFO) && request.size == 2) {
             val pid = request[1].toInt() and 0xFF
@@ -37,10 +58,22 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
         }
         return when (service) {
             // Emission-related services: an ECU that lacks the PID simply does not answer.
-            SERVICE_LIVE_DATA, 0x02, SERVICE_VEHICLE_INFO -> null
-            0x22 -> byteArrayOf(NEGATIVE, service.toByte(), NRC_REQUEST_OUT_OF_RANGE)
+            SERVICE_LIVE_DATA, 0x02, SERVICE_VEHICLE_INFO, 0x03, 0x06, 0x07, 0x0A -> null
+            0x22 -> if (refusesUnknownDids) byteArrayOf(NEGATIVE, service.toByte(), NRC_REQUEST_OUT_OF_RANGE) else null
             else -> byteArrayOf(NEGATIVE, service.toByte(), NRC_SERVICE_NOT_SUPPORTED)
         }
+    }
+
+    /** `<pid> <data> <pid> <data> ...` for the PIDs of a service 01 request that this ECU supports; null when it supports none. */
+    private fun answerMultiPid(request: ByteArray): ByteArray? {
+        var reply = ByteArray(0)
+        for (pidByte in request.copyOfRange(1, request.size)) {
+            val pid = pidByte.toInt() and 0xFF
+            val data = replies[byteArrayOf(SERVICE_LIVE_DATA.toByte(), pidByte).toHex()]
+                ?: if (pid % SUPPORT_RANGE == 0) supportBitmap(SERVICE_LIVE_DATA, pid) else null
+            if (data != null) reply += byteArrayOf(pidByte) + data
+        }
+        return reply.takeIf { it.isNotEmpty() }
     }
 
     /**

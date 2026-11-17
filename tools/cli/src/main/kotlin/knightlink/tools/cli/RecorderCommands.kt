@@ -8,13 +8,14 @@ import knightlink.core.recorder.RecordingFormatException
 import knightlink.core.recorder.RecordingScrubber
 import knightlink.core.recorder.ReplayByteStream
 import knightlink.core.recorder.ReplayMode
+import knightlink.core.scheduler.PollScheduler
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 
-private fun readRecording(path: String): Recording {
+internal fun readRecording(path: String): Recording {
     val file = File(path)
     if (!file.isFile) fail("no recording at ${file.path}")
     val recording = try {
@@ -63,7 +64,7 @@ internal fun usesProbeScript(recording: Recording, definition: AdapterDefinition
 private val QUERY_COMMANDS = setOf("ATI", "AT@1", "AT@2", "ATRV", "ATDP", "ATDPN", "ATIGN")
 
 internal fun replay(rawArgs: List<String>) {
-    val args = Args(rawArgs, flags = setOf("--strict"), options = setOf("--speed"))
+    val args = Args(rawArgs, flags = setOf("--strict", "--no-batch"), options = setOf("--speed"))
     if (args.positional.size != 2) fail("replay needs a recording and a definition id")
     val recording = readRecording(args.positional[0])
     val definitionId = args.positional[1]
@@ -95,6 +96,7 @@ internal fun replay(rawArgs: List<String>) {
                 poll = true,
                 probeScript = if (withTuning) definition!!.probeScript else emptyList(),
                 pollScript = if (withTuning) definition!!.pollScript else emptyList(),
+                maxBatch = if (args.flag("--no-batch")) 1 else PollScheduler.MAX_BATCH,
             ) { System.err.println("probe: $it") }
         } finally {
             stream.close()

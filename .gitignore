@@ -11,5 +11,9 @@ captures/
 # Raw captures can contain a VIN, MAC addresses and location. Keep them local unless scrubbed.
 fixtures/raw/*
 !fixtures/raw/README.md
+# The first real-car capture, scrubbed (see fixtures/raw/README.md).
+!fixtures/raw/harrier-2026-11-17-apartment-drive.jsonl
 # Scratch worktrees used by coding agents.
 .claude/worktrees/
+# IDE (VS Code Java) build output.
+bin/

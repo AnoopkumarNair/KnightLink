@@ -21,9 +21,11 @@ public data class ScrubResult(val recording: Recording, val warnings: List<Strin
  * over CAN frames, ISO-TP frames and arbitrary transport chunks, not as a string that could be searched for.
  *
  * What it does, and promises:
- * - For every exchange whose command is service 09 PID 02 (`0902`, optionally followed by the response-count digit),
- *   the rx bytes of the response are read as adapter lines, parsed with [ElmLineParser] (11-bit identifiers; spaces on
- *   or off; headers on), reassembled per ECU with ISO-TP, and the 17 VIN characters after `49 02 01` are located.
+ * - For every exchange whose command is service 09 PID 02 (`0902`) or UDS data identifier F190 (`22F190`), optionally followed by
+ *   the response-count digit, the rx bytes of the response are read as adapter lines, parsed with [ElmLineParser] (11-bit
+ *   identifiers; spaces on or off; headers on), reassembled per ECU with ISO-TP, and the 17 VIN characters after `49 02 01`
+ *   (or `62 F1 90`) are located. An ECU that answers F190 with something that is not a 17-character VIN (a refusal is neither)
+ *   keeps what it said only when it is a refusal or all bytes alike (an unprogrammed ECU).
  *   The first 3 (the manufacturer code) are kept, the other 14 become `0`. The hex digits are rewritten in place: line
  *   structure, spacing, identifiers, PCI bytes, the number of bytes in every rx chunk and every timestamp stay as recorded.
  * - If such a response cannot be read with confidence (unknown line shape such as headers off or 29-bit identifiers,
@@ -35,8 +37,8 @@ public data class ScrubResult(val recording: Recording, val warnings: List<Strin
  *   replacement has the same length, so chunk sizes do not change.
  *
  * What it does not promise:
- * - Nothing else is looked for. A VIN delivered another way (for example a UDS read of data identifier F190, or
- *   headers-off output on a `0902` exchange that was not recognised as one) is not found, and a VIN that was never
+ * - Nothing else is looked for. A VIN delivered another way (for example a read of another data identifier, or
+ *   headers-off output on an exchange that was not recognised as a VIN read) is not found, and a VIN that was never
  *   in a recognised `0902` response is not known to the scrubber, so its text copies are not found either.
  * - Other identifying data is untouched: ECU names, calibration ids, timing, the free-text header note, and
  *   anything else the adapter said. Look at a recording before it leaves the device.
@@ -46,7 +48,9 @@ public object RecordingScrubber {
     private const val VIN_LENGTH = 17
     private const val WMI_LENGTH = 3
     private const val PAYLOAD_LENGTH = 3 + VIN_LENGTH
-    private val vinRequest = Regex("0902[0-9A-F]?")
+
+    // The two ways a VIN is read: OBD service 09 PID 02, and UDS service 22 data identifier F190. Each may carry the response-count digit.
+    private val vinRequest = Regex("(?:0902|22F190)[0-9A-F]?")
     private val noData = "NO DATA\r\r>".encodeToByteArray()
 
     /** @return the scrubbed copy; [Recording.truncated] and the order of events are kept. */
@@ -86,12 +90,11 @@ public object RecordingScrubber {
         sweepBytes(events, EventKind.RX, vins)
         val header = RecordingHeader(recording.header.adapter?.let { it.scrubText(vins) }, recording.header.note?.let { it.scrubText(vins) })
         val scrubbed = events.filterNotNull().map {
-            if (it.kind == EventKind.ERROR ||
-                it.kind == EventKind.EVENT
-            ) {
-                it.copy(payload = it.payload.scrubText(vins))
-            } else {
-                it
+            when (it.kind) {
+                EventKind.ERROR, EventKind.EVENT -> it.copy(payload = it.payload.scrubText(vins))
+                // A position never leaves the device more precisely than about a kilometre.
+                EventKind.EXTERNAL -> it.copy(payload = ExternalSamples.scrub(it.payload))
+                else -> it
             }
         }
         return ScrubResult(Recording(header, scrubbed, recording.truncated), warnings)
@@ -188,12 +191,19 @@ public object RecordingScrubber {
 
         val vins = ArrayList<String>()
         val positions = ArrayList<Int>()
+        // Service 09: 49 02 <item count 1> <17 characters>. UDS: 62 F1 90 <17 characters>. Both are 20 bytes with the characters from byte 3.
+        val uds = command.startsWith("22")
+        val sid = if (uds) POSITIVE_SERVICE_22 else POSITIVE_SERVICE_09
+        val first = if (uds) DID_VIN_HIGH else PID_VIN
+        val third = if (uds) DID_VIN_LOW else ONE_ITEM
         for (message in messages) {
             val p = message.payload
-            if (p.size < 2 || p[0] != POSITIVE_SERVICE_09 || p[1] != PID_VIN) continue
-            // 49 02 <item count 1> <17 characters>: anything else is not understood well enough to rewrite.
-            if (p.size != PAYLOAD_LENGTH || p[2] != ONE_ITEM) return Reading.Unreadable
+            if (p.size < 2 || p[0] != sid || p[1] != first) continue
+            // Anything else is not understood well enough to rewrite.
+            if (p.size != PAYLOAD_LENGTH || p[2] != third) return Reading.Unreadable
             val characters = p.copyOfRange(3, PAYLOAD_LENGTH)
+            // An ECU that was never programmed answers with the same byte throughout (FF, 00): no VIN in it.
+            if (characters.all { it == characters[0] } && characters[0].toInt() !in PRINTABLE) continue
             if (characters.any { it.toInt() !in PRINTABLE }) return Reading.Unreadable
             vins += characters.decodeToString()
             for (i in 3 + WMI_LENGTH until PAYLOAD_LENGTH) {
@@ -277,7 +287,9 @@ public object RecordingScrubber {
                 messages += Message(frame.id, assembly.payload, assembly.digitPositions)
             }
         }
-        return if (pending.isEmpty()) messages else null
+        // A reply cut to its first frame (the adapter was told to stop after one frame) holds at most the manufacturer code of a VIN:
+        // nothing to hide in it, and a scan that reads F190 from many ECUs would otherwise lose every one of those exchanges.
+        return if (pending.values.all { it.filled <= FIRST_FRAME_DATA }) messages else null
     }
 
     private fun agreesWithReference(frames: List<Frame>, messages: List<Message>): Boolean {
@@ -296,6 +308,10 @@ public object RecordingScrubber {
 
     private const val ID_DIGITS = 3
     private const val POSITIVE_SERVICE_09: Byte = 0x49
+    private const val POSITIVE_SERVICE_22: Byte = 0x62
+    private const val DID_VIN_HIGH: Byte = 0xF1.toByte()
+    private const val DID_VIN_LOW: Byte = 0x90.toByte()
+    private const val FIRST_FRAME_DATA = 6
     private const val PID_VIN: Byte = 0x02
     private const val ONE_ITEM: Byte = 0x01
     private const val PCI_SINGLE = 0

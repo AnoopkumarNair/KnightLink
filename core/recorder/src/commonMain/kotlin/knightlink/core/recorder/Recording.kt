@@ -53,6 +53,14 @@ public enum class EventKind(internal val carriesBytes: Boolean = false) {
      */
     @SerialName("ev")
     EVENT,
+
+    /**
+     * Samples from outside the link, taken while it was open (the phone's motion sensors and position), as one line of text: a source
+     * tag, then values (see [ExternalSamples]). Not traffic, so a replay skips it; it lets the drive be read next to the vehicle's data.
+     * Files that hold these are schema 3.
+     */
+    @SerialName("ext")
+    EXTERNAL,
 }
 
 /**
@@ -102,6 +110,9 @@ public data class RecordingEvent(val timeMs: Long, val kind: EventKind, val payl
 
         /** A session event; [text] is one line for a person, without a VIN or an address. */
         public fun event(timeMs: Long, text: String): RecordingEvent = RecordingEvent(timeMs, EventKind.EVENT, text)
+
+        /** External samples; [line] is one line made by [ExternalSamples]. */
+        public fun external(timeMs: Long, line: String): RecordingEvent = RecordingEvent(timeMs, EventKind.EXTERNAL, line)
     }
 }
 
@@ -119,6 +130,10 @@ public data class RecordingEvent(val timeMs: Long, val kind: EventKind, val payl
  * holds such events, so every file without them stays byte-for-byte what schema 1 wrote, and a reader that only knows schema 1
  * refuses a schema 2 file with a clear message. This reader accepts both.
  *
+ * Schema 3 adds the `ext` kind (see [EventKind.EXTERNAL]). It follows the same rule: a file is written as schema 3 only when it holds
+ * such events, so files without them stay as they were, and a reader that does not know the kind refuses the file instead of
+ * misreading it. This reader accepts 1, 2 and 3.
+ *
  * @param truncated true when [parse] dropped an incomplete last line, i.e. the session ended in a crash.
  */
 public data class Recording(
@@ -128,14 +143,24 @@ public data class Recording(
 ) {
     /** The file text: header line, then one line per event, each ended by a newline. */
     public fun toText(): String = buildString {
-        val schema = if (events.any { it.kind == EventKind.EVENT }) SCHEMA_VERSION else BASE_SCHEMA_VERSION
+        val schema = when {
+            events.any { it.kind == EventKind.EXTERNAL } -> SCHEMA_EXTERNAL
+            events.any { it.kind == EventKind.EVENT } -> SCHEMA_EVENTS
+            else -> BASE_SCHEMA_VERSION
+        }
         append(headerLine(header, schema)).append('\n')
         events.forEach { append(eventLine(it)).append('\n') }
     }
 
     public companion object {
         /** The newest schema this build reads and writes. */
-        public const val SCHEMA_VERSION: Int = 2
+        public const val SCHEMA_VERSION: Int = 3
+
+        /** What a file with session events (and no external samples) says. */
+        public const val SCHEMA_EVENTS: Int = 2
+
+        /** What a file with external samples says. */
+        public const val SCHEMA_EXTERNAL: Int = 3
 
         /** What a file without session events says; see the class comment. */
         internal const val BASE_SCHEMA_VERSION: Int = 1

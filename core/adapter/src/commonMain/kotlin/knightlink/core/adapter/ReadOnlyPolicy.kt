@@ -13,7 +13,10 @@ package knightlink.core.adapter
  *   14 (clear DTC information), 27 (security access), 28 (communication control), 2E (write data), 2F (I/O control),
  *   31 (routine control), 34–37 (download/upload), 3D (write memory), 85 (DTC setting control).
  *
- * Adapter commands (`AT…`): an allowlist of commands that only affect the adapter's volatile state or read it. Refused,
+ * Adapter commands (`AT…`): an allowlist of commands that only affect the adapter's volatile state or read it. That includes the
+ * adapter-local receive and flow-control settings that a read of an ECU with a non-OBD address needs: `ATCF`/`ATCM` (which CAN
+ * identifiers the adapter listens to), `ATFCSH` (the identifier its flow-control frames go to), `ATFCSD` (their data, only
+ * ClearToSend: `30…`) and `ATFCSM` (flow-control mode 0 or 1). None of them puts a diagnostic message on the bus. Refused,
  * among others: `ATPP…` (writes the adapter's EEPROM), `AT@3` (writes its identifier), `ATCV` (writes its calibration),
  * `ATWM`/`ATSW` (make the adapter send wake-up messages on the bus by itself), `ATBI` (skips the bus initialisation checks),
  * `ATMA`/`ATMR`/`ATMT` (monitor mode floods the link), `ATSI`/`ATFI` (K-line slow/fast init), and a bare carriage return
@@ -32,6 +35,7 @@ public object ReadOnlyPolicy {
         "E0", "E1", "L0", "L1", "S0", "S1", "H0", "H1", "M0", "M1", "AL", "NL",
         "SP", "TP", "AT0", "AT1", "AT2", "ST", "SH", "CRA", "AR", "CAF0", "CAF1", "CFC0", "CFC1", "CEA", "CP", "R0", "R1",
         "D0", "D1", "V0", "V1",
+        "CF", "CM", "FCSH", "FCSD", "FCSM",
     )
 
     /** Why [command] may not be sent, or null when it may. [command] is the text without the trailing carriage return. */
@@ -60,7 +64,16 @@ public object ReadOnlyPolicy {
         val match = atAllowed.filter { rest.startsWith(it) }.maxByOrNull { it.length }
             ?: return "adapter command AT$rest is not on the read-only allowlist"
         val argument = rest.removePrefix(match)
-        return if (argument.all { it in '0'..'9' || it in 'A'..'F' }) null else "adapter command AT$rest is not on the read-only allowlist"
+        if (!argument.all { it in '0'..'9' || it in 'A'..'F' }) return "adapter command AT$rest is not on the read-only allowlist"
+        // The receive and flow-control settings take a CAN identifier (3 hex digits, or 8 for 29-bit) or fixed data, nothing else.
+        val shape = when (match) {
+            "CF", "CM", "FCSH" -> argument.length == 3 || argument.length == 8
+            // ClearToSend only (30 = continue, then block size and separation time): never wait or abort, never a stranger's byte.
+            "FCSD" -> argument.length in 2..10 && argument.length % 2 == 0 && argument.startsWith("30")
+            "FCSM" -> argument == "0" || argument == "1"
+            else -> true
+        }
+        return if (shape) null else "adapter command AT$rest has an argument that is not allowed for $match"
     }
 }
 

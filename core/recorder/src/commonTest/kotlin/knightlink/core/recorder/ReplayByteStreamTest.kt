@@ -453,6 +453,20 @@ class ReplayByEcuTest {
     }
 
     @Test
+    fun theResponseCountDigitDoesNotMakeTwoRequestsDifferent() {
+        val recording = Script()
+            .ask("ATSH7E0", okWithEcho7E0)
+            .ask("09021", "7E8 10 0B 49 02 01 4D 41 54\r\r>")
+            .build()
+
+        // A session recorded with the digit is answered when the same request is now sent without it, and the other way round.
+        val (answers, stream) = replayed(recording, "ATSH7E0", "0902", "09021")
+
+        assertEquals(listOf(okWithEcho7E0, "7E8 10 0B 49 02 01 4D 41 54\r\r>", "7E8 10 0B 49 02 01 4D 41 54\r\r>"), answers)
+        assertEquals(0, stream.unknownCommands)
+    }
+
+    @Test
     fun aRequestNeverRecordedForTheSelectedEcuIsUnknownAndReportedWithItsHeaderEvenIfAnotherEcuWasAsked() {
         val recording = Script()
             .ask("ATSH7E0", ok)
@@ -468,7 +482,8 @@ class ReplayByEcuTest {
             answers,
             "ATSH7E4 was never recorded, so it is unknown and selects nothing: the next request still goes to 7E0",
         )
-        assertEquals(listOf("7E1:0105", "7E0:010C1", "ATSH7E4"), stream.unknownCommandTexts)
+        // A request is matched and reported without its response-count digit, so 010C1 shows as 010C.
+        assertEquals(listOf("7E1:0105", "7E0:010C", "ATSH7E4"), stream.unknownCommandTexts)
         assertEquals(3, stream.unknownCommands)
     }
 

@@ -6,6 +6,7 @@ import knightlink.core.common.toHex
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmResponseDecoder
 import knightlink.core.protocol.ElmStreamFramer
+import knightlink.core.runtime.confirmedPollItems
 import knightlink.core.scheduler.DiagnosticRequester
 import knightlink.core.scheduler.PollScheduler
 import knightlink.core.scheduler.PollingLoop
@@ -15,10 +16,10 @@ import knightlink.core.signals.SignalCatalog
 import knightlink.core.sim.SimulationFile
 import knightlink.core.sim.VirtualElm327
 import knightlink.core.telemetry.TelemetryDecoder
-import knightlink.core.telemetry.pollItems
 import knightlink.core.transport.ByteStream
 import knightlink.core.vehicle.CapabilityProbe
 import knightlink.core.vehicle.CapabilityReport
+import knightlink.core.vehicle.DefinitionCoverage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -58,7 +59,8 @@ internal class StackHarness {
         val readings = LinkedHashMap<String, Double>()
         var count = 0
         if (polls > 0) {
-            val items = catalog.pollItems(primaryEcu = "ecm") { parameter ->
+            // The poll list the app builds: only what the probe confirmed, each parameter from the ECU that has it.
+            val items = confirmedPollItems(catalog, DefinitionCoverage.compare(report, catalog), "ecm") { parameter ->
                 if (parameter.signals.any { it.definition.id.startsWith("dpf.") || it.definition.id.startsWith("exhaust.") }) 500.milliseconds else 2.seconds
             }
             val decoder = TelemetryDecoder(catalog)
@@ -74,7 +76,8 @@ internal class StackHarness {
     }
 
     companion object {
-        const val POLLS = 20
+        // One round of the confirmed parameters (13 on the simulated car): which item is next is then independent of timing, so a replay at another speed asks the same.
+        const val POLLS = 12
     }
 }
 

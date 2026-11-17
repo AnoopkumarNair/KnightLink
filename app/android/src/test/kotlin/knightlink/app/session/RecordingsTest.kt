@@ -107,6 +107,28 @@ class RecordingsTest {
     }
 
     @Test
+    fun aSidecarFileIsWrittenNextToTheCurrentRecordingAndRemovedWithIt() {
+        val store = RecordingStore(directory, keep = 1)
+        val factory = FileRecordSinkFactory(store, SteppingClock())
+        factory.writeSidecar(".scan.json", "nothing to write it next to")
+        assertTrue(directory.listFiles().orEmpty().isEmpty())
+
+        factory.newSink().append("x")
+        factory.writeSidecar(".scan.json", "{}")
+        val first = store.newest()!!
+        val sidecar = File(directory, first.name.removeSuffix(".jsonl") + ".scan.json")
+        assertEquals("{}", sidecar.readText())
+        assertEquals(listOf(first), store.list(), "the sidecar is not a recording")
+        assertEquals(RecordingsSummary(1, 2), store.summary())
+
+        // A newer recording pushes the old one out, and its sidecar with it.
+        factory.newSink().append("y")
+        factory.finishCurrent()
+        assertFalse(sidecar.exists())
+        assertFalse(first.exists())
+    }
+
+    @Test
     fun theSummaryCountsFilesAndBytes() {
         val store = RecordingStore(directory)
         assertEquals(RecordingsSummary.EMPTY, store.summary())

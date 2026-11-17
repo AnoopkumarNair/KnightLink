@@ -62,6 +62,18 @@ public object SessionEvents {
     /** The adapter asked for a command twice (it said STOPPED) and it was sent again. */
     public const val RESEND: String = "resend"
 
+    /** How fast polling is going: requests per second and the update rate of every signal over the last 30 seconds. Written every 30 seconds. */
+    public const val RATES: String = "rates"
+
+    /**
+     * What the full scan is doing: a stage starts or ends, the car moved and it paused, the battery voltage, why it stopped. One line for a
+     * person; never a full VIN.
+     */
+    public const val SCAN: String = "scan"
+
+    /** The full scan is over (finished, cancelled or stopped by a fault). The detail is the result as one line of JSON, with the VIN masked. */
+    public const val SCAN_RESULT: String = "scan-result"
+
     /** The session ended. The detail says why. */
     public const val END: String = "end"
 

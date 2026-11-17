@@ -138,13 +138,15 @@ public class RecordingByteStream internal constructor(
  * ended) is written into the recording of the link it concerns, as `ev` lines, redacted. An event goes to the link opened
  * most recently, even after that link was closed, so the reason a session ended is still the last thing in its file. Events
  * from before the first link (the first connection attempt) are held, up to [MAX_HELD_EVENTS], and written first when it opens.
- * Recordings made through this class are schema 2.
+ * Recordings made through this class are schema 2, or schema 3 when [externalSamples] is set: then [external] writes samples from outside
+ * the link (the phone's sensors) into the recording of the current link.
  */
 public class RecordingTransport(
     private val delegate: Transport,
     private val sinkFactory: () -> RecordSink,
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val header: RecordingHeader = RecordingHeader(),
+    private val externalSamples: Boolean = false,
 ) : Transport, SessionEventSink {
     private val eventLock = Mutex()
     private var current: SessionLog? = null
@@ -153,7 +155,7 @@ public class RecordingTransport(
     override val kind: TransportKind get() = delegate.kind
 
     override suspend fun open(): ByteStream {
-        val log = SessionLog(sinkFactory(), timeSource, header, Recording.SCHEMA_VERSION)
+        val log = SessionLog(sinkFactory(), timeSource, header, if (externalSamples) Recording.SCHEMA_EXTERNAL else Recording.SCHEMA_EVENTS)
         eventLock.withLock {
             held.forEach { log.logUnshared(EventKind.EVENT, it) }
             held.clear()
@@ -179,6 +181,16 @@ public class RecordingTransport(
             }
         }
         log?.log(EventKind.EVENT, text)
+    }
+
+    /**
+     * Writes one line of external samples (see [ExternalSamples]) into the recording of the link opened most recently, stamped with
+     * the time it is written. Dropped when this transport was not created with [externalSamples], or when no link has been opened yet.
+     */
+    public suspend fun external(line: String) {
+        if (!externalSamples) return
+        val log = eventLock.withLock { current } ?: return
+        log.log(EventKind.EXTERNAL, line)
     }
 
     public companion object {

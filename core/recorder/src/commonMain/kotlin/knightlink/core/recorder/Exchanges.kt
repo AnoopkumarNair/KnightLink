@@ -32,9 +32,28 @@ internal data class ExchangeKey(val header: String?, val command: String) {
     override fun toString(): String = if (header == null) command else "$header:$command"
 
     companion object {
-        /** The key of [command] (already through [commandKey]) when [selectedHeader] is selected. */
+        /**
+         * The key of [command] (already through [commandKey]) when [selectedHeader] is selected. A diagnostic request is keyed without its
+         * response-count digit (an odd number of hex digits): the digit only says when the adapter may stop waiting, so a replay of a
+         * session recorded with it can answer the same request sent without it, as the stack now does for replies longer than one frame.
+         */
         fun of(command: String, selectedHeader: String?): ExchangeKey =
-            ExchangeKey(if (isDiagnosticRequest(command)) selectedHeader else null, command)
+            if (isDiagnosticRequest(command)) {
+                ExchangeKey(
+                    selectedHeader,
+                    command.let {
+                        if (it.length % 2 ==
+                            1
+                        ) {
+                            it.dropLast(1)
+                        } else {
+                            it
+                        }
+                    },
+                )
+            } else {
+                ExchangeKey(null, command)
+            }
     }
 }
 
@@ -137,7 +156,7 @@ internal fun indexExchanges(events: List<RecordingEvent>): List<RecordedExchange
                 settle()
                 break@loop
             }
-            EventKind.OPEN, EventKind.EVENT -> Unit
+            EventKind.OPEN, EventKind.EVENT, EventKind.EXTERNAL -> Unit
         }
     }
     return exchanges

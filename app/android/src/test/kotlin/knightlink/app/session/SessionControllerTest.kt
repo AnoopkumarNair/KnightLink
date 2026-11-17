@@ -94,6 +94,20 @@ class SessionControllerTest {
     }
 
     @Test
+    fun theVehicleCardGetsTheMeasuredPollingRateWhileLiveAndNotBefore() = runTest {
+        val rig = rig()
+        rig.controller.connect(demo)
+        assertEquals(null, rig.controller.uiState.value.pollingRate)
+
+        awaitLive(rig.controller)
+        advanceTimeBy(15.seconds)
+
+        // What the session achieved over its last seconds, never above the driver's ceiling of 50 requests a second.
+        val rate = assertNotNull(rig.controller.uiState.value.pollingRate)
+        assertTrue(rate > 0.0 && rate <= 50.5, "rate $rate")
+    }
+
+    @Test
     fun theVehicleSummaryShowsOnlyTheRedactedVin() = runTest {
         val rig = rig()
         rig.controller.connect(demo)

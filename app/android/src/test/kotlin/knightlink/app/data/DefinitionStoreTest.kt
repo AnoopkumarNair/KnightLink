@@ -41,6 +41,21 @@ class DefinitionStoreTest {
     }
 
     @Test
+    fun theSweepPlanOfTheFullScanIsBundledAndValid() {
+        val plan = store.sweepPlan()
+        assertEquals("discovery/did-sweep", plan.id)
+        assertTrue(plan.requestsPerSecond <= 20.0)
+        assertTrue(plan.targets.isNotEmpty())
+    }
+
+    @Test
+    fun aBrokenSweepPlanIsReportedAsABrokenDataFile() {
+        val broken = DefinitionStore(MapAssetSource(mapOf("definitions/discovery/did-sweep.json" to """{ "schemaVersion": 1, "nonsense": true }""")))
+        assertFailsWith<DefinitionStoreException> { broken.sweepPlan() }
+        assertFailsWith<DefinitionStoreException> { DefinitionStore(MapAssetSource(emptyMap())).sweepPlan() }
+    }
+
+    @Test
     fun theAdapterDefinitionCarriesItsInitScript() {
         val adapter = store.adapter(config.adapterDefinition)
         assertEquals(config.adapterDefinition, adapter.id)

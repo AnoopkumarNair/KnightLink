@@ -92,6 +92,7 @@ class SessionService : Service() {
             ),
             recordings = FileRecordSinkFactory(RecordingStore(recordingsDirectory(applicationContext))),
             connectionLog = connectionLog,
+            samples = AndroidSampleSource(applicationContext),
         )
         notifications = SessionNotifications(this)
         watchSession()

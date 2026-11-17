@@ -2,6 +2,7 @@ package knightlink.tools.cli
 
 import knightlink.core.adapter.AdapterDefinition
 import knightlink.core.adapter.Elm327Driver
+import knightlink.core.common.toHex
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmResponseDecoder
 import knightlink.core.recorder.RecordSink
@@ -40,13 +41,21 @@ private const val USAGE = """KnightLink developer tool
                                          Run the read-only capability probe against a simulated vehicle and compare it with its definition;
                                          --json prints the report as JSON instead (VIN redacted);
                                          --record also polls every confirmed parameter once and records the whole session
-  replay <recording.jsonl> <definition-id> [--strict] [--speed <factor>]
+  replay <recording.jsonl> <definition-id> [--strict] [--no-batch] [--speed <factor>]
                                          Run init, probe and one poll of every confirmed parameter against a recorded session instead of an adapter.
+                                         The poll list and the batching are the app's, so an app recording has an answer for every command;
+                                         --no-batch asks every PID alone, for recordings made before batching.
                                          Default: each command is answered with the recorded answer to that command, in any order, and the
                                          commands the recording does not know are counted. --strict: the stack must send exactly what was
                                          recorded, in order (init commands come from the adapter definition the recording names).
                                          --speed divides the recorded delays (default 1)
   scrub <in.jsonl> <out.jsonl>           Write a copy of a recording that is safe to share: VIN reduced to its manufacturer code. Prints warnings
+  fullscan-report <recording.jsonl>      Print the result of a full scan from a recording (its scan-result event, or the .scan.json beside it): control units
+                                         with their identities (VIN masked), readiness and on-board tests, fault codes by status (codes whose test has not
+                                         run are counted apart: they are not faults), and which manufacturer identifiers each unit answered
+  did-timeline <recording.jsonl> <ecu> <did> [--definition <id>]
+                                         Print the raw bytes of one service 22 identifier (e.g. 7E1 1E12) each time it was read, next to the car's speed
+                                         and engine speed and the phone's acceleration and GPS speed at that time, for correlation
   decode <definition-id> <frame>...      Decode adapter output lines, e.g. decode vehicles/tata/harrier-2020-kryotec-at "7E8 03 41 05 6B"
 
 Run from the repository root (definitions are read from ./definitions)."""
@@ -58,6 +67,8 @@ fun main(args: Array<String>) {
             "probe" -> probe(args.drop(1))
             "replay" -> replay(args.drop(1))
             "scrub" -> scrub(args.drop(1))
+            "fullscan-report" -> fullscanReport(args.drop(1))
+            "did-timeline" -> didTimeline(args.drop(1))
             "decode" -> decode(args.getOrNull(1) ?: fail("decode needs a definition id"), args.drop(2))
             else -> println(USAGE)
         }
@@ -175,7 +186,12 @@ private fun simulateWith(
         val driver = Elm327Driver(link, this, config = adapterDefinition.driverConfig())
         println("adapter: ${driver.initialize(adapterDefinition.initScript).banner}")
 
-        val loop = PollingLoop(DiagnosticRequester(driver::request), PollScheduler(catalog.pollItems(primaryEcu) { 1.seconds }))
+        // The simulated car has no probe step here, so ask only for what its ECUs hold; periods and batching are the app's.
+        val held = simulation.ecus.flatMap { ecu -> ecu.data.keys.map { "${ecu.requestId.uppercase()}:${it.uppercase()}" } }.toSet()
+        val items = catalog.pollItems(primaryEcu) { it.tier.period }.filter { item ->
+            "${item.requestId.toString(16).uppercase()}:${item.payload.toHex()}" in held
+        }
+        val loop = PollingLoop(DiagnosticRequester(driver::request), PollScheduler(items, maxBatch = PollScheduler.MAX_BATCH))
         val player = launch { simulation.play(vehicle) { step -> println("--- scenario: ${step.note ?: "step at ${step.atMs} ms"}") } }
 
         val latest = HashMap<String, Double>()

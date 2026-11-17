@@ -84,11 +84,11 @@ internal fun testCatalog(): SignalCatalog = SignalCatalog.of(
                {"id":"tcm","name":"TCM","requestId":"7E1","responseId":"7E9"},
                {"id":"rdcm","name":"RDCM","requestId":"7E4","responseId":"7EC"}],
              "parameters":[
-               {"service":"01","pid":"04","provenance":"standard","signals":[{"id":"engine.load_pct","formula":"A/2.55","unit":"percent"}]},
-               {"service":"01","pid":"05","provenance":"standard","signals":[{"id":"engine.coolant_temp","formula":"A-40","unit":"degC"}]},
-               {"service":"01","pid":"0C","provenance":"standard","signals":[{"id":"engine.rpm","formula":"(256*A+B)/4","unit":"rpm"}]},
-               {"service":"01","pid":"8B","ecu":"ecm","provenance":"verified","signals":[{"id":"dpf.soot_pct","formula":"C/2.55","unit":"percent"}]},
-               {"service":"01","pid":"9B","ecu":"rdcm","provenance":"verified","signals":[{"id":"def.level_pct","formula":"D/2.55","unit":"percent"}]}]}
+               {"service":"01","pid":"04","provenance":"standard","length":1,"signals":[{"id":"engine.load_pct","formula":"A/2.55","unit":"percent"}]},
+               {"service":"01","pid":"05","provenance":"standard","length":1,"signals":[{"id":"engine.coolant_temp","formula":"A-40","unit":"degC"}]},
+               {"service":"01","pid":"0C","provenance":"standard","length":2,"signals":[{"id":"engine.rpm","formula":"(256*A+B)/4","unit":"rpm"}]},
+               {"service":"01","pid":"8B","ecu":"ecm","provenance":"verified","length":7,"signals":[{"id":"dpf.soot_pct","formula":"C/2.55","unit":"percent"}]},
+               {"service":"01","pid":"9B","ecu":"rdcm","provenance":"verified","length":4,"signals":[{"id":"def.level_pct","formula":"D/2.55","unit":"percent"}]}]}
             """,
         ),
     ),

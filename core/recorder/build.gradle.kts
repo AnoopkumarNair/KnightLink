@@ -28,10 +28,10 @@ kotlin {
 }
 
 tasks.withType<Test>().configureEach {
-    // The convention plugin tracks only *.json data files; the committed recordings are *.jsonl, and editing one
+    // The convention plugin tracks only *.json data files; the committed recordings (fixtures/recordings, and the scrubbed real-car capture in fixtures/raw) are *.jsonl, and editing one
     // must rerun the tests that replay it instead of reusing a cached result.
     inputs
-        .files(fileTree(rootDir) { include("fixtures/recordings/**/*.jsonl") })
+        .files(fileTree(rootDir) { include("fixtures/recordings/**/*.jsonl", "fixtures/raw/**/*.jsonl") })
         .withPropertyName("recordingFiles")
         .withPathSensitivity(PathSensitivity.RELATIVE)
 }

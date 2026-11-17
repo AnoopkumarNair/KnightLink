@@ -56,7 +56,12 @@ class FakeLink(
     override suspend fun request(requestId: Int, payload: ByteArray, expectedResponses: Int?): ElmResponse {
         val hex = payload.toHex()
         requests += requestId to hex
-        require(expectedResponses == 1) { "The probe addresses one ECU, so it should ask for exactly one reply" }
+        // A support bitmap fits one CAN frame, so it may carry the count. The VIN, calibration ids and ECU name do not: with a count the
+        // adapter cuts the reply to its first frame, so they must be asked without one.
+        val longReply = payload[0].toInt() == 0x09 && payload[1].toInt() % 0x20 != 0
+        require(if (longReply) expectedResponses == null else expectedResponses == 1) {
+            "The probe asks for one reply, and for none to be counted when the reply can span several frames: $hex with $expectedResponses"
+        }
         val nth = requests.count { it == requestId to hex }
         delay(latency(requestId, hex, nth))
         val scripted = if (silentWhen(requestId, hex, nth)) null else ecus[requestId]?.replies?.get(hex)

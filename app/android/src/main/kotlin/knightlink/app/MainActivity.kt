@@ -48,6 +48,7 @@ import knightlink.app.session.SessionService
 import knightlink.app.session.UiState
 import knightlink.app.ui.AdapterPickerDialog
 import knightlink.app.ui.ConnectionActions
+import knightlink.app.ui.DriveDataActions
 import knightlink.app.ui.HomeScreen
 import knightlink.app.ui.SessionViewModel
 import knightlink.platform.ble.BlePermissions
@@ -70,6 +71,19 @@ class MainActivity : ComponentActivity() {
     // One request for everything a start needs; the individual answers are not read, the permissions are checked again afterwards.
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { onPermissionResult() }
 
+    // Optional: the phone's location, recorded next to a drive. Whatever the answer, the session and the motion sensors do not depend on it.
+    private val locationRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { answers ->
+        // Android 12 and later let the user grant the approximate location only, which a GPS fix cannot be read with: not allowed then.
+        val granted = answers[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        locationAllowed.value = granted
+        if (!granted && !shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            // Blocked for good (or asked twice): the settings are the only way left.
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        }
+    }
+
+    private val locationAllowed = MutableStateFlow(false)
+
     // Nothing to read from the result: if Bluetooth is on afterwards, "Scan again" works.
     private val enableBluetooth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
 
@@ -85,6 +99,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        locationAllowed.value = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
     @Composable
     private fun Home() {
         val controller by viewModel.controller.collectAsStateWithLifecycle()
@@ -98,6 +117,7 @@ class MainActivity : ComponentActivity() {
         val lastAdapter by viewModel.lastAdapter.collectAsStateWithLifecycle()
         val pickerOpen by viewModel.pickerOpen.collectAsStateWithLifecycle()
         val denial by viewModel.permissionDenial.collectAsStateWithLifecycle()
+        val location by locationAllowed.collectAsStateWithLifecycle()
 
         HomeScreen(
             state = state,
@@ -108,9 +128,18 @@ class MainActivity : ComponentActivity() {
                 onConnectLast = { begin(PendingStart.ConnectTo(it)) },
                 onChooseAdapter = { begin(PendingStart.ChooseAdapter) },
                 onDisconnect = { startService(SessionService.disconnectIntent(this)) },
+                onStartScan = { controller?.startFullScan() },
+                onCancelScan = { controller?.cancelFullScan() },
+                onDismissScan = { controller?.dismissFullScan() },
             ),
             onShareLatest = ::shareLatest,
             onShareLog = ::shareConnectionLog,
+            driveData = DriveDataActions(
+                locationAllowed = location,
+                onAllowLocation = {
+                    locationRequest.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                },
+            ),
         )
 
         if (pickerOpen) {

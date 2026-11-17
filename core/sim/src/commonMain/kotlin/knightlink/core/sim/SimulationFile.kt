@@ -32,8 +32,12 @@ public data class SimulationFile(
         val name: String? = null,
         /** Made-up calibration id, served on service 09 PID 04 as one count byte plus [CALIBRATION_ID_LENGTH] NUL-padded bytes. */
         val calibrationId: String? = null,
-        /** Request hex (service + PID) to reply data hex. */
+        /** Request hex (service + PID, or service + DID) to reply data hex. */
         val data: Map<String, String> = emptyMap(),
+        /** Request hex to the negative response code (decimal) the ECU answers it with, `7F <service> <code>`. */
+        val refusals: Map<String, Int> = emptyMap(),
+        /** False: the ECU stays silent on a data identifier it does not have instead of refusing it. */
+        val refusesUnknownDids: Boolean = true,
     )
 
     @Serializable
@@ -49,9 +53,13 @@ public data class SimulationFile(
         ecus.map { spec ->
             VirtualEcu(spec.requestId.toInt(16), spec.responseId.toInt(16)).also { ecu ->
                 spec.data.forEach { (request, data) -> ecu.set(request, data) }
+                spec.refusals.forEach { (request, code) -> ecu.refuse(request, code) }
+                ecu.refusesUnknownDids = spec.refusesUnknownDids
                 spec.vin?.let {
                     require(it.length == VIN_LENGTH) { "$id: VIN must be $VIN_LENGTH characters" }
                     ecu.set("0902", "01" + it.encodeToByteArray().toHex())
+                    // The same VIN as UDS identifies it (data identifier F190), which the full scan reads.
+                    ecu.set("22F190", it.encodeToByteArray().toHex())
                 }
                 spec.name?.let { ecu.set("090A", paddedInfo(it, NAME_LENGTH, "name")) }
                 spec.calibrationId?.let { ecu.set("0904", paddedInfo(it, CALIBRATION_ID_LENGTH, "calibrationId")) }

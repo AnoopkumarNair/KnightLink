@@ -1,6 +1,10 @@
 package knightlink.app.session
 
+import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
+import knightlink.core.scan.ScanOutcome
+import knightlink.core.scan.ScanStage
+import knightlink.core.scan.ScanSummary
 import knightlink.core.telemetry.TelemetrySnapshot
 import knightlink.core.vehicle.CapabilityReport
 import knightlink.core.vehicle.DefinitionCoverage
@@ -24,6 +28,10 @@ data class UiState(
     val vehicle: VehicleSummary?,
     /** Sorted by signal id, then ECU. */
     val liveValues: List<LiveValue>,
+    /** Requests per second sent to the vehicle over the last few seconds, as measured while polling; null before there is a measurement. */
+    val pollingRate: Double? = null,
+    /** The full scan; [ScanStatus.Unavailable] outside a live session. */
+    val scan: ScanStatus = ScanStatus.Unavailable,
 ) {
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle
@@ -32,6 +40,51 @@ data class UiState(
         val IDLE = UiState(ConnectionStatus.Idle, vehicle = null, liveValues = emptyList())
     }
 }
+
+/** The full scan in the app's terms. Texts are in string resources, so this carries only the facts. */
+sealed interface ScanStatus {
+    /** This session cannot scan (no plan, or the demo of an older build). */
+    data object Unavailable : ScanStatus
+
+    /** A scan can be started when the connection is live. */
+    data object Ready : ScanStatus
+
+    data object Starting : ScanStatus
+
+    /**
+     * @property stage the stage running; [subject] is the control unit or the step it is on, [done] of [total] its progress
+     * @property paused the car is moving: the scan waits, at [speedKmh]
+     */
+    data class Running(
+        val stage: ScanStage?,
+        val subject: String?,
+        val done: Int,
+        val total: Int,
+        val paused: Boolean,
+        val speedKmh: Int?,
+    ) : ScanStatus
+
+    /** The scan ended, however it ended; [summary] counts what it found. */
+    data class Finished(val outcome: ScanOutcome, val detail: String?, val summary: ScanSummary, val minutes: Int) : ScanStatus
+
+    data class Failed(val reason: String) : ScanStatus
+}
+
+fun ScanState.toStatus(): ScanStatus = when (this) {
+    ScanState.Unavailable -> ScanStatus.Unavailable
+    ScanState.Idle -> ScanStatus.Ready
+    ScanState.Starting -> ScanStatus.Starting
+    is ScanState.Running -> ScanStatus.Running(progress.stage, progress.subject, progress.done, progress.total, progress.paused, progress.speedKmh)
+    is ScanState.Finished -> ScanStatus.Finished(
+        result.outcome,
+        result.detail,
+        result.summary,
+        ((result.durationMs + MILLIS_PER_MINUTE - 1) / MILLIS_PER_MINUTE).toInt(),
+    )
+    is ScanState.Failed -> ScanStatus.Failed(reason)
+}
+
+private const val MILLIS_PER_MINUTE = 60_000L
 
 /** The connection in the app's own terms. Texts are in string resources, so this carries only the facts. */
 sealed interface ConnectionStatus {
@@ -140,8 +193,12 @@ fun signalPrefix(signalId: String): String = signalId.substringBefore('.')
 /**
  * The live values for the screen: sorted by signal id then ECU (so the order is the same on every refresh), each aged against [now],
  * which is on the clock of the readings' timestamps (time since the session started).
+ *
+ * @param periods how often each signal is asked for (by signal id). A value is stale only after [staleAfter] and after missing
+ *   [PERIODS_MISSED] of its own periods, so a signal that is refreshed every few seconds is not flagged between refreshes, and one that is
+ *   asked only once (an infinite period) is never stale.
  */
-fun liveValues(snapshot: TelemetrySnapshot, now: Duration, staleAfter: Duration): List<LiveValue> =
+fun liveValues(snapshot: TelemetrySnapshot, now: Duration, staleAfter: Duration, periods: Map<String, Duration> = emptyMap()): List<LiveValue> =
     snapshot.readings
         .map { timed ->
             val age = (now - timed.at).coerceAtLeast(Duration.ZERO)
@@ -152,10 +209,15 @@ fun liveValues(snapshot: TelemetrySnapshot, now: Duration, staleAfter: Duration)
                 valueText = formatValue(signal.value),
                 unit = displayUnit(signal.unit),
                 ageSeconds = age.inWholeSeconds,
-                stale = age > staleAfter,
+                stale = age > staleLimit(staleAfter, periods[signal.id]),
             )
         }
         .sortedWith(compareBy({ it.signalId }, { it.ecu.orEmpty() }))
+
+private fun staleLimit(staleAfter: Duration, period: Duration?): Duration =
+    if (period == null) staleAfter else maxOf(staleAfter, period * PERIODS_MISSED)
+
+private const val PERIODS_MISSED = 3
 
 /** Groups [values] by [signalPrefix]; groups sorted by prefix, values in the order given. */
 fun groupByPrefix(values: List<LiveValue>): List<ValueGroup> =

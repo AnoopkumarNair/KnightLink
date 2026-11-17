@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "discovery/did-sweep",
+  "title": "Service 22 data identifier sweep and control unit discovery (parked, read-only)",
+  "requestsPerSecond": 20,
+  "controlUnitIds": { "from": "700", "to": "7F7", "skip": ["7DF"] },
+  "ranges": [
+    { "from": "0000", "to": "00FF" },
+    { "from": "0100", "to": "01FF" },
+    { "from": "1E00", "to": "1EFF" },
+    { "from": "2000", "to": "20FF" },
+    { "from": "D000", "to": "D0FF" },
+    { "from": "DD00", "to": "DDFF" },
+    { "from": "E000", "to": "E0FF" },
+    { "from": "F400", "to": "F4FF" }
+  ],
+  "targets": [
+    { "requestId": "7E1", "label": "gearbox",
+      "candidates": ["1E12", "1E1F", "1E65", "1E66", "1E68", "1E69", "1E7E", "201C", "01A0", "01A4", "21A0"] },
+    { "requestId": "7E0", "label": "engine",
+      "candidates": ["03F3", "03E6", "0415", "1310", "6310", "E001", "E011", "E0F1", "ED02", "ED05"],
+      "pollLimit": 20, "pollMaxBytes": 8 },
+    { "requestId": "7E4", "label": "exhaust treatment", "candidates": [], "pollLimit": 20, "pollMaxBytes": 8 }
+  ],
+  "notes": "Which service 22 identifiers each control unit answers, so that their meaning can be worked out later from how they change while driving. Presence only: nothing here says what a value means; whatever answers is recorded as provenance inferred. The candidate lists are guesses from other brands' published signal lists (see docs/PLAN.md, Harrier candidate sweep) and are asked first. Control units other than these get the identification range F180-F1FF only. requestsPerSecond is the pace of the sweep (the code never goes above 20). A target may carry its own ranges instead of the shared ones. While driving afterwards, every identifier the first target answered is polled raw (no decoding, never batched), and of the others at most pollLimit identifiers whose data is at most pollMaxBytes long; the session polls at most 60 such identifiers in all."
+}

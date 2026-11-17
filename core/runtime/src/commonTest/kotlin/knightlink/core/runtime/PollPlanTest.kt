@@ -98,9 +98,14 @@ class PollPlanTest {
     }
 
     @Test
-    fun itemsAskForOneReplyAndHaveUniqueReadableIds() {
+    fun onlyRepliesThatFitOneFrameAskForOneReplyAndIdsAreUniqueAndReadable() {
         val items = plan(ecu("7E0", "7E8", "05", "0C", "8B"), ecu("7E4", "7EC", "0C", "9B"))
-        assertTrue(items.all { it.expectedResponses == 1 })
+        // The count digit cuts a multi-frame reply to its first frame: 018B has 7 data bytes, so it is asked without one.
+        assertEquals(
+            mapOf("ecm:0105" to 1, "ecm:010C" to 1, "ecm:018B" to null, "rdcm:019B" to 1),
+            items.associate { it.id to it.expectedResponses },
+        )
+        assertEquals(mapOf("ecm:0105" to 1, "ecm:010C" to 2, "ecm:018B" to 7, "rdcm:019B" to 4), items.associate { it.id to it.dataLength })
         assertEquals(items.size, items.map { it.id }.toSet().size)
         assertEquals(setOf("ecm:0105", "ecm:010C", "ecm:018B", "rdcm:019B"), items.map { it.id }.toSet())
     }

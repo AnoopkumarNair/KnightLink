@@ -78,6 +78,22 @@ class CapabilityProbeSimulationTest {
     }
 
     @Test
+    fun theVinAndNamesComeBackCompleteBecauseTheirRequestsCarryNoResponseCount() = runTest {
+        val outcome = probeHarrier()
+        val sent = outcome.adapter.received
+        // 0902 (VIN, 17 characters: multi-frame), 0904 and 090A are asked bare. A count of 1 would cut each to its first CAN frame.
+        for (request in listOf("0902", "0904", "090A")) {
+            assertTrue(request in sent, "$request was not asked: ${sent.filter { it.startsWith("09") }}")
+            assertTrue(request + "1" !in sent, "$request was asked with a response count")
+        }
+        // The bitmaps are one frame and keep the count, which saves the adapter's timeout.
+        assertTrue("01001" in sent && "09001" in sent)
+        assertEquals("SIMHARRIER2020001", outcome.report.ecus[0].vin)
+        assertEquals("ECM-EngineControl", outcome.report.ecus[0].name)
+        assertEquals(listOf("SIM-ECM-CAL-0001"), outcome.report.ecus[0].calibrationIds)
+    }
+
+    @Test
     fun derivesFuelMethodDpfAndDuplicates() = runTest {
         val derived = probeHarrier().report.derived
         assertEquals(FuelMethod.DIRECT_RATE, derived.fuelMethod)
@@ -109,13 +125,16 @@ class CapabilityProbeSimulationTest {
 
         val provided = outcome.simulation.ecus.flatMap { it.data.keys }.filter { it.startsWith("01") }.map { it.substring(2) }.toSet()
         assertTrue(coverage.missing.none { it.pid in provided }, "missing: ${coverage.missing}")
-        assertEquals(setOf("04", "0F", "11", "33", "5C"), coverage.missing.map { it.pid }.toSet())
+        // Every service 01 PID the standard defines that the fixture lacks is reported missing, and nothing else.
+        val defined = catalogFor(outcome.simulation.definition).parameters.filter { it.service == 1 }.map { it.pid }.toSet()
+        assertEquals(defined - provided, coverage.missing.map { it.pid }.toSet())
+        assertTrue(setOf("04", "0F", "11", "33", "5C").all { it in defined - provided })
         assertTrue(coverage.missing.all { it.catalogEcu == null }, "these are generic definitions")
 
         // Definitions bound to an ECU were confirmed on that ECU, the generic ones on every ECU that has the PID.
         val byPid = coverage.confirmed.associateBy({ it.pid to it.catalogEcu }, { it.answeredBy })
         assertEquals(listOf("7E4"), byPid.getValue("9B" to "rdcm"))
-        assertEquals(listOf("7E0"), byPid.getValue("9D" to "ecm"))
+        assertEquals(listOf("7E0"), byPid.getValue("9D" to null))
         assertEquals(listOf("7E0", "7E4"), byPid.getValue("0C" to null))
         assertEquals(listOf("7E0", "7E1"), byPid.getValue("31" to null))
         assertTrue(coverage.unmapped.isEmpty(), "everything the car reports is defined: ${coverage.unmapped}")

@@ -84,6 +84,13 @@ Decode frames captured from an adapter:
 ./gradlew -q :tools:cli:run --args="decode vehicles/tata/harrier-2020-kryotec-at '7E8 03 41 05 6B'"
 ```
 
+After a car trip with a full scan (pull or share the recording; the scrubbed copy is enough):
+
+```
+./gradlew -q :tools:cli:run --args="fullscan-report path/to/recording-scrubbed.jsonl"
+./gradlew -q :tools:cli:run --args="did-timeline path/to/recording-scrubbed.jsonl 7E1 1E12"
+```
+
 ## Adding a vehicle
 
 Add a JSON file under `definitions/vehicles/<make>/`, list the layers it extends, and add golden frames under `fixtures/golden/`. `./gradlew check` validates both. See `docs/adr/README.md` (0002) for the rules.

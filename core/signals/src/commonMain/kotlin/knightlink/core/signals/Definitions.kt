@@ -3,6 +3,9 @@ package knightlink.core.signals
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /** Highest definition schema this build understands. Newer files are rejected, not half-read. */
 public const val SUPPORTED_SCHEMA_VERSION: Int = 1
@@ -25,6 +28,30 @@ public enum class Provenance {
     /** Guessed by the discovery engine. */
     @SerialName("inferred")
     INFERRED,
+}
+
+/**
+ * How often a parameter is wanted. The periods are app policy and live here, in one place; which tier a parameter belongs
+ * to is data (the `poll` key of its definition). The achieved rate is lower when the adapter cannot keep up: the scheduler
+ * shares the available requests between everything that is due.
+ */
+@Serializable
+public enum class PollTier(public val period: Duration) {
+    /** Driving feel: RPM, speed, load, pedal, torque, boost. */
+    @SerialName("fast")
+    FAST(150.milliseconds),
+
+    /** Flow and slowly moving pressures: MAF, fuel rate, EGT, DPF soot and pressure, rail pressure. */
+    @SerialName("normal")
+    NORMAL(1.seconds),
+
+    /** Temperatures, levels, voltage, ambient, distances, counters. */
+    @SerialName("slow")
+    SLOW(6.seconds),
+
+    /** Static items: asked once per connection, and again only after the adapter was initialised again. */
+    @SerialName("once")
+    ONCE(Duration.INFINITE),
 }
 
 /** One definition file: either the shared standard layer or a vehicle profile layered on top of it. */
@@ -88,6 +115,14 @@ public data class ParameterDefinition(
     val provenance: Provenance,
     val signals: List<SignalDefinition>,
     val notes: String? = null,
+    /**
+     * Number of data bytes after the PID in a reply. Needed to ask for several PIDs in one request (the reply is cut into
+     * PIDs by their lengths) and to know whether a reply fits one CAN frame. Without it the PID is always asked alone, and
+     * the adapter waits out its timeout for the reply.
+     */
+    val length: Int? = null,
+    /** How often to ask; [PollTier.NORMAL] when absent. */
+    val poll: PollTier? = null,
 )
 
 @Serializable

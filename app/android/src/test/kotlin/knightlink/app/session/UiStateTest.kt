@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -106,6 +107,23 @@ class UiStateTest {
         assertEquals(9, at(19_999).ageSeconds)
         assertEquals("800", at(15_001).valueText)
         assertEquals("rpm", at(15_001).unit)
+    }
+
+    @Test
+    fun aSlowlyRefreshedValueIsNotStaleBetweenRefreshesAndAStaticOneNever() {
+        val snapshot = snapshot(
+            Triple("ecm", SignalValue("engine.coolant_temp", 40.0, "degC"), 0),
+            Triple("ecm", SignalValue("obd.standard", 6.0, "enum"), 0),
+            Triple("ecm", SignalValue("engine.rpm", 800.0, "rpm"), 0),
+        )
+        val periods = mapOf("engine.coolant_temp" to 6.seconds, "obd.standard" to Duration.INFINITE, "engine.rpm" to 150.milliseconds)
+        fun stale(nowMs: Long) = liveValues(snapshot, nowMs.milliseconds, 5.seconds, periods).filter { it.stale }.map { it.signalId }
+
+        // Past the plain limit: only the fast one is stale. The slow one is stale after three of its own periods, the static one never.
+        assertEquals(listOf("engine.rpm"), stale(10_000))
+        assertEquals(listOf("engine.rpm"), stale(18_000))
+        assertEquals(listOf("engine.coolant_temp", "engine.rpm"), stale(18_001))
+        assertEquals(listOf("engine.coolant_temp", "engine.rpm"), stale(3_600_000))
     }
 
     @Test
