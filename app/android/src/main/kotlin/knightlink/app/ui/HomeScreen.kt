@@ -19,6 +19,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -39,6 +41,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import knightlink.app.R
@@ -54,6 +57,8 @@ import knightlink.app.session.VehicleSummary
 import knightlink.app.session.groupByPrefix
 import knightlink.app.text
 import knightlink.app.textRes
+import knightlink.app.voice.VoiceSettings
+import kotlin.math.roundToInt
 
 /** Wide enough for the cards and the live values side by side: any phone in landscape. */
 private val WIDE_LAYOUT_MIN_WIDTH = 600.dp
@@ -75,6 +80,26 @@ class ConnectionActions(
 class DriveDataActions(val locationAllowed: Boolean, val onAllowLocation: () -> Unit)
 
 /**
+ * What the voice card shows and can do. [available] is false until the service (which owns the voice) is bound: the controls are
+ * then shown but disabled.
+ *
+ * @property lastSpoken the text of the last line spoken, shown under the buttons; null before the first
+ */
+class VoiceActions(
+    val settings: VoiceSettings,
+    val lastSpoken: String?,
+    val available: Boolean,
+    val onSpokenStatusChange: (Boolean) -> Unit,
+    val onVolumeChange: (Float) -> Unit,
+    val onTest: () -> Unit,
+    val onSayAgain: () -> Unit,
+) {
+    companion object {
+        val Unavailable = VoiceActions(VoiceSettings(), null, false, {}, {}, {}, {})
+    }
+}
+
+/**
  * The one screen. Portrait: a single scrolling list (cards, then the live values). Landscape: the cards on the left, the live
  * values on the right, each scrolling on its own, so the values stay in view while the buttons are reachable.
  *
@@ -90,6 +115,7 @@ fun HomeScreen(
     onShareLog: () -> Unit,
     modifier: Modifier = Modifier,
     driveData: DriveDataActions = DriveDataActions(locationAllowed = false, onAllowLocation = {}),
+    voice: VoiceActions = VoiceActions.Unavailable,
 ) {
     // Grouping is a function of the values only; it is redone when they change, not on every recomposition.
     val groups = remember(state.liveValues) { groupByPrefix(state.liveValues) }
@@ -98,7 +124,7 @@ fun HomeScreen(
         if (maxWidth >= WIDE_LAYOUT_MIN_WIDTH) {
             Row(Modifier.fillMaxSize()) {
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                    summaryItems(state, recordings, lastAdapter, actions, driveData, onShareLatest, onShareLog)
+                    summaryItems(state, recordings, lastAdapter, actions, driveData, voice, onShareLatest, onShareLog)
                 }
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
                     liveItems(groups)
@@ -106,7 +132,7 @@ fun HomeScreen(
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                summaryItems(state, recordings, lastAdapter, actions, driveData, onShareLatest, onShareLog)
+                summaryItems(state, recordings, lastAdapter, actions, driveData, voice, onShareLatest, onShareLog)
                 liveItems(groups)
             }
         }
@@ -119,12 +145,14 @@ private fun LazyListScope.summaryItems(
     lastAdapter: LastAdapter?,
     actions: ConnectionActions,
     driveData: DriveDataActions,
+    voice: VoiceActions,
     onShareLatest: () -> Unit,
     onShareLog: () -> Unit,
 ) {
     item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
     item(key = "drive-data", contentType = "card") { DriveDataCard(driveData) }
+    item(key = "voice", contentType = "card") { VoiceCard(voice) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
 }
 
@@ -215,6 +243,40 @@ private fun DriveDataCard(driveData: DriveDataActions) {
             if (!driveData.locationAllowed) {
                 OutlinedButton(onClick = driveData.onAllowLocation, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_allow_location)) }
             }
+        }
+    }
+}
+
+@Composable
+private fun VoiceCard(voice: VoiceActions) {
+    val percent = (voice.settings.volume * 100).roundToInt()
+    val volumeLabel = stringResource(R.string.voice_volume)
+    val volumeState = stringResource(R.string.voice_volume_percent, percent)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.voice_title), style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(stringResource(R.string.voice_spoken_status), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Switch(checked = voice.settings.spokenStatus, onCheckedChange = voice.onSpokenStatusChange, enabled = voice.available)
+            }
+            Text(volumeLabel, style = MaterialTheme.typography.bodyMedium)
+            Slider(
+                value = voice.settings.volume,
+                onValueChange = voice.onVolumeChange,
+                valueRange = VoiceSettings.MIN_VOLUME..VoiceSettings.MAX_VOLUME,
+                enabled = voice.available,
+                modifier = Modifier.semantics {
+                    contentDescription = volumeLabel
+                    stateDescription = volumeState
+                },
+            )
+            Button(onClick = voice.onTest, enabled = voice.available, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.action_test_voice))
+            }
+            OutlinedButton(onClick = voice.onSayAgain, enabled = voice.available && voice.lastSpoken != null, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.action_say_again))
+            }
+            voice.lastSpoken?.let { Text(stringResource(R.string.voice_last_spoken, it), style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

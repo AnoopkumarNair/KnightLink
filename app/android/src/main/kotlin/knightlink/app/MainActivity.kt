@@ -51,8 +51,14 @@ import knightlink.app.ui.ConnectionActions
 import knightlink.app.ui.DriveDataActions
 import knightlink.app.ui.HomeScreen
 import knightlink.app.ui.SessionViewModel
+import knightlink.app.ui.VoiceActions
+import knightlink.app.voice.VoiceSettings
 import knightlink.platform.ble.BlePermissions
 import knightlink.platform.ble.DiscoveredAdapter
+import knightlink.voice.api.Priority
+import knightlink.voice.api.SpeakResult
+import knightlink.voice.api.Speaker
+import knightlink.voice.api.Utterance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -118,6 +124,10 @@ class MainActivity : ComponentActivity() {
         val pickerOpen by viewModel.pickerOpen.collectAsStateWithLifecycle()
         val denial by viewModel.permissionDenial.collectAsStateWithLifecycle()
         val location by locationAllowed.collectAsStateWithLifecycle()
+        val speaker by viewModel.speaker.collectAsStateWithLifecycle()
+        val voiceStore by viewModel.voiceSettings.collectAsStateWithLifecycle()
+        val voiceSettings by remember(voiceStore) { voiceStore?.settings ?: DEFAULT_VOICE_SETTINGS }.collectAsStateWithLifecycle()
+        val lastSpoken by remember(speaker) { speaker?.lastSpoken ?: NO_LINE }.collectAsStateWithLifecycle()
 
         HomeScreen(
             state = state,
@@ -139,6 +149,15 @@ class MainActivity : ComponentActivity() {
                 onAllowLocation = {
                     locationRequest.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                 },
+            ),
+            voice = VoiceActions(
+                settings = voiceSettings,
+                lastSpoken = lastSpoken?.text,
+                available = speaker != null && voiceStore != null,
+                onSpokenStatusChange = { voiceStore?.setSpokenStatus(it) },
+                onVolumeChange = { voiceStore?.setVolume(it) },
+                onTest = { speaker?.let(::testVoice) },
+                onSayAgain = { speaker?.repeatLast() },
             ),
         )
 
@@ -170,6 +189,15 @@ class MainActivity : ComponentActivity() {
                 text = { Text(stringResource(R.string.share_failed, message)) },
             )
         }
+    }
+
+    /**
+     * Speaks the sample line. Pressing the button twice within the quiet period would make the speaker drop the identical line, but a
+     * test must always be heard, so then the last line (this one) is said again.
+     */
+    private fun testVoice(speaker: Speaker) {
+        val result = speaker.speak(Utterance(getString(R.string.voice_test), Priority.ANSWER, category = "test"))
+        if (result == SpeakResult.UNCHANGED) speaker.repeatLast()
     }
 
     /** The recordings count and size: read when the screen appears and when a connection starts or ends, and every few seconds while one is active. */
@@ -334,5 +362,7 @@ class MainActivity : ComponentActivity() {
         const val SHARE_DIRECTORY = "shared"
         const val RECORDINGS_REFRESH_MS = 5000L
         val IDLE_STATE = MutableStateFlow(UiState.IDLE)
+        val DEFAULT_VOICE_SETTINGS = MutableStateFlow(VoiceSettings())
+        val NO_LINE = MutableStateFlow<Utterance?>(null)
     }
 }
