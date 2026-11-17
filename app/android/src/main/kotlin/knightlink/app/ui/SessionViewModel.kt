@@ -4,15 +4,13 @@ import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
-import android.content.SharedPreferences
 import android.os.IBinder
-import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
+import knightlink.app.SharedPreferencesStringStore
 import knightlink.app.ble.LastAdapter
 import knightlink.app.ble.LastAdapterStore
 import knightlink.app.ble.PendingStart
 import knightlink.app.ble.PermissionDenial
-import knightlink.app.ble.StringStore
 import knightlink.app.data.AndroidAssetSource
 import knightlink.app.data.AppConfig
 import knightlink.app.data.DefinitionStore
@@ -22,8 +20,10 @@ import knightlink.app.session.RecordingStore
 import knightlink.app.session.SessionController
 import knightlink.app.session.SessionService
 import knightlink.app.session.requireBle
+import knightlink.app.voice.VoiceSettingsStore
 import knightlink.platform.ble.BleAdapterScanner
 import knightlink.platform.ble.DiscoveredAdapter
+import knightlink.voice.api.Speaker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +43,12 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     /** The service's controller; null until the first bind completes, and while the service process is gone. */
     val controller: StateFlow<SessionController?> = connection.controller
+
+    /** The service's voice; null until the first bind completes. It lives in the service so that it speaks with the screen off. */
+    val speaker: StateFlow<Speaker?> = connection.speaker
+
+    /** The voice settings the service's speaker and announcer read; the same instance, so a change here is heard at once. */
+    val voiceSettings: StateFlow<VoiceSettingsStore?> = connection.voiceSettings
 
     val recordings = RecordingStore(SessionService.recordingsDirectory(application))
 
@@ -75,7 +81,8 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     /** Whether the adapter picker is showing. Kept here so a rotation does not close it. */
     val pickerOpen: StateFlow<Boolean> = _pickerOpen.asStateFlow()
 
-    private val lastAdapterStore = LastAdapterStore(SharedPreferencesStringStore(application.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)))
+    private val lastAdapterStore =
+        LastAdapterStore(SharedPreferencesStringStore(application.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)))
     private val _lastAdapter = MutableStateFlow(lastAdapterStore.load())
 
     /** The adapter connected to last, if any. */
@@ -125,21 +132,13 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         connection.unbind()
     }
 
-    private companion object {
-        const val PREFERENCES = "knightlink"
-    }
-
-    private class SharedPreferencesStringStore(private val preferences: SharedPreferences) : StringStore {
-        override fun get(key: String): String? = preferences.getString(key, null)
-
-        override fun put(key: String, value: String?) {
-            preferences.edit { if (value == null) remove(key) else putString(key, value) }
-        }
-    }
-
     private class Connection(private val context: Context) : ServiceConnection {
         private val _controller = MutableStateFlow<SessionController?>(null)
         val controller: StateFlow<SessionController?> = _controller.asStateFlow()
+        private val _speaker = MutableStateFlow<Speaker?>(null)
+        val speaker: StateFlow<Speaker?> = _speaker.asStateFlow()
+        private val _voiceSettings = MutableStateFlow<VoiceSettingsStore?>(null)
+        val voiceSettings: StateFlow<VoiceSettingsStore?> = _voiceSettings.asStateFlow()
         private var bound = false
 
         fun bind() {
@@ -151,19 +150,24 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         fun unbind() {
             if (bound) context.unbindService(this)
             bound = false
+            clear()
+        }
+
+        private fun clear() {
             _controller.value = null
+            _speaker.value = null
+            _voiceSettings.value = null
         }
 
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
-            _controller.value = (service as? SessionService.LocalBinder)?.controller
+            val binder = service as? SessionService.LocalBinder
+            _controller.value = binder?.controller
+            _speaker.value = binder?.speaker
+            _voiceSettings.value = binder?.voiceSettings
         }
 
-        override fun onServiceDisconnected(name: ComponentName) {
-            _controller.value = null
-        }
+        override fun onServiceDisconnected(name: ComponentName) = clear()
 
-        override fun onBindingDied(name: ComponentName) {
-            _controller.value = null
-        }
+        override fun onBindingDied(name: ComponentName) = clear()
     }
 }

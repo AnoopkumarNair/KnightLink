@@ -127,6 +127,24 @@
     <string name="share_log_chooser_title">Share connection log</string>
     <string name="share_failed">Could not prepare the recording: %1$s</string>
 
+    <!-- Voice: the lines that are spoken, and the Voice card -->
+    <string name="voice_connected">Adapter connected. Live data is on.</string>
+    <string name="voice_waiting_for_ignition">Connected to the adapter. Waiting for the ignition.</string>
+    <string name="voice_bus_not_reachable">The adapter is connected but can\'t reach the car. Is the ignition on?</string>
+    <string name="voice_connection_lost">Lost the adapter. Retrying.</string>
+    <string name="voice_reconnected">Reconnected.</string>
+    <string name="voice_failed">Connection failed: %1$s</string>
+    <string name="voice_failed_no_reason">Connection failed.</string>
+    <string name="voice_disconnected">Disconnected.</string>
+    <string name="voice_test">This is KnightLink. Voice output is working.</string>
+    <string name="voice_title">Voice</string>
+    <string name="voice_spoken_status">Speak connection status</string>
+    <string name="voice_volume">Volume</string>
+    <string name="voice_volume_percent">%1$d%%</string>
+    <string name="action_test_voice">Test voice</string>
+    <string name="action_say_again">Say again</string>
+    <string name="voice_last_spoken">Last said: %1$s</string>
+
     <!-- Notification -->
     <string name="notification_channel_name">Vehicle session</string>
     <string name="notification_channel_description">Shows while KnightLink is connected to a vehicle or running the demo.</string>

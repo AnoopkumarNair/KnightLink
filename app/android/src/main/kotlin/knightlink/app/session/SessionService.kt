@@ -16,12 +16,21 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import knightlink.app.MainActivity
 import knightlink.app.R
+import knightlink.app.SharedPreferencesStringStore
 import knightlink.app.data.AndroidAssetSource
 import knightlink.app.data.AppConfig
 import knightlink.app.data.DefinitionStore
 import knightlink.app.data.DefinitionStoreException
 import knightlink.app.text
+import knightlink.app.voice.AndroidSpeechEngine
+import knightlink.app.voice.ConnectionAnnouncer
+import knightlink.app.voice.VoiceSettingsStore
+import knightlink.app.voice.statusUtterance
+import knightlink.app.voice.text
 import knightlink.platform.ble.BleTransport
+import knightlink.voice.api.QueuedSpeaker
+import knightlink.voice.api.Speaker
+import knightlink.voice.api.SpeechState
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,8 +41,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -53,6 +64,11 @@ class SessionService : Service() {
     /** The activity's handle on the service. In-process only, so it hands out the controller itself. */
     inner class LocalBinder : Binder() {
         val controller: SessionController get() = this@SessionService.controller
+
+        /** The app's voice. It lives here, not in the activity, so it speaks in the background and with the screen off. */
+        val speaker: Speaker get() = this@SessionService.speaker
+
+        val voiceSettings: VoiceSettingsStore get() = this@SessionService.voiceSettings
     }
 
     // The handler matters: an unexpected exception of the session is reported through the scope (the session also shows it as
@@ -65,6 +81,10 @@ class SessionService : Service() {
     private lateinit var notifications: SessionNotifications
     private lateinit var assets: AndroidAssetSource
     private lateinit var connectionLog: ConnectionLog
+    private lateinit var voiceSettings: VoiceSettingsStore
+    private lateinit var speechEngine: AndroidSpeechEngine
+    private lateinit var queuedSpeaker: QueuedSpeaker
+    private val speaker: Speaker get() = queuedSpeaker
 
     @Volatile
     private var closed = false
@@ -95,6 +115,7 @@ class SessionService : Service() {
             samples = AndroidSampleSource(applicationContext),
         )
         notifications = SessionNotifications(this)
+        startVoice()
         watchSession()
     }
 
@@ -185,6 +206,23 @@ class SessionService : Service() {
             ""
         }
 
+    /**
+     * The voice: settings, speech engine, the queue in front of it, and the announcer that turns connection changes into lines.
+     * Created with the service (also when it only runs bound and idle), so every screen and feature shares one voice.
+     */
+    private fun startVoice() {
+        voiceSettings = VoiceSettingsStore(
+            SharedPreferencesStringStore(applicationContext.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)),
+        )
+        speechEngine = AndroidSpeechEngine(applicationContext) { voiceSettings.settings.value.volume }
+        queuedSpeaker = QueuedSpeaker(speechEngine, scope)
+        val announcer = ConnectionAnnouncer(
+            isEnabled = { voiceSettings.settings.value.spokenStatus },
+            announce = { speaker.speak(statusUtterance(it.text(applicationContext.resources))) },
+        )
+        scope.launch { announcer.collect(controller.uiState.map { it.connection }.distinctUntilChanged()) }
+    }
+
     /** The notification follows the status (at most once a second); leaving the idle state for good stops the service. */
     private fun watchSession() {
         val statuses = controller.uiState.map { it.connection }.distinctUntilChanged()
@@ -216,7 +254,14 @@ class SessionService : Service() {
         notifications.cancel()
         // The session must stop and its stream must close, and neither may block the main thread: do it on the service's own
         // scope, and cancel the scope only once that is done. NonCancellable keeps the cleanup out of the scope's cancellation.
-        scope.launch(NonCancellable) { controller.disconnect() }.invokeOnCompletion { scope.cancel() }
+        scope.launch(NonCancellable) {
+            controller.disconnect()
+            // The service stops itself right after a disconnect, and "Disconnected." is queued by then: let it be heard, but not for long.
+            delay(SPEECH_SETTLE_MS)
+            withTimeoutOrNull(SPEECH_GRACE_MS) { speaker.state.first { it is SpeechState.Idle } }
+            queuedSpeaker.close()
+            speechEngine.close()
+        }.invokeOnCompletion { scope.cancel() }
         super.onDestroy()
     }
 
@@ -227,6 +272,8 @@ class SessionService : Service() {
         private const val ACTION_DISCONNECT = "knightlink.app.action.DISCONNECT"
         private const val EXTRA_ADDRESS = "knightlink.app.extra.ADDRESS"
         private const val NOTIFICATION_INTERVAL_MS = 1000L
+        private const val SPEECH_SETTLE_MS = 300L
+        private const val SPEECH_GRACE_MS = 6000L
 
         fun startDemoIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_START_DEMO)
 
