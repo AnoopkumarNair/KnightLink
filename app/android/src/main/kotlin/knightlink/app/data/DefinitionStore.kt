@@ -1,5 +1,6 @@
 package knightlink.app.data
 
+import knightlink.app.ui.voice.ThemePack
 import knightlink.core.adapter.AdapterDefinition
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.signals.DefinitionException
@@ -85,6 +86,16 @@ class DefinitionStore(private val assets: AssetSource) {
         }
     }
 
+    /**
+     * The theme pack [id] (`themes/<name>`, stored at `definitions/themes/<name>.json`).
+     *
+     * @throws DefinitionStoreException if the id is not a theme pack id, or the file is missing or invalid.
+     */
+    fun themePack(id: String): ThemePack {
+        if (!id.startsWith(THEMES_PREFIX)) throw DefinitionStoreException("'$id' is not a theme pack id")
+        return ThemePack.parse(read(assets, "$DEFINITIONS_ROOT/${checked(id)}.json"), id)
+    }
+
     private fun definition(id: String): DefinitionFile {
         val text = read(assets, "$DEFINITIONS_ROOT/${checked(id)}.json")
         return try {
@@ -122,6 +133,7 @@ class DefinitionStore(private val assets: AssetSource) {
         private const val SWEEP_PLAN = "discovery/did-sweep"
         private const val VEHICLES_PREFIX = "vehicles/"
         private const val ADAPTERS_PREFIX = "adapters/"
+        private const val THEMES_PREFIX = "themes/"
         private const val JSON = ".json"
         private val ID = Regex("[a-z0-9][a-z0-9_.-]*(/[a-z0-9][a-z0-9_.-]*)*")
 

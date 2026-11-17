@@ -8,7 +8,7 @@ import kotlinx.serialization.json.Json
  * Which bundled data the app uses by default. It lives in `assets/app-config.json` so that no vehicle, adapter or
  * scenario name appears in Kotlin code (ADR 0002); supporting another car is a change to that file.
  *
- * All three values are ids as [DefinitionStore] understands them.
+ * All four values are ids as [DefinitionStore] understands them.
  */
 @Serializable
 data class AppConfig(
@@ -19,10 +19,13 @@ data class AppConfig(
     val adapterDefinition: String,
     /** Simulation scenario the demo mode plays, e.g. `sim/<name>`. */
     val demoScenario: String,
+    /** Theme pack (colours and visualiser style of the speaking screen), e.g. `themes/<name>`. */
+    val themePack: String = DEFAULT_THEME_PACK,
 ) {
     companion object {
         const val PATH = "app-config.json"
         const val SUPPORTED_SCHEMA_VERSION = 1
+        const val DEFAULT_THEME_PACK = "themes/ember"
 
         // Strict, like every other data file of the project: an unknown key is a typo or a newer schema.
         private val json = Json { ignoreUnknownKeys = false }
