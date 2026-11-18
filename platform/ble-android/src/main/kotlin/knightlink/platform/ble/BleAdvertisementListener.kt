@@ -2,35 +2,56 @@ package knightlink.platform.ble
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.ParcelUuid
 import android.util.Log
 
 /**
- * One advertisement's manufacturer data for one company identifier. Deliberately without the sender's address: callers identify a sensor by
- * what it sends (ADR 0002), and an address that is never handed out cannot end up in a recording.
+ * Which advertisements to listen for: data filed under [key] (a company id for manufacturer data, a 16-bit service UUID for service data)
+ * that starts with [prefix]. Plain values from a definition file, never constants here.
+ */
+public class AdvertisementMatch(
+    public val serviceData: Boolean,
+    public val key: Int,
+    public val prefix: ByteArray,
+) {
+    init {
+        require(key in 0..0xFFFF) { "a company id or 16-bit service UUID, not $key" }
+    }
+
+    /** Whether [data] starts with [prefix]. */
+    public fun accepts(data: ByteArray): Boolean = data.size >= prefix.size && prefix.indices.all { data[it] == prefix[it] }
+
+    /** The full 128-bit form of a 16-bit service UUID, on the Bluetooth base UUID. */
+    public fun serviceUuid(): String = "0000" + key.toString(16).uppercase().padStart(4, '0') + "-0000-1000-8000-00805F9B34FB"
+}
+
+/**
+ * One advertisement's data for one [AdvertisementMatch]. Deliberately without the sender's address: callers identify a sensor by what it
+ * sends (ADR 0002), and an address that is never handed out cannot end up in a recording.
  *
- * @property payload the manufacturer data after the two bytes of the company identifier
+ * @property data the manufacturer data after the company id, or the service data after the UUID
  * @property rssi received signal strength in dBm
  * @property elapsedRealtimeMs when it was received, on the `SystemClock.elapsedRealtime` clock
  */
 public class Advertisement(
-    public val companyId: Int,
-    public val payload: ByteArray,
+    public val serviceData: Boolean,
+    public val key: Int,
+    public val data: ByteArray,
     public val rssi: Int,
     public val elapsedRealtimeMs: Long,
 )
 
 /**
- * Listens, passively, to Bluetooth LE advertisements that carry manufacturer data of given company identifiers, for sensors that only
- * broadcast (tyre sensors). Separate from [BleAdapterScanner]: it never connects, never writes, never asks a device for anything (a passive
- * scan sends no scan requests), and uses a balanced scan mode with a hardware filter, so the radio does little while a session runs.
- *
- * Which identifiers to listen for is the caller's (from a definition file), never a constant here. Because a definition may give the two
- * bytes of a company identifier in the order they are sent rather than as the number Android reports, [identifiersFor] lists both readings.
+ * Listens, passively, to Bluetooth LE advertisements of sensors that only broadcast (tyre sensors). Separate from [BleAdapterScanner]: it
+ * never connects, never writes, never asks a device for anything (a passive scan sends no scan requests), and uses a balanced scan mode with
+ * a hardware filter per [AdvertisementMatch] (place and prefix of the data), so nothing else is delivered and the radio does little while a
+ * session runs.
  *
  * Not capturing is always an acceptable outcome: without the scan permission, with Bluetooth off or when the scan cannot start, [start]
  * returns false and nothing is delivered.
@@ -40,19 +61,18 @@ public class BleAdvertisementListener(context: Context) {
     private val lock = Any()
     private var active: Active? = null
 
-    private class Active(val scanner: android.bluetooth.le.BluetoothLeScanner, val callback: ScanCallback)
+    private class Active(val scanner: BluetoothLeScanner, val callback: ScanCallback)
 
     /**
-     * Starts listening for advertisements with manufacturer data filed under any of [companyIds] (each 0..0xFFFF) and hands each one to
-     * [onAdvertisement], on a Bluetooth thread; it must not block. A running listener is stopped first.
+     * Starts listening for advertisements that fit any of [matches] and hands each one to [onAdvertisement], on a Bluetooth thread; it must
+     * not block. A running listener is stopped first.
      *
      * @return whether the scan was started; false (and nothing delivered) without permission, without Bluetooth, or when Android refuses
      */
     @SuppressLint("MissingPermission") // checked first; a permission withdrawn later surfaces as SecurityException, handled below
-    public fun start(companyIds: Set<Int>, onAdvertisement: (Advertisement) -> Unit): Boolean {
+    public fun start(matches: List<AdvertisementMatch>, onAdvertisement: (Advertisement) -> Unit): Boolean {
         stop()
-        val ids = companyIds.filter { it in 0..0xFFFF }.toSet()
-        if (ids.isEmpty()) return false
+        if (matches.isEmpty()) return false
         if (BlePermissions.requiredToScan().any { !BlePermissions.isGranted(appContext, it) }) {
             Log.i(TAG, "Not listening for sensor advertisements: no permission to scan")
             return false
@@ -63,6 +83,7 @@ public class BleAdvertisementListener(context: Context) {
             Log.i(TAG, "Not listening for sensor advertisements: Bluetooth is off or missing")
             return false
         }
+        val uuids = matches.filter { it.serviceData }.associateWith { ParcelUuid.fromString(it.serviceUuid()) }
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) = handle(result)
 
@@ -74,17 +95,26 @@ public class BleAdvertisementListener(context: Context) {
             }
 
             private fun handle(result: ScanResult) {
-                val data = result.scanRecord?.manufacturerSpecificData ?: return
+                val record = result.scanRecord ?: return
                 val receivedMs = result.timestampNanos / NANOS_PER_MILLI
-                for (i in 0 until data.size()) {
-                    val id = data.keyAt(i)
-                    if (id !in ids) continue
-                    onAdvertisement(Advertisement(id, data.valueAt(i)?.copyOf() ?: ByteArray(0), result.rssi, receivedMs))
+                for (match in matches) {
+                    val data = if (match.serviceData) record.getServiceData(uuids.getValue(match)) else record.getManufacturerSpecificData(match.key)
+                    if (data == null || !match.accepts(data)) continue
+                    onAdvertisement(Advertisement(match.serviceData, match.key, data.copyOf(), result.rssi, receivedMs))
                 }
             }
         }
-        // One filter per identifier: Android ORs them. An empty data pattern matches any data under that identifier.
-        val filters = ids.map { ScanFilter.Builder().setManufacturerData(it, ByteArray(0)).build() }
+        // One filter per match: Android ORs them. The prefix is matched in full (mask of all ones).
+        val filters = matches.map { match ->
+            val mask = ByteArray(match.prefix.size) { 0xFF.toByte() }
+            val builder = ScanFilter.Builder()
+            if (match.serviceData) {
+                builder.setServiceData(uuids.getValue(match), match.prefix, mask)
+            } else {
+                builder.setManufacturerData(match.key, match.prefix, mask)
+            }
+            builder.build()
+        }
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -93,7 +123,7 @@ public class BleAdvertisementListener(context: Context) {
         return try {
             scanner.startScan(filters, settings, callback)
             synchronized(lock) { active = Active(scanner, callback) }
-            Log.i(TAG, "Listening for sensor advertisements (${ids.size} company identifiers)")
+            Log.i(TAG, "Listening for sensor advertisements (${matches.size} filters)")
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "Not listening for sensor advertisements: permission withdrawn", e)
@@ -115,22 +145,8 @@ public class BleAdvertisementListener(context: Context) {
         }
     }
 
-    public companion object {
-        private const val TAG = "BleAdvertisements"
-        private const val NANOS_PER_MILLI = 1_000_000L
-
-        /**
-         * The company identifiers to listen for, given one written as four hex digits (as definition files do): the number as written, and
-         * the same two bytes the other way round, in case the file gives them in the order they are sent. A tyre capture that hears nothing
-         * because of a byte-order mistake would waste a drive; one extra identifier costs nothing.
-         *
-         * @throws IllegalArgumentException when [hex] is not four hex digits
-         */
-        public fun identifiersFor(hex: String): Set<Int> {
-            require(hex.length == 4 && hex.all { it.isDigit() || it.uppercaseChar() in 'A'..'F' }) { "a company identifier is four hex digits, not '$hex'" }
-            val id = hex.toInt(16)
-            val swapped = ((id and 0xFF) shl 8) or (id ushr 8)
-            return linkedSetOf(id, swapped)
-        }
+    private companion object {
+        const val TAG = "BleAdvertisements"
+        const val NANOS_PER_MILLI = 1_000_000L
     }
 }

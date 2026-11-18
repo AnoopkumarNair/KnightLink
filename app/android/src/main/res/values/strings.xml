@@ -56,12 +56,12 @@
     <string name="action_allow_location">Allow location</string>
     <string name="tyres_title">Tyre sensors</string>
     <string name="tyres_title_unconfirmed">Tyre sensors (unconfirmed)</string>
-    <string name="tyres_not_listening">Not listening: Bluetooth is off or the Nearby devices permission is missing. Nothing is recorded.</string>
-    <string name="tyres_listening_nothing_yet">Listening. Nothing heard yet: the sensors send about once a minute, and some only once the car moves.</string>
-    <string name="tyres_listening">Each payload is read with every layout (%1$s). Compare with the sensor app: the layout that matches is the right one. No alerts.</string>
+    <string name="tyres_not_listening">Not listening: Bluetooth is off, or the Nearby devices or precise Location permission is missing. Nothing is recorded.</string>
+    <string name="tyres_listening_nothing_yet">Listening. Nothing heard yet: the sensors send about once a minute, and some only once the car moves. The Location setting of the phone must be on too.</string>
+    <string name="tyres_listening">Read with the sensor layouts (%1$s). Compare with the sensor app on the spot. No alerts.</string>
     <string name="tyres_payload">%1$s · %2$s</string>
     <string name="tyres_heard">%1$d dBm · %2$d s ago · %3$d×</string>
-    <string name="tyres_no_layout_fits">Too short for every layout.</string>
+    <string name="tyres_no_layout_fits">Too short to read.</string>
 
     <!-- Adapter picker -->
     <string name="picker_title">Choose adapter</string>
@@ -77,7 +77,7 @@
 
     <!-- Bluetooth permission -->
     <string name="permission_title">Bluetooth permission needed</string>
-    <string name="permission_explanation">KnightLink needs to find and connect to your OBD adapter over Bluetooth. Android calls this the Nearby devices permission (on Android 11 and older it is called Location, because Android requires it for Bluetooth scanning). KnightLink never reads your location.</string>
+    <string name="permission_explanation">KnightLink needs to find and connect to your OBD adapter over Bluetooth, and to hear your tyre sensors. Android calls this the Nearby devices permission, and also asks for Location, because tyre sensors send the same kind of signal as location beacons. Bluetooth scans are never used to work out where you are; your position is only recorded with a drive, and a shared copy has it rounded to about a kilometre.</string>
     <string name="permission_blocked">The permission was blocked. Open the app settings, choose Permissions, and allow it there.</string>
     <string name="permission_try_again">Try again</string>
     <string name="permission_open_settings">Open settings</string>

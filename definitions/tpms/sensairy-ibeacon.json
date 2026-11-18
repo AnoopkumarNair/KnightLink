@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "tpms/sensairy-ibeacon",
+  "title": "SensAiry (iBeacon)",
+  "companyId": "004C",
+  "dataPrefix": "0215",
+  "provenance": "inferred",
+  "sensorId": { "offset": 2, "length": 16 },
+  "fields": [
+    { "id": "pressure_kpa", "formula": "((S<<8)|T)>>5", "unit": "kPa" },
+    { "id": "pressure_psi", "formula": "(((S<<8)|T)>>5)/6.89576 - 0.16", "unit": "psi" },
+    { "id": "temp_c", "formula": "U - 256*(U>>7)", "unit": "degC" },
+    { "id": "raw_pressure", "formula": "(S<<8)|T", "unit": "" },
+    { "id": "raw_temp", "formula": "((U&15)<<8)|V", "unit": "" }
+  ],
+  "notes": "How the SensAiry app (com.tymtix.sensairy 2.10.07, read for interoperability on 2026-11-18) reads its newer sensors: an iBeacon frame, Apple manufacturer data (company 004C) starting 02 15. Data: A-B 0215, C-R the 16-byte UUID, S-T major, U-V minor, W tx power. For external sensors the major shifted right by 5 is kPa (shown in psi as for the Eddystone sensors) and minor byte 0 is the temperature as a signed byte in degC. For internal sensors the app reads the major as a raw pressure count and the low 12 bits of the minor as a raw temperature count (bits 5-6 of minor byte 0 are battery), and converts both with calibration data it keeps per sensor, which is not available here: then only raw_pressure and raw_temp mean anything. Which kind a sensor is, the app knows from its pairing. Whether the UUID identifies a sensor is a guess (sensorId). Marked 'inferred' until a capture from the car matches the app's readings."
+}

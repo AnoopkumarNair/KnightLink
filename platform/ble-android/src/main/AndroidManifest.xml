@@ -2,23 +2,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Android 12+ (API 31): runtime "Nearby devices" permissions. Scanning is never used to derive the user's location. -->
-    <uses-permission
-        android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="31" />
+    <!--
+      Android 12+ (API 31): runtime "Nearby devices" permissions. Deliberately NOT neverForLocation: with that flag Android filters beacon
+      advertisements (iBeacon, Eddystone) out of scan results, and the tyre sensors send exactly those. Scans then also need location.
+      Scanning is still never used to work out where the user is.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
-    <!-- Android 11 and older: install-time Bluetooth permissions, and location, which those versions require for BLE scans. -->
+    <!-- Android 11 and older: install-time Bluetooth permissions. -->
     <uses-permission
         android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+    <!-- Every version: location, which Android requires for BLE scan results (see BLUETOOTH_SCAN above). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <uses-feature
         android:name="android.hardware.bluetooth_le"

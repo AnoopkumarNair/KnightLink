@@ -1,12 +1,18 @@
 {
   "schemaVersion": 1,
   "id": "tpms/sensairy",
-  "title": "SensAiry BLE tyre sensors",
-  "companyId": "BA06",
+  "title": "SensAiry (Eddystone)",
+  "serviceUuid": "FEAA",
+  "dataPrefix": "00",
   "provenance": "inferred",
+  "sensorId": { "offset": 2, "length": 10 },
   "fields": [
-    { "id": "temp_c", "formula": "C", "unit": "degC" },
-    { "id": "pressure_psi", "formula": "((D<<8)|E)/32", "unit": "psi" }
+    { "id": "pressure_kpa", "formula": "((M<<8)|N)>>5", "unit": "kPa" },
+    { "id": "pressure_psi", "formula": "(((M<<8)|N)>>5)/6.89576 - 0.16", "unit": "psi" },
+    { "id": "temp_c", "formula": "O - 256*(O>>7)", "unit": "degC" },
+    { "id": "flags", "formula": "N&15", "unit": "" },
+    { "id": "firmware_major", "formula": "E", "unit": "" },
+    { "id": "firmware_minor", "formula": "F", "unit": "" }
   ],
-  "notes": "SRS 2.4 gives temperature = B2 and pressure = (B3<<8|B4)/32 but not where byte 0 starts. This file assumes byte 0 is the first byte after the company id. Marked 'inferred' until checked against a raw advertisement capture."
+  "notes": "How the SensAiry app (com.tymtix.sensairy 2.10.07, read for interoperability on 2026-11-18) reads its 'classic' external sensors: an Eddystone-UID frame, service data under UUID FEAA with frame type 00. Data: A frame type, B tx power, C-L namespace (10 bytes), M-R instance (6 bytes). Instance bytes 0-1 as a big-endian short shifted right by 5 is kPa (the app shows it in psi after dividing by 6.89576 and subtracting an altitude correction, 14.7*((293-0.0065*altitude_m)/293)^5.2558 - 14.54, about 0.16 psi at sea level; readings below 3.9 psi show as 0). Instance byte 2 is the temperature as a signed byte in degC. The low 4 bits of instance byte 1 are flags. Namespace bytes 2 and 3 are the firmware version. The app tells sensors apart by Bluetooth address; whether the namespace identifies a sensor is a guess (sensorId), to be checked against a capture. Marked 'inferred' until a capture from the car matches the app's readings."
 }

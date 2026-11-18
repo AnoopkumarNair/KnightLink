@@ -243,7 +243,7 @@ private fun TyreSection(tyres: TyreSensors) {
         tyres.readings.forEach { reading ->
             Column(Modifier.padding(start = 12.dp, top = 4.dp)) {
                 Text(
-                    stringResource(R.string.tyres_payload, reading.companyHex, reading.payloadHex),
+                    stringResource(R.string.tyres_payload, reading.where, reading.payloadHex),
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                 )

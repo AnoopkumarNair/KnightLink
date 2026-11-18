@@ -7,6 +7,8 @@ import knightlink.core.recorder.EventKind
 import knightlink.core.recorder.ExternalSamples
 import knightlink.core.recorder.InMemoryRecordSink
 import knightlink.core.recorder.RecordSink
+import knightlink.core.tpms.TpmsDataKind
+import knightlink.platform.ble.AdvertisementMatch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -28,50 +30,55 @@ class TyreSensorsTest {
     private val store = DefinitionStore(assets)
     private val config = AppConfig.load(assets)
     private val layouts = config.tpmsDefinitions.map(store::tpms)
-    private val companyId = layouts.first().definition.companyId.toInt(16)
+    private val eddystone = layouts.single { it.kind == TpmsDataKind.SERVICE }
+    private val key = eddystone.key
 
-    /** A payload in the published open-protocol layout: vendor, model, sensor id, 3.3 V, 25 °C, 350 kPa. */
-    private val payload = byteArrayOf(0x01, 0x02, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x21, 0x19, 0x01, 0x5E)
+    /** An Eddystone-UID frame as the sensors send it: frame type 00, tx power, namespace, then 350 kPa and 25 °C in the instance. */
+    private val payload = byteArrayOf(0x00, -27, 0x11, 0x22, 0x01, 0x07, 0x33, 0x44, 0x55, 0x66, 0x77, -120, 0x2B, -64, 0x19, 0x00, 0x00, 0x00)
 
     @Test
     fun theAppListensForTyreSensorsWithEveryBundledLayout() {
         assertTrue(layouts.size >= 2, "both candidate layouts are configured")
-        assertTrue(layouts.all { it.definition.companyId.length == 4 })
+        assertEquals(setOf(TpmsDataKind.SERVICE, TpmsDataKind.MANUFACTURER), layouts.map { it.kind }.toSet())
+        // One hardware filter per layout: where the data is and what it starts with.
+        assertEquals(2, TyreSensorCapture(layouts).matches.size)
     }
 
     @Test
     fun oneLinePerDistinctPayloadPerFiveSeconds() {
         val capture = TyreSensorCapture(layouts)
-        val first = assertNotNull(capture.accept(1000, companyId, payload, -60))
+        val first = assertNotNull(capture.accept(1000, true, key, payload, -60))
         assertEquals(payload.size, assertNotNull(ExternalSamples.parseTpms(1000, first)).payloadHex.length / 2)
         // The rest of the burst, every 852 ms: held back until five seconds have passed.
-        assertNull(capture.accept(1852, companyId, payload, -61))
-        assertNull(capture.accept(5999, companyId, payload, -61))
-        assertNotNull(capture.accept(6000, companyId, payload, -62))
+        assertNull(capture.accept(1852, true, key, payload, -61))
+        assertNull(capture.accept(5999, true, key, payload, -61))
+        assertNotNull(capture.accept(6000, true, key, payload, -62))
         // A changed value is a new payload, recorded at once.
-        val warmer = payload.copyOf().also { it[9] = 0x1A }
-        assertNotNull(capture.accept(6100, companyId, warmer, -60))
+        val warmer = payload.copyOf().also { it[14] = 0x1A }
+        assertNotNull(capture.accept(6100, true, key, warmer, -60))
         assertEquals(5, capture.readings(6100).sumOf { it.count })
     }
 
     @Test
     fun aCrowdIsCappedPerSecond() {
         val capture = TyreSensorCapture(layouts, maxLinesPerSecond = 3)
-        val lines = (0 until 10).mapNotNull { i -> capture.accept(2000 + i.toLong(), companyId, payload.copyOf().also { it[2] = i.toByte() }, -80) }
+        val lines = (0 until 10).mapNotNull { i -> capture.accept(2000 + i.toLong(), true, key, payload.copyOf().also { it[2] = i.toByte() }, -80) }
         assertEquals(3, lines.size)
-        assertNotNull(capture.accept(3000, companyId, payload.copyOf().also { it[2] = 9 }, -80), "a new second, a new allowance")
+        assertNotNull(capture.accept(3000, true, key, payload.copyOf().also { it[2] = 9 }, -80), "a new second, a new allowance")
     }
 
     @Test
     fun theScreenShowsEachPayloadReadWithEveryLayoutAndForgetsOldOnes() {
         val capture = TyreSensorCapture(layouts, keepMs = 60_000)
-        capture.accept(0, companyId, payload, -55)
+        capture.accept(0, true, key, payload, -55)
         val reading = capture.readings(3000).single()
         assertEquals(payload.size * 2, reading.payloadHex.length)
         assertEquals(-55, reading.rssi)
         assertEquals(3, reading.ageSeconds)
-        assertEquals(layouts.size, reading.decoded.size, reading.decoded.toString())
-        assertTrue(reading.decoded.any { "id 102030405060" in it && "pressure_kpa 350 kPa" in it && "temp_c 25 degC" in it }, reading.decoded.toString())
+        assertEquals("s:" + key.toString(16).uppercase(), reading.where)
+        // Only the layout whose place and prefix fit reads it.
+        val decoded = reading.decoded.single()
+        assertTrue("id 11220107334455667788" in decoded && "pressure_kpa 350 kPa" in decoded && "temp_c 25 degC" in decoded, decoded)
         assertTrue(capture.unconfirmed)
         assertTrue(capture.readings(60_001).isEmpty())
     }
@@ -79,7 +86,7 @@ class TyreSensorsTest {
     @Test
     fun aPayloadTooShortForEveryLayoutIsStillRecorded() {
         val capture = TyreSensorCapture(layouts)
-        assertNotNull(capture.accept(0, companyId, byteArrayOf(1, 2), -70))
+        assertNotNull(capture.accept(0, true, key, byteArrayOf(0, 2), -70))
         assertTrue(capture.readings(0).single().decoded.isEmpty())
     }
 
@@ -102,12 +109,12 @@ class TyreSensorsTest {
     }
 
     private class FakeRadio(private val listening: Boolean = true) : AdvertisementSource {
-        var startedWith: Set<String>? = null
+        var startedWith: List<AdvertisementMatch>? = null
         var stopped = 0
-        private var deliver: ((Int, ByteArray, Int) -> Unit)? = null
+        private var deliver: ((Boolean, Int, ByteArray, Int) -> Unit)? = null
 
-        override fun start(companyIdsHex: Set<String>, onAdvertisement: (companyId: Int, payload: ByteArray, rssi: Int) -> Unit): Boolean {
-            startedWith = companyIdsHex
+        override fun start(matches: List<AdvertisementMatch>, onAdvertisement: (serviceData: Boolean, key: Int, data: ByteArray, rssi: Int) -> Unit): Boolean {
+            startedWith = matches
             if (listening) deliver = onAdvertisement
             return listening
         }
@@ -117,8 +124,8 @@ class TyreSensorsTest {
             deliver = null
         }
 
-        fun send(companyId: Int, payload: ByteArray, rssi: Int) {
-            deliver?.invoke(companyId, payload, rssi)
+        fun send(key: Int, payload: ByteArray, rssi: Int) {
+            deliver?.invoke(true, key, payload, rssi)
         }
     }
 
@@ -136,12 +143,20 @@ class TyreSensorsTest {
             SessionController(backgroundScope, { config }, store, DemoTransportFactory(store::simulation), sinks, testTimeSource, tyreSensors = radio)
         controller.connect(ConnectionTarget.Demo(config.demoScenario))
         awaitLive(controller)
-        assertEquals(layouts.map { it.definition.companyId }.toSet(), radio.startedWith)
+        assertEquals(
+            setOf(
+                true to key,
+                false to layouts.single {
+                    it.kind == TpmsDataKind.MANUFACTURER
+                }.key,
+            ),
+            radio.startedWith?.map { it.serviceData to it.key }?.toSet(),
+        )
 
         val sentBefore = sinks.sinks.single().toRecording().events.count { it.kind == EventKind.TX }
         // A ten-second burst every 852 ms, as the sensors send.
         repeat(12) {
-            radio.send(companyId, payload, -58)
+            radio.send(key, payload, -58)
             advanceTimeBy(852.milliseconds)
         }
         advanceTimeBy(2.seconds)

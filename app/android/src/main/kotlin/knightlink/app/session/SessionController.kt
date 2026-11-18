@@ -196,9 +196,8 @@ class SessionController(
         phone?.start { line -> lines.trySend(line) }
         if (radio != null) {
             val capture = TyreSensorCapture(tyres)
-            val companyIds = tyres.map { it.definition.companyId.uppercase() }.toSet()
-            val listening = radio.start(companyIds) { companyId, payload, rssi ->
-                capture.accept(started.elapsedNow().inWholeMilliseconds, companyId, payload, rssi)?.let { lines.trySend(it) }
+            val listening = radio.start(capture.matches) { serviceData, key, data, rssi ->
+                capture.accept(started.elapsedNow().inWholeMilliseconds, serviceData, key, data, rssi)?.let { lines.trySend(it) }
             }
             connectionLog?.app(
                 if (listening) {

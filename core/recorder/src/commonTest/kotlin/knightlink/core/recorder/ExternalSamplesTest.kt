@@ -84,6 +84,16 @@ class ExternalSamplesTest {
     }
 
     @Test
+    fun serviceDataIsMarkedAsSuchAndReadsBack() {
+        val line = ExternalSamples.tpmsLine(TpmsSample(9000, 0xFEAA, "00e5", -64, serviceData = true))
+        assertEquals("tpms s:FEAA 00E5 -64", line)
+        assertEquals(TpmsSample(9000, 0xFEAA, "00E5", -64, serviceData = true), ExternalSamples.parseTpms(9000, line))
+        assertEquals(line, ExternalSamples.scrub(line))
+        assertNull(ExternalSamples.parseTpms(0, "tpms s:FEA 00 -64"))
+        assertNull(ExternalSamples.parseTpms(0, "tpms x:FEAA 00 -64"))
+    }
+
+    @Test
     fun aMalformedTyreSensorLineIsNotRead() {
         assertNull(ExternalSamples.parseTpms(0, "gps 1 2 3 4 5"))
         assertNull(ExternalSamples.parseTpms(0, "tpms 0A1B 00FF1C0420"))

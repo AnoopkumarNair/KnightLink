@@ -7,6 +7,7 @@ import knightlink.core.recorder.Recording
 import knightlink.core.recorder.TpmsSample
 import knightlink.core.recorder.trafficExchanges
 import knightlink.core.signals.SignalCatalog
+import knightlink.core.tpms.TpmsDataKind
 import knightlink.core.tpms.TpmsDecoder
 import knightlink.core.tpms.TpmsDefinition
 import java.io.File
@@ -53,29 +54,34 @@ internal fun renderTpmsReport(recording: Recording, decoders: List<TpmsDecoder>,
         lines += "No tyre sensor advertisements in this recording (no tpms lines)."
         return lines
     }
-    val groups = samples.groupBy { it.companyId to it.payloadHex }.values.sortedBy { it.first().timeMs }
-    lines += "Tyre sensor advertisements: ${samples.size} lines, ${groups.size} distinct payloads, company ids " +
-        samples.map { hex4(it.companyId) }.distinct().joinToString(", ")
+    val groups = samples.groupBy { Triple(it.serviceData, it.key, it.payloadHex) }.values.sortedBy { it.first().timeMs }
+    lines += "Tyre sensor advertisements: ${samples.size} lines, ${groups.size} distinct payloads, under " +
+        samples.map { where(it) }.distinct().joinToString(", ")
     lines += "Layouts: " + decoders.joinToString("; ") { "${it.definition.id} (${it.definition.provenance.name.lowercase()})" }
     for (group in groups) {
         val first = group.first()
         val rssi = group.mapNotNull { it.rssi }
         lines += ""
-        lines += "payload ${first.payloadHex.ifEmpty { "(empty)" }} under ${hex4(first.companyId)}: ${group.size} lines, " +
+        lines += "payload ${first.payloadHex.ifEmpty { "(empty)" }} under ${where(first)}: ${group.size} lines, " +
             "%.1f s .. %.1f s".format(first.timeMs / 1000.0, group.last().timeMs / 1000.0) +
             if (rssi.isEmpty()) "" else ", ${rssi.min()}..${rssi.max()} dBm"
         val bytes = first.payloadHex.hexToBytes()
         lines += "  byte " + bytes.indices.joinToString(" ") { " " + letter(it) }
         lines += "       " + first.payloadHex.chunked(2).joinToString(" ")
-        for (decoder in decoders) lines += "  ${decoder.definition.id}: " + readWith(decoder, bytes)
+        val fitting = decoders.filter { it.matches(kindOf(first), first.key, bytes) }
+        if (fitting.isEmpty()) lines += "  (no layout fits this place and prefix)"
+        for (decoder in fitting) lines += "  ${decoder.definition.id}: " + readWith(decoder, first, bytes)
     }
     lines += coverage(samples, decoders, recording, catalog, rules)
     return lines
 }
 
-private fun readWith(decoder: TpmsDecoder, payload: ByteArray): String {
-    // Read with the layout's own company id: which of the listened-for ids it came under is shown above, and is part of what is checked.
-    val values = decoder.decode(decoder.definition.companyId.toInt(16), payload) ?: return "(too short for this layout)"
+private fun kindOf(sample: TpmsSample): TpmsDataKind = if (sample.serviceData) TpmsDataKind.SERVICE else TpmsDataKind.MANUFACTURER
+
+private fun where(sample: TpmsSample): String = (if (sample.serviceData) "service data s:" else "company ") + hex4(sample.key)
+
+private fun readWith(decoder: TpmsDecoder, sample: TpmsSample, payload: ByteArray): String {
+    val values = decoder.decode(kindOf(sample), sample.key, payload) ?: return "(too short for this layout)"
     val id = decoder.sensorId(payload)?.let { "id $it  " }.orEmpty()
     return id + values.joinToString("  ") { "${it.id} %.1f ${it.unit}".format(it.value) }
 }
@@ -98,12 +104,17 @@ private fun coverage(samples: List<TpmsSample>, decoders: List<TpmsDecoder>, rec
     val moving = speeds.filter { it.value > rules.movingKmh }.map { minute(it.timeMs) }.toSortedSet()
     val decided = moving.size >= rules.minMovingMinutes
     for (decoder in withIds) {
+        val byId = samples
+            .filter { decoder.matches(kindOf(it), it.key, it.payloadHex.hexToBytes()) }
+            .mapNotNull { s -> decoder.sensorId(s.payloadHex.hexToBytes())?.let { it to s } }
+            .groupBy({ it.first }, { it.second })
+        // A layout nothing in the recording fits has nothing to show.
+        if (byId.isEmpty()) continue
         lines += ""
         lines += "Minute coverage by sensor id, read with ${decoder.definition.id}: ${moving.size} moving minutes " +
             "($source above %.0f km/h)".format(rules.movingKmh) +
             if (decided) "; on the car: heard in at least %.0f %% of them".format(rules.sharePercent) else "; fewer than ${rules.minMovingMinutes}: no decision"
-        lines += "  %-14s  %6s  %7s  %7s  %9s  %9s  %s".format("sensor id", "lines", "minutes", "moving", "share", "seen s", "verdict")
-        val byId = samples.mapNotNull { s -> decoder.sensorId(s.payloadHex.hexToBytes())?.let { it to s } }.groupBy({ it.first }, { it.second })
+        lines += "  %-32s  %6s  %7s  %7s  %9s  %9s  %s".format("sensor id", "lines", "minutes", "moving", "share", "seen s", "verdict")
         val rows = byId.map { (id, heard) ->
             val minutes = heard.map { minute(it.timeMs) }.toSet()
             val movingHeard = minutes.count { it in moving }
@@ -119,7 +130,7 @@ private fun coverage(samples: List<TpmsSample>, decoders: List<TpmsDecoder>, rec
                 share >= rules.sharePercent / 2 -> "spare?"
                 else -> "other"
             }
-            lines += "  %-14s  %6d  %7d  %7d  %8.0f%%  %9s  %s".format(
+            lines += "  %-32s  %6d  %7d  %7d  %8.0f%%  %9s  %s".format(
                 id,
                 heard.size,
                 counts.first,

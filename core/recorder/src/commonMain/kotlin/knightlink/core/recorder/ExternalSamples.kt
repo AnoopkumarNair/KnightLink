@@ -32,18 +32,21 @@ public data class GpsSample(
 )
 
 /**
- * One Bluetooth LE advertisement of a tyre sensor, as received: the manufacturer data of one company identifier. The sending device's address
- * is never part of it (ADR 0002; iOS does not reveal it either): a sensor is told apart by what it sends.
+ * One Bluetooth LE advertisement of a tyre sensor, as received: the data filed under one company identifier (manufacturer data) or one
+ * 16-bit service UUID (service data). The sending device's address is never part of it (ADR 0002; iOS does not reveal it either): a sensor
+ * is told apart by what it sends.
  *
- * @property companyId the Bluetooth company identifier the data was filed under, 0..0xFFFF
- * @property payloadHex the manufacturer data after the company identifier, upper-case hex without spaces (empty when there was none)
+ * @property key the company identifier, or the 16-bit service UUID when [serviceData], 0..0xFFFF
+ * @property payloadHex the data after the company identifier or UUID, upper-case hex without spaces (empty when there was none)
  * @property rssi the received signal strength in dBm, null when not known
+ * @property serviceData whether this is service data (under a UUID) rather than manufacturer data (under a company id)
  */
 public data class TpmsSample(
     val timeMs: Long,
-    val companyId: Int,
+    val key: Int,
     val payloadHex: String,
     val rssi: Int?,
+    val serviceData: Boolean = false,
 )
 
 /**
@@ -56,8 +59,8 @@ public data class TpmsSample(
  * - `sensors <what the phone has>`: written once when sampling starts, e.g. `sensors accel=linear gyro=yes gps=on`; for a person.
  * - `gps <lat> <lon> <speed km/h> <bearing deg> <accuracy m>`: one fix; `-` for a value that is not known. Latitude and longitude have
  *   5 decimals on the device and are rounded to [SHARED_DECIMALS] decimals (about a kilometre) in a copy that is shared.
- * - `tpms <company id> <payload> <rssi>`: one advertisement of a tyre sensor (see [TpmsSample]), at the event's time. The company id is four
- *   hex digits, the payload is hex (`-` when empty, at most [MAX_TPMS_PAYLOAD_BYTES] bytes), the RSSI is in dBm (`-` when not known). There is
+ * - `tpms <where> <payload> <rssi>`: one advertisement of a tyre sensor (see [TpmsSample]), at the event's time. Where is the company id as
+ *   four hex digits for manufacturer data, or `s:` and the 16-bit service UUID for service data (e.g. `s:FEAA`), the payload is hex (`-` when empty, at most [MAX_TPMS_PAYLOAD_BYTES] bytes), the RSSI is in dBm (`-` when not known). There is
  *   no device address in the line, and a shared copy keeps only what parses as these three fields.
  */
 public object ExternalSamples {
@@ -123,23 +126,25 @@ public object ExternalSamples {
 
     /** The line for one tyre-sensor advertisement. */
     public fun tpmsLine(sample: TpmsSample): String {
-        require(sample.companyId in 0..0xFFFF) { "a company id has 16 bits, not ${sample.companyId}" }
+        require(sample.key in 0..0xFFFF) { "a company id or service UUID has 16 bits, not ${sample.key}" }
         val payload = sample.payloadHex.uppercase()
         require(payload.length % 2 == 0 && payload.length <= 2 * MAX_TPMS_PAYLOAD_BYTES && payload.all { it in HEX_DIGITS }) {
             "the payload is at most $MAX_TPMS_PAYLOAD_BYTES bytes of hex, not '${sample.payloadHex}'"
         }
-        return listOf(TPMS, companyHex(sample.companyId), payload.ifEmpty { MISSING }, sample.rssi?.toString() ?: MISSING).joinToString(" ")
+        val where = (if (sample.serviceData) SERVICE_MARK else "") + hex4(sample.key)
+        return listOf(TPMS, where, payload.ifEmpty { MISSING }, sample.rssi?.toString() ?: MISSING).joinToString(" ")
     }
 
     /** The advertisement of a `tpms` line from an event at [eventTimeMs], or null when [payload] is not a well-formed `tpms` line. */
     public fun parseTpms(eventTimeMs: Long, payload: String): TpmsSample? {
         val fields = payload.trim().split(' ')
         if (fields.size != TPMS_FIELDS || fields[0] != TPMS) return null
-        val company = fields[1].takeIf { it.length == 4 && it.all { c -> c in HEX_DIGITS } }?.toInt(16) ?: return null
+        val serviceData = fields[1].startsWith(SERVICE_MARK)
+        val key = fields[1].removePrefix(SERVICE_MARK).takeIf { it.length == 4 && it.all { c -> c in HEX_DIGITS } }?.toInt(16) ?: return null
         val hex = if (fields[2] == MISSING) "" else fields[2]
         if (hex.length % 2 != 0 || hex.length > 2 * MAX_TPMS_PAYLOAD_BYTES || !hex.all { it in HEX_DIGITS }) return null
         val rssi = if (fields[3] == MISSING) null else fields[3].toIntOrNull()?.takeIf { it in RSSI_RANGE } ?: return null
-        return TpmsSample(eventTimeMs, company, hex, rssi)
+        return TpmsSample(eventTimeMs, key, hex, rssi, serviceData)
     }
 
     /**
@@ -175,7 +180,9 @@ public object ExternalSamples {
     /** What a receiver can report: -127..+20 dBm covers every radio, and anything outside is not a reading. */
     private val RSSI_RANGE = -127..20
 
-    private fun companyHex(id: Int): String = id.toString(16).uppercase().padStart(4, '0')
+    private const val SERVICE_MARK = "s:"
+
+    private fun hex4(id: Int): String = id.toString(16).uppercase().padStart(4, '0')
 
     /** [value] with exactly [decimals] decimals and a point, whatever the platform's locale (common code has no String.format). */
     internal fun fixed(value: Double, decimals: Int): String {

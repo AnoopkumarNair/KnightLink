@@ -12,13 +12,20 @@ import android.os.Build
 @SuppressLint("InlinedApi")
 public object BlePermissions {
     /**
-     * Permissions the app must hold (and ask the user for) to scan and connect on API level [sdkInt]: the "Nearby
-     * devices" pair on API 31+, location on API 26-30, where Android only delivers BLE scan results to apps that can
-     * see the user's location. Connecting on API 30 and older needs only install-time permissions.
+     * Permissions the app must hold (and ask the user for) to scan and connect on API level [sdkInt]: location on every version, plus the
+     * "Nearby devices" pair on API 31+. Location is needed on 31+ too because the scan permission is not declared `neverForLocation`: with
+     * that flag Android filters beacon advertisements (iBeacon, Eddystone) out of scan results, and those are what the tyre sensors send.
+     * Precise location is asked for together with approximate, as Android 12+ requires. Connecting on API 30 and older needs only
+     * install-time permissions.
      */
     public fun required(sdkInt: Int = Build.VERSION.SDK_INT): List<String> =
         if (sdkInt >= Build.VERSION_CODES.S) {
-            listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+            listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
         } else {
             listOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
@@ -27,7 +34,11 @@ public object BlePermissions {
     public fun missing(context: Context): List<String> = required().filter { !isGranted(context, it) }
 
     internal fun requiredToScan(sdkInt: Int = Build.VERSION.SDK_INT): List<String> =
-        if (sdkInt >= Build.VERSION_CODES.S) listOf(Manifest.permission.BLUETOOTH_SCAN) else listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (sdkInt >= Build.VERSION_CODES.S) {
+            listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.ACCESS_FINE_LOCATION)
+        } else {
+            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
 
     // Before API 31 connecting needs only the install-time BLUETOOTH permission, so there is nothing to check at run time.
     internal fun requiredToConnect(sdkInt: Int = Build.VERSION.SDK_INT): List<String> =
