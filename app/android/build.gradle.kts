@@ -78,6 +78,7 @@ dependencies {
     implementation(projects.core.transport)
     implementation(projects.core.vehicle)
     implementation(projects.platform.bleAndroid)
+    implementation(projects.voice.intents)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 

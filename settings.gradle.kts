@@ -33,6 +33,7 @@ include(
     ":core:scan",
     ":core:runtime",
     ":core:recorder",
+    ":voice:intents",
     ":tools:cli",
     ":tools:archtest",
 )

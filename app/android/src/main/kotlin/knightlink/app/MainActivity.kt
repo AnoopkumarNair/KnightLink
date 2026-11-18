@@ -51,6 +51,9 @@ import knightlink.app.ui.ConnectionActions
 import knightlink.app.ui.DriveDataActions
 import knightlink.app.ui.HomeScreen
 import knightlink.app.ui.SessionViewModel
+import knightlink.app.ui.TalkActions
+import knightlink.app.voice.ButtonGesture
+import knightlink.app.voice.MediaButtonTrigger
 import knightlink.platform.ble.BlePermissions
 import knightlink.platform.ble.DiscoveredAdapter
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +87,18 @@ class MainActivity : ComponentActivity() {
 
     private val locationAllowed = MutableStateFlow(false)
 
+    // The microphone, asked for after the explanation dialog. Once granted, the question the user pressed for starts at once.
+    private val micRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            viewModel.pushToTalk.toggle()
+        } else {
+            viewModel.setMicDenial(PermissionPolicy.denial(listOf(Manifest.permission.RECORD_AUDIO)) { shouldShowRequestPermissionRationale(it) })
+        }
+    }
+
+    // The steering-wheel button. The activity is in front whenever it fires, so the explanation dialog can be shown.
+    private val mediaButton by lazy { MediaButtonTrigger(this, ButtonGesture(viewModel.mediaGesture.value), ::onTalk) }
+
     // Nothing to read from the result: if Bluetooth is on afterwards, "Scan again" works.
     private val enableBluetooth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
 
@@ -96,6 +111,28 @@ class MainActivity : ComponentActivity() {
                     Home()
                 }
             }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        mediaButton.setGesture(viewModel.mediaGesture.value)
+        mediaButton.start()
+    }
+
+    override fun onStop() {
+        mediaButton.stop()
+        // The microphone is not for the background: a question in progress is dropped.
+        viewModel.pushToTalk.cancel()
+        super.onStop()
+    }
+
+    /** The talk button, or the steering-wheel gesture. Without the microphone permission the explanation comes first. */
+    private fun onTalk() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            viewModel.pushToTalk.toggle()
+        } else {
+            viewModel.setMicExplanationOpen(true)
         }
     }
 
@@ -118,6 +155,10 @@ class MainActivity : ComponentActivity() {
         val pickerOpen by viewModel.pickerOpen.collectAsStateWithLifecycle()
         val denial by viewModel.permissionDenial.collectAsStateWithLifecycle()
         val location by locationAllowed.collectAsStateWithLifecycle()
+        val talkState by viewModel.pushToTalk.state.collectAsStateWithLifecycle()
+        val gesture by viewModel.mediaGesture.collectAsStateWithLifecycle()
+        val micExplanation by viewModel.micExplanationOpen.collectAsStateWithLifecycle()
+        val micDenial by viewModel.micDenial.collectAsStateWithLifecycle()
 
         HomeScreen(
             state = state,
@@ -140,7 +181,20 @@ class MainActivity : ComponentActivity() {
                     locationRequest.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                 },
             ),
+            talk = TalkActions(
+                state = talkState,
+                onDevice = viewModel.recognisedOnDevice,
+                gesture = gesture,
+                onTalk = ::onTalk,
+                onGesture = {
+                    viewModel.setMediaGesture(it)
+                    mediaButton.setGesture(it)
+                },
+            ),
         )
+
+        if (micExplanation) MicExplanationDialog()
+        micDenial?.let { MicDenialDialog(it) }
 
         if (pickerOpen) {
             AdapterPickerDialog(
@@ -170,6 +224,49 @@ class MainActivity : ComponentActivity() {
                 text = { Text(stringResource(R.string.share_failed, message)) },
             )
         }
+    }
+
+    /** Why the microphone, shown before Android's own prompt. */
+    @Composable
+    private fun MicExplanationDialog() {
+        AlertDialog(
+            onDismissRequest = { viewModel.setMicExplanationOpen(false) },
+            title = { Text(stringResource(R.string.mic_title)) },
+            text = { Text(stringResource(R.string.mic_explanation)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.setMicExplanationOpen(false)
+                        micRequest.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                ) { Text(stringResource(R.string.mic_allow)) }
+            },
+            dismissButton = { TextButton(onClick = { viewModel.setMicExplanationOpen(false) }) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
+
+    /** The microphone was refused: explain and offer another try, or the settings when Android will not ask again. */
+    @Composable
+    private fun MicDenialDialog(denial: PermissionDenial) {
+        val blocked = denial == PermissionDenial.NEEDS_SETTINGS
+        AlertDialog(
+            onDismissRequest = { viewModel.setMicDenial(null) },
+            title = { Text(stringResource(R.string.mic_title)) },
+            text = { Text(stringResource(R.string.mic_denied) + if (blocked) "\n\n" + stringResource(R.string.mic_blocked) else "") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.setMicDenial(null)
+                        if (blocked) {
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+                        } else {
+                            micRequest.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                ) { Text(stringResource(if (blocked) R.string.permission_open_settings else R.string.permission_try_again)) }
+            },
+            dismissButton = { TextButton(onClick = { viewModel.setMicDenial(null) }) { Text(stringResource(R.string.cancel)) } },
+        )
     }
 
     /** The recordings count and size: read when the screen appears and when a connection starts or ends, and every few seconds while one is active. */

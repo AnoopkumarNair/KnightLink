@@ -13,7 +13,13 @@ import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleSession
 import knightlink.core.signals.SignalCatalog
+import knightlink.core.telemetry.TelemetrySnapshot
 import knightlink.core.vehicle.CapabilityReport
+import knightlink.voice.intents.AnswerContext
+import knightlink.voice.intents.LinkStatus
+import knightlink.voice.intents.ReadingAges
+import knightlink.voice.intents.SignalProvenance
+import knightlink.voice.intents.signalProvenance
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -84,7 +90,17 @@ class SessionController(
         /** Stops the phone's sensors; set while they run. */
         @Volatile
         var stopSamples: (() -> Unit)? = null
+
+        /** What a spoken answer needs besides the live data; set together with [session], before it is. */
+        @Volatile
+        var voice: VoiceFacts? = null
     }
+
+    /**
+     * The per-run facts of [answerContext]: [started] is the zero of every reading's `at` (the mark taken right before the session
+     * starts, the same one [publish] ages the readings against), the provenance and maximum ages come from the run's catalog.
+     */
+    private class VoiceFacts(val started: TimeMark, val provenance: SignalProvenance, val maxAge: (String) -> Duration)
 
     private val lock = Any()
     private var current: Run? = null
@@ -138,6 +154,28 @@ class SessionController(
         }
     }
 
+    /**
+     * Everything a spoken answer may use, captured now: the latest readings, the time in the readings' own frame (time since the
+     * session started, from the same mark [uiState] ages values with), the link, how far each signal can be trusted, and how old a
+     * reading may be. Without a connection it is the empty, not-connected context; while one is still loading its definitions, the empty, connecting one.
+     * Safe to call from any thread.
+     */
+    fun answerContext(): AnswerContext {
+        val run = synchronized(lock) { current }
+        val session = run?.session
+        val voice = run?.voice
+        if (run == null) return NOT_CONNECTED_CONTEXT
+        // Asked for, but the session has not started yet (definitions still loading).
+        if (session == null || voice == null) return NOT_CONNECTED_CONTEXT.copy(link = LinkStatus.CONNECTING)
+        return AnswerContext(
+            snapshot = session.telemetry.value,
+            now = voice.started.elapsedNow(),
+            link = session.state.value.toLinkStatus(),
+            provenance = voice.provenance,
+            maxAge = voice.maxAge,
+        )
+    }
+
     private suspend fun start(run: Run, target: ConnectionTarget) {
         // The session's constructor validates its inputs too (the catalog against the config), so it belongs inside the try:
         // a throw there must show as Failed, not leave the screen on "Connecting".
@@ -158,8 +196,10 @@ class SessionController(
         // A disconnect that arrived while the definitions were loading must not start a session.
         run.scope.coroutineContext.ensureActive()
         val started = timeSource.markNow()
+        val periods = signalPeriods(checkNotNull(catalog))
+        run.voice = VoiceFacts(started, catalog.signalProvenance(), ReadingAges.fromPeriods(periods))
         run.session = session
-        run.scope.launch { publish(session, started, signalPeriods(checkNotNull(catalog))) }
+        run.scope.launch { publish(session, started, periods) }
         run.scope.launch { keepScanResults(session) }
         startSamples(run, checkNotNull(recorded))
         session.start()
@@ -283,6 +323,9 @@ class SessionController(
         catalog.parameters.flatMap { parameter -> parameter.signals.map { it.definition.id to parameter.tier.period } }.toMap()
 
     companion object {
+        /** What an answer sees when there is no running session. */
+        val NOT_CONNECTED_CONTEXT = AnswerContext(TelemetrySnapshot.EMPTY, Duration.ZERO, LinkStatus.NOT_CONNECTED, { _, _ -> null })
+
         /** Sensor lines held for the recording at most; at 2 motion lines a second this is minutes of a recorder that is stuck. */
         private const val SAMPLE_BUFFER = 512
         const val SCAN_RESULT_SUFFIX = ".scan.json"

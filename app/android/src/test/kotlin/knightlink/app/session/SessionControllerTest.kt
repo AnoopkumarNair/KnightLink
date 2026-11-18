@@ -6,6 +6,8 @@ import knightlink.app.data.RepoAssetSource
 import knightlink.core.recorder.EventKind
 import knightlink.core.recorder.InMemoryRecordSink
 import knightlink.core.recorder.RecordSink
+import knightlink.core.signals.Provenance
+import knightlink.voice.intents.LinkStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -63,6 +65,36 @@ class SessionControllerTest {
     }
 
     private fun UiState.value(signalId: String): LiveValue? = liveValues.firstOrNull { it.signalId == signalId }
+
+    @Test
+    fun answerContextIsNotConnectedWithoutASessionAndConnectingWhileItLoads() = runTest {
+        val rig = rig()
+        val idle = rig.controller.answerContext()
+        assertEquals(LinkStatus.NOT_CONNECTED, idle.link)
+        assertTrue(idle.snapshot.isEmpty())
+
+        // Asked for, but nothing has started yet (definitions still loading): connecting, with no readings.
+        rig.controller.connect(demo)
+        assertEquals(LinkStatus.CONNECTING, rig.controller.answerContext().link)
+    }
+
+    @Test
+    fun answerContextIsLiveWithReadingsOnceThePollingStarts() = runTest {
+        val rig = rig()
+        rig.controller.connect(demo)
+        awaitLive(rig.controller)
+        advanceTimeBy(5.seconds)
+
+        val context = rig.controller.answerContext()
+        assertEquals(LinkStatus.LIVE, context.link)
+        assertFalse(context.snapshot.isEmpty())
+        // "now" is in the readings' own frame: no reading is from the future, and the newest is recent.
+        val newest = context.snapshot.readings.maxOf { it.at }
+        assertTrue(newest <= context.now, "newest $newest, now ${context.now}")
+        assertTrue(context.now - newest < 10.seconds)
+        assertEquals(Provenance.STANDARD, context.provenance.of("engine.rpm", null) ?: context.provenance.of("engine.rpm", "ecm"))
+        assertTrue(context.maxAge("engine.rpm") >= 5.seconds)
+    }
 
     @Test
     fun startsIdle() = runTest {

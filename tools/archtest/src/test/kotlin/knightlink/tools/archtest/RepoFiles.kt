@@ -17,6 +17,13 @@ object RepoFiles {
             .orEmpty()
             .sortedBy { it.name }
 
+    /** Every voice module directory, e.g. `voice/intents`; empty when there are none. */
+    fun voiceModules(): List<File> =
+        File(root, "voice")
+            .listFiles { f -> f.isDirectory && File(f, "build.gradle.kts").isFile }
+            .orEmpty()
+            .sortedBy { it.name }
+
     /** All Kotlin files under `src/` of a module whose source-set directory name satisfies [sourceSet]. */
     fun kotlinFiles(
         module: File,
