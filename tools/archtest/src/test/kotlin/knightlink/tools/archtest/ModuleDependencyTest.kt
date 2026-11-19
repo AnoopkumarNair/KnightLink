@@ -64,7 +64,11 @@ class ModuleDependencyTest {
     @Test
     fun everyVoiceModuleIsInTheRuleTable() {
         val actual = RepoFiles.voiceModules().map { it.name }.toSet()
-        assertEquals(emptySet(), actual - (voiceAllowed.keys + allowedVoiceOnCore.keys), "Voice modules missing from the dependency rule table (add them deliberately)")
+        assertEquals(
+            emptySet(),
+            actual - (voiceAllowed.keys + allowedVoiceOnCore.keys),
+            "Voice modules missing from the dependency rule table (add them deliberately)",
+        )
         assertEquals(emptySet(), voiceAllowed.keys - actual, "Rule table lists voice modules that no longer exist")
     }
 
