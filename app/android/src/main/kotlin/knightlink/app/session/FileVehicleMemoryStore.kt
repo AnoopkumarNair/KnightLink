@@ -2,6 +2,7 @@ package knightlink.app.session
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import knightlink.core.runtime.VehicleMemory
 import knightlink.core.runtime.VehicleMemoryStore
 import java.io.File
@@ -27,7 +28,7 @@ class FileVehicleMemoryStore(
 
     override val salt: String = prefs.getString(KEY_SALT, null) ?: run {
         val newSalt = UUID.randomUUID().toString()
-        prefs.edit().putString(KEY_SALT, newSalt).apply()
+        prefs.edit { putString(KEY_SALT, newSalt) }
         newSalt
     }
 
@@ -53,7 +54,7 @@ class FileVehicleMemoryStore(
                 temp.copyTo(file, overwrite = true)
                 temp.delete()
             }
-            prefs.edit().putString(KEY_LAST_KEY, memory.key).apply()
+            prefs.edit { putString(KEY_LAST_KEY, memory.key) }
         } catch (_: IOException) {
             temp.delete()
         }
