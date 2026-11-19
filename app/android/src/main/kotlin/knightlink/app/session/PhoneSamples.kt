@@ -24,8 +24,21 @@ interface SampleSource {
  *
  * Not thread-safe: one thread calls everything.
  */
-class MotionBatcher(private val maxAgeMs: Long = DEFAULT_MAX_AGE_MS, private val maxSamples: Int = DEFAULT_MAX_SAMPLES) {
+class MotionBatcher(
+    private val maxAgeMs: Long = DEFAULT_MAX_AGE_MS,
+    private val maxSamples: Int = DEFAULT_MAX_SAMPLES,
+    /**
+     * When above 0, readings are averaged over bins of this many milliseconds and one sample is kept per bin: at the 40 to 115 readings a
+     * second a phone delivers, motion made 85 % of a recording (2026-11-19: 8 MB of 9.4 MB in 16 minutes), and the analysis it serves
+     * (matching what a control unit's identifier does with how the car moves) needs 10 Hz, not 100.
+     */
+    private val binMs: Long = 0,
+) {
     private val batch = ArrayList<MotionSample>()
+    private var binCount = 0
+    private var binStartMs = 0L
+    private var binSum = DoubleArray(BIN_VALUES)
+    private var binTimeSum = 0.0
     private var gx = 0.0
     private var gy = 0.0
     private var gz = 0.0
@@ -43,12 +56,46 @@ class MotionBatcher(private val maxAgeMs: Long = DEFAULT_MAX_AGE_MS, private val
      * @return a line (see [ExternalSamples.motionLine]) when the batch is due, otherwise null
      */
     fun acceleration(timeMs: Long, x: Double, y: Double, z: Double, nowMs: Long): String? {
-        batch += MotionSample(timeMs, x, y, z, gx, gy, gz)
-        return if (nowMs - batch.first().timeMs >= maxAgeMs || batch.size >= maxSamples) flush(nowMs) else null
+        if (binMs > 0) {
+            if (binCount > 0 && timeMs - binStartMs >= binMs) closeBin()
+            if (binCount == 0) binStartMs = timeMs
+            binCount++
+            binTimeSum += timeMs - binStartMs
+            val values = doubleArrayOf(x, y, z, gx, gy, gz)
+            for (i in values.indices) binSum[i] += values[i]
+            if (batch.isEmpty()) return null
+        } else {
+            batch += MotionSample(timeMs, x, y, z, gx, gy, gz)
+        }
+        return if (nowMs - batch.first().timeMs >= maxAgeMs || batch.size >= maxSamples) write(nowMs) else null
+    }
+
+    /** Turns the readings of the open bin into one sample, at their mean time. */
+    private fun closeBin() {
+        if (binCount == 0) return
+        val n = binCount.toDouble()
+        batch += MotionSample(
+            binStartMs + (binTimeSum / n).toLong(),
+            binSum[0] / n,
+            binSum[1] / n,
+            binSum[2] / n,
+            binSum[3] / n,
+            binSum[4] / n,
+            binSum[5] / n,
+        )
+        binCount = 0
+        binTimeSum = 0.0
+        binSum = DoubleArray(BIN_VALUES)
     }
 
     /** The line for what is held, and an empty batch; null when nothing is held. */
     fun flush(nowMs: Long): String? {
+        closeBin()
+        return write(nowMs)
+    }
+
+    /** The line for the finished samples (not the bin still filling, which a periodic write must not cut short). */
+    private fun write(nowMs: Long): String? {
         if (batch.isEmpty()) return null
         // Never a sample from after the line's time: a clock that steps back must not make a negative age.
         val line = ExternalSamples.motionLine(maxOf(nowMs, batch.maxOf { it.timeMs }), batch.toList())
@@ -59,6 +106,11 @@ class MotionBatcher(private val maxAgeMs: Long = DEFAULT_MAX_AGE_MS, private val
     companion object {
         const val DEFAULT_MAX_AGE_MS = 500L
         const val DEFAULT_MAX_SAMPLES = 40
+
+        /** What a recording keeps of the phone's motion: one averaged sample per 100 ms, written in lines of a second. */
+        const val RECORDING_BIN_MS = 100L
+        const val RECORDING_MAX_AGE_MS = 1000L
+        private const val BIN_VALUES = 6
     }
 }
 

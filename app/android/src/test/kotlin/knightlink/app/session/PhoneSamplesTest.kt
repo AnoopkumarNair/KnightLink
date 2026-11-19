@@ -25,6 +25,35 @@ class PhoneSamplesTest {
     }
 
     @Test
+    fun readingsAreAveragedIntoOneSamplePerBin() {
+        val batcher = MotionBatcher(maxAgeMs = 1000, binMs = 100)
+        val lines = ArrayList<Pair<Long, String>>()
+        // 100 Hz for 2.5 s: a reading every 10 ms, acceleration x rising 0.01 per reading.
+        for (i in 0 until 250) {
+            val time = 1000L + i * 10
+            batcher.acceleration(time, 0.01 * i, 0.0, 9.8, nowMs = time)?.let { lines += time to it }
+        }
+        batcher.flush(3500)?.let { lines += 3500L to it }
+        val samples = lines.flatMap { (at, line) -> ExternalSamples.parseMotion(at, line).orEmpty() }
+        assertEquals(25, samples.size, "250 readings over 2.5 s are 25 bins of 100 ms")
+        assertEquals(0.045, samples.first().ax, 0.006)
+        assertEquals(1045L, samples.first().timeMs, "the bin's mean time")
+        assertEquals(9.8, samples.first().az, 0.006)
+        assertEquals(true, lines.size in 2..3, "about a second of samples to a line: ${lines.size} lines")
+    }
+
+    @Test
+    fun theRotationOfEachReadingIsAveragedToo() {
+        val batcher = MotionBatcher(maxAgeMs = 10_000, binMs = 100)
+        batcher.rotation(0.0, 0.0, 1.0)
+        batcher.acceleration(0, 0.0, 0.0, 0.0, nowMs = 0)
+        batcher.rotation(0.0, 0.0, 3.0)
+        batcher.acceleration(50, 0.0, 0.0, 0.0, nowMs = 50)
+        val sample = assertNotNull(ExternalSamples.parseMotion(50, assertNotNull(batcher.flush(50)))).single()
+        assertEquals(2.0, sample.gz, 0.0015)
+    }
+
+    @Test
     fun aBatchThatArrivesLateKeepsEverySamplesOwnAge() {
         // The sensor hub hands over readings a second late: each is old when the line is made, and the line says so.
         val batcher = MotionBatcher(maxAgeMs = 500)

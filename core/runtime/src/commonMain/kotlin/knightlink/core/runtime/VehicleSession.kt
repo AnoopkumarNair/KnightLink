@@ -133,6 +133,14 @@ public class VehicleSession(
         val maxReinits: Int = 2,
         /** Wait between probes while no ECU answers. */
         val ignitionProbeInterval: Duration = 4.seconds,
+        /**
+         * A probe that found some ECU but not the primary one (or came with warnings) is repeated up to this many more times, keeping the
+         * fullest report, before the session settles for what it has: an engine ECU that has not woken yet would otherwise leave a whole
+         * drive without engine data (2026-11-19: no 7E0, 13 parameters instead of 42). Such a report is never kept for a reconnect.
+         */
+        val incompleteProbeRetries: Int = 4,
+        /** Wait between those repeated probes. */
+        val incompleteProbeInterval: Duration = 2.seconds,
         /** What a full scan sweeps (see [startScan]); null means this session cannot scan. */
         val scanPlan: DidSweepPlan? = null,
         /** The scan's own settings: pace, how often the speed is read, and so on. */
@@ -149,6 +157,8 @@ public class VehicleSession(
             require(silenceWindow > Duration.ZERO) { "silenceWindow must be positive" }
             require(maxReinits >= 1) { "maxReinits must be at least 1" }
             require(ignitionProbeInterval > Duration.ZERO) { "ignitionProbeInterval must be positive" }
+            require(incompleteProbeRetries >= 0) { "incompleteProbeRetries must not be negative" }
+            require(incompleteProbeInterval > Duration.ZERO) { "incompleteProbeInterval must be positive" }
             require(scanPauseSlice > Duration.ZERO) { "scanPauseSlice must be positive" }
         }
     }
@@ -399,6 +409,9 @@ public class VehicleSession(
      */
     private suspend fun probeUntilVehicleAnswers(driver: Elm327Driver): Knowledge {
         var probes = 0
+        var incomplete = 0
+        var best: CapabilityReport? = null
+        val primaryRequestId = catalog.ecus.firstOrNull { it.id == primaryEcu }?.requestCanId
         while (true) {
             val first = probes == 0
             val report = CapabilityProbe(driver, timeSource).run { stage ->
@@ -408,14 +421,25 @@ public class VehicleSession(
             probes++
             note(SessionEvents.PROBE_RESULT, summarise(report))
             if (report.ecus.isNotEmpty()) {
-                // A report with warnings may be incomplete (a request timed out on a flaky link). It is good enough for this
-                // connection, but it is not kept: the next connection probes again instead of living with the gaps.
-                return Knowledge(report, DefinitionCoverage.compare(report, catalog)).also { if (report.warnings.isEmpty()) knowledge = it }
+                // A report without the primary ECU, or with warnings, may be incomplete (that ECU asleep, a request timed out on a flaky
+                // link). Ask again a few times and keep the fullest; only a complete report is kept for the next connection.
+                val complete = report.warnings.isEmpty() && (primaryRequestId == null || report.ecus.any { it.requestId.toIntOrNull(16) == primaryRequestId })
+                if (best == null || report.pidCount() >= best.pidCount()) best = report
+                if (complete || incomplete >= config.incompleteProbeRetries) {
+                    val chosen = best
+                    return Knowledge(chosen, DefinitionCoverage.compare(chosen, catalog)).also { if (complete && chosen === report) knowledge = it }
+                }
+                incomplete++
+                note(SessionEvents.PROBE_INCOMPLETE, "probe $probes: asking again ($incomplete of ${config.incompleteProbeRetries})")
+                delay(config.incompleteProbeInterval)
+                continue
             }
             setState(SessionState.WaitingForIgnition(probes, report.busFault))
             delay(config.ignitionProbeInterval)
         }
     }
+
+    private fun CapabilityReport.pidCount(): Int = ecus.sumOf { it.supportedPids.size }
 
     /**
      * Polls until the connection ends. When nothing has answered for [Config.silenceWindow] (or the adapter keeps failing)

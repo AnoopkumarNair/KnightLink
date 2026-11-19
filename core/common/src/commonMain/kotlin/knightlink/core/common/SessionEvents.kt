@@ -35,6 +35,9 @@ public object SessionEvents {
     /** The capability probe is done. The detail is a summary without VIN. */
     public const val PROBE_RESULT: String = "probe-result"
 
+    /** The probe missed the primary ECU or came with warnings; it is asked again. The detail says which attempt. */
+    public const val PROBE_INCOMPLETE: String = "probe-incomplete"
+
     /** The state of the session changed. */
     public const val STATE: String = "state"
 

@@ -1,5 +1,6 @@
 package knightlink.app.session
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -75,6 +77,10 @@ class SessionService : Service() {
     // Whether startForeground has succeeded and not been undone; written on the main thread and when shutting down.
     @Volatile
     private var foreground = false
+
+    // Held while a Bluetooth session runs in the foreground; see acquireWakeLock.
+    @Volatile
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -163,6 +169,7 @@ class SessionService : Service() {
             ServiceCompat.startForeground(this, SessionNotifications.ID, notifications.build(controller.uiState.value.connection), type)
             foreground = true
             connectionLog.app("service: running in the foreground")
+            acquireWakeLock()
         } catch (e: RuntimeException) {
             // SecurityException (precondition missing), ForegroundServiceStartNotAllowedException and
             // ForegroundServiceTypeException have no common type narrower than this.
@@ -175,6 +182,37 @@ class SessionService : Service() {
     private fun leaveForeground() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
         foreground = false
+        releaseWakeLock()
+    }
+
+    /**
+     * Keeps the CPU awake while a link to the adapter runs. A foreground service alone does not: on 2026-11-19 the whole process
+     * (adapter, motion and GPS streams alike) stood still for 4 minutes with the screen off, and the first write after it timed out
+     * and cost the link. Held only while a Bluetooth session is in the foreground, with a ceiling in case a release is ever missed.
+     */
+    @SuppressLint("WakelockTimeout") // a timeout is set; lint cannot see it through the helper
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        try {
+            val lock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
+            lock.setReferenceCounted(false)
+            lock.acquire(WAKE_LOCK_CEILING_MS)
+            wakeLock = lock
+            connectionLog.app("service: keeping the processor awake while connected")
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not take a wake lock", e)
+            connectionLog.app("service: could not take a wake lock (${e::class.simpleName}: ${e.message})")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        val lock = wakeLock ?: return
+        wakeLock = null
+        try {
+            if (lock.isHeld) lock.release()
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not release the wake lock", e)
+        }
     }
 
     private fun demoScenarioId(): String =
@@ -207,6 +245,7 @@ class SessionService : Service() {
         if (closed) return
         sawActive = false
         foreground = false
+        releaseWakeLock()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         notifications.cancel()
         stopSelf()
@@ -214,6 +253,7 @@ class SessionService : Service() {
 
     override fun onDestroy() {
         closed = true
+        releaseWakeLock()
         notifications.cancel()
         // The session must stop and its stream must close, and neither may block the main thread: do it on the service's own
         // scope, and cancel the scope only once that is done. NonCancellable keeps the cleanup out of the scope's cancellation.
@@ -228,6 +268,8 @@ class SessionService : Service() {
         private const val ACTION_DISCONNECT = "knightlink.app.action.DISCONNECT"
         private const val EXTRA_ADDRESS = "knightlink.app.extra.ADDRESS"
         private const val NOTIFICATION_INTERVAL_MS = 1000L
+        private const val WAKE_LOCK_TAG = "knightlink:session"
+        private const val WAKE_LOCK_CEILING_MS = 12L * 60 * 60 * 1000
 
         fun startDemoIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_START_DEMO)
 

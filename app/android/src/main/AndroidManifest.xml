@@ -10,6 +10,8 @@
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Keeps the processor awake while a link to the adapter runs; a normal permission, nothing to ask the user. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Android 13 and later: asked for at runtime; the app works without it, only the notification is missing. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!--

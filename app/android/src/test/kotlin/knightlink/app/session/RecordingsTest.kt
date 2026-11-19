@@ -43,7 +43,7 @@ class RecordingsTest {
 
     @Test
     fun aRecordingIsNamedByItsUtcStartTimeAndHoldsOneLinePerAppend() {
-        val factory = FileRecordSinkFactory(RecordingStore(directory), FrozenClock())
+        val factory = FileRecordSinkFactory(RecordingStore(directory), FrozenClock(), compress = {})
         val sink = factory.newSink()
         sink.append("""{"a":1}""")
         sink.append("""{"b":2}""")
@@ -54,9 +54,52 @@ class RecordingsTest {
     }
 
     @Test
+    fun aFinishedRecordingIsCompressedAndReadsBackTheSame() {
+        val store = RecordingStore(directory)
+        val factory = FileRecordSinkFactory(store, SteppingClock(), compress = { it() })
+        val first = factory.newSink()
+        repeat(500) { first.append("""{"t":$it,"d":"rx","x":"41 0C 1A F8"}""") }
+        // Still being written: not touched.
+        assertTrue(File(directory, "20260102T030405.006Z.jsonl").isFile)
+        factory.newSink().append("""{"t":1}""")
+        assertFalse(File(directory, "20260102T030405.006Z.jsonl").exists(), "the finished recording is replaced by its compressed copy")
+        val packed = File(directory, "20260102T030405.006Z.jsonl.gz")
+        assertTrue(packed.isFile && packed.length() < 2000)
+        assertEquals(500, RecordingStore.readText(packed).lines().count { it.isNotEmpty() })
+        assertEquals(listOf("20260102T030406.006Z.jsonl", "20260102T030405.006Z.jsonl.gz"), store.list().map { it.name })
+        assertTrue(File(directory, "20260102T030406.006Z.jsonl").isFile, "the one being written stays plain")
+    }
+
+    @Test
+    fun aRecordingLeftPlainByAKilledProcessIsCompressedLater() {
+        val store = RecordingStore(directory)
+        File(directory, "20260102T030405.006Z.jsonl").writeText("{\"a\":1}\n")
+        File(directory, "20260102T030405.006Z.scan.json").writeText("{}")
+        store.compressFinished()
+        assertEquals("{\"a\":1}\n", RecordingStore.readText(store.newest()!!))
+        assertTrue(File(directory, "20260102T030405.006Z.scan.json").isFile, "a sidecar is not a recording and is left alone")
+    }
+
+    @Test
+    fun theOldestRecordingsGoWhenTheTotalIsOverTheByteLimit() {
+        val store = RecordingStore(directory, maxBytes = 250)
+        listOf("20260102T030401.000Z", "20260102T030402.000Z", "20260102T030403.000Z").forEach {
+            File(directory, "$it.jsonl").writeText("x".repeat(100))
+            File(directory, "$it.scan.json").writeText("{}")
+        }
+        store.prune()
+        assertEquals(listOf("20260102T030403.000Z.jsonl", "20260102T030402.000Z.jsonl"), store.list().map { it.name })
+        assertFalse(File(directory, "20260102T030401.000Z.scan.json").exists())
+        // The newest is always kept, however large.
+        File(directory, "20260102T030404.000Z.jsonl").writeText("y".repeat(1000))
+        store.prune()
+        assertEquals(listOf("20260102T030404.000Z.jsonl"), store.list().map { it.name })
+    }
+
+    @Test
     fun linesReachTheFileBeforeTheRecordingIsFinished() {
         // A crash or a killed process must cost at most the line in flight, so nothing may wait in a buffer.
-        val factory = FileRecordSinkFactory(RecordingStore(directory), FrozenClock())
+        val factory = FileRecordSinkFactory(RecordingStore(directory), FrozenClock(), compress = {})
         factory.newSink().append("""{"a":1}""")
         assertEquals("{\"a\":1}\n", File(directory, "20260102T030405.006Z.jsonl").readText())
         factory.finishCurrent()
@@ -65,7 +108,7 @@ class RecordingsTest {
     @Test
     fun twoRecordingsStartedInTheSameMillisecondDoNotShareAFile() {
         val store = RecordingStore(directory)
-        val factory = FileRecordSinkFactory(store, FrozenClock())
+        val factory = FileRecordSinkFactory(store, FrozenClock(), compress = {})
         factory.newSink().append("first")
         factory.newSink().append("second")
         factory.finishCurrent()
@@ -78,7 +121,7 @@ class RecordingsTest {
     @Test
     fun onlyTheNewest20RecordingsAreKept() {
         val store = RecordingStore(directory)
-        val factory = FileRecordSinkFactory(store, SteppingClock())
+        val factory = FileRecordSinkFactory(store, SteppingClock(), compress = {})
         val created = (1..25).map {
             factory.newSink().append("line $it")
             store.list().first().name
@@ -98,7 +141,7 @@ class RecordingsTest {
     fun filesThatAreNotRecordingsAreNeverDeletedOrCounted() {
         val other = File(directory, "notes.txt").apply { writeText("keep me") }
         val store = RecordingStore(directory, keep = 1)
-        val factory = FileRecordSinkFactory(store, SteppingClock())
+        val factory = FileRecordSinkFactory(store, SteppingClock(), compress = {})
         repeat(3) { factory.newSink().append("x") }
         factory.finishCurrent()
 
@@ -109,7 +152,7 @@ class RecordingsTest {
     @Test
     fun aSidecarFileIsWrittenNextToTheCurrentRecordingAndRemovedWithIt() {
         val store = RecordingStore(directory, keep = 1)
-        val factory = FileRecordSinkFactory(store, SteppingClock())
+        val factory = FileRecordSinkFactory(store, SteppingClock(), compress = {})
         factory.writeSidecar(".scan.json", "nothing to write it next to")
         assertTrue(directory.listFiles().orEmpty().isEmpty())
 
@@ -132,7 +175,7 @@ class RecordingsTest {
     fun theSummaryCountsFilesAndBytes() {
         val store = RecordingStore(directory)
         assertEquals(RecordingsSummary.EMPTY, store.summary())
-        val factory = FileRecordSinkFactory(store, SteppingClock())
+        val factory = FileRecordSinkFactory(store, SteppingClock(), compress = {})
         factory.newSink().append("12345")
         factory.newSink().append("123")
         factory.finishCurrent()
@@ -143,7 +186,7 @@ class RecordingsTest {
     fun anUnwritableDirectoryCostsTheRecordingNotTheSession() {
         // The directory path is a regular file, so no recording can be created in it.
         val blocked = File(directory, "blocked").apply { writeText("not a directory") }
-        val factory = FileRecordSinkFactory(RecordingStore(blocked), FrozenClock())
+        val factory = FileRecordSinkFactory(RecordingStore(blocked), FrozenClock(), compress = {})
 
         val sink = factory.newSink()
         sink.append("dropped")

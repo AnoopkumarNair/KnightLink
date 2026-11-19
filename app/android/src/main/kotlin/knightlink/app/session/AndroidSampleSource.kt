@@ -29,7 +29,7 @@ class AndroidSampleSource(private val context: Context) : SampleSource {
     private var thread: HandlerThread? = null
     private var sensors: SensorManager? = null
     private var locations: LocationManager? = null
-    private var batcher = MotionBatcher()
+    private var batcher = newBatcher()
     private var emit: ((String) -> Unit)? = null
 
     private val sensorListener = object : SensorEventListener {
@@ -86,7 +86,7 @@ class AndroidSampleSource(private val context: Context) : SampleSource {
         val handlerThread = HandlerThread("knightlink-sensors").also { it.start() }
         thread = handlerThread
         this.emit = emit
-        synchronized(lock) { batcher = MotionBatcher() }
+        synchronized(lock) { batcher = newBatcher() }
         sensors = manager
 
         val linear = manager?.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
@@ -139,6 +139,12 @@ class AndroidSampleSource(private val context: Context) : SampleSource {
     private companion object {
         const val TAG = "PhoneSamples"
         const val NANOS_PER_MILLI = 1_000_000L
+
+        /** What recordings keep: 10 samples a second (the phone may deliver several times that), see [MotionBatcher]. */
+        fun newBatcher() = MotionBatcher(
+            maxAgeMs = MotionBatcher.RECORDING_MAX_AGE_MS,
+            binMs = MotionBatcher.RECORDING_BIN_MS,
+        )
 
         /** 25 readings a second. */
         const val SAMPLING_PERIOD_US = 40_000

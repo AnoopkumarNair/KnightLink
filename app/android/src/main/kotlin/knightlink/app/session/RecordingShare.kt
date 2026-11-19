@@ -25,10 +25,10 @@ object RecordingShare {
      * @throws java.io.IOException if a file cannot be read or written
      */
     fun prepare(source: File, outDirectory: File): Prepared {
-        val result = RecordingScrubber.scrub(Recording.parse(source.readText(Charsets.UTF_8)))
+        val result = RecordingScrubber.scrub(Recording.parse(RecordingStore.readText(source)))
         outDirectory.mkdirs()
         outDirectory.listFiles { file -> file.name.endsWith(SUFFIX) }?.forEach { it.delete() }
-        val copy = File(outDirectory, source.nameWithoutExtension + "-scrubbed" + RecordingStore.EXTENSION)
+        val copy = File(outDirectory, RecordingStore.baseName(source) + "-scrubbed" + RecordingStore.EXTENSION)
         copy.writeText(result.recording.toText(), Charsets.UTF_8)
         return Prepared(copy, result.warnings)
     }

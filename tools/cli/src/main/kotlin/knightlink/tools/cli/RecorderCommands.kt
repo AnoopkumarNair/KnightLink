@@ -19,7 +19,13 @@ internal fun readRecording(path: String): Recording {
     val file = File(path)
     if (!file.isFile) fail("no recording at ${file.path}")
     val recording = try {
-        Recording.parse(file.readText(Charsets.UTF_8))
+        Recording.parse(
+            if (file.name.endsWith(".gz")) {
+                java.util.zip.GZIPInputStream(file.inputStream().buffered()).use { it.readBytes().toString(Charsets.UTF_8) }
+            } else {
+                file.readText(Charsets.UTF_8)
+            },
+        )
     } catch (e: RecordingFormatException) {
         fail("${file.path} is not a readable recording: ${e.message}")
     }

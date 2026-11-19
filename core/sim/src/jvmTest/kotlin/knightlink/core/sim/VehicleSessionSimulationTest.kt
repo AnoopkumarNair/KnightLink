@@ -396,6 +396,31 @@ class VehicleSessionSimulationTest {
     }
 
     @Test
+    fun anEngineEcuThatWakesAfterTheFirstProbeIsFoundByTheNextOne() = runTest {
+        // 2026-11-19: the probe saw 7E1 and 7E4 but not the engine ECU, and the whole drive was polled without engine data.
+        val rig = rig()
+        rig.vehicle.ecu(0x7E0).silent = true
+        rig.session.start()
+        run(1.seconds)
+        rig.vehicle.ecu(0x7E0).silent = false
+        run(40.seconds)
+
+        val polling = assertIs<SessionState.Polling>(rig.session.state.value)
+        assertEquals(listOf("7E0", "7E1", "7E4"), polling.report.ecus.map { it.requestId })
+    }
+
+    @Test
+    fun anEngineEcuThatNeverAnswersCostsAFewProbesNotTheSession() = runTest {
+        val rig = rig()
+        rig.vehicle.ecu(0x7E0).silent = true
+        rig.session.start()
+        run(120.seconds)
+
+        val polling = assertIs<SessionState.Polling>(rig.session.state.value)
+        assertEquals(listOf("7E1", "7E4"), polling.report.ecus.map { it.requestId })
+    }
+
+    @Test
     fun aLinkThatFailsWithAnErrorInsteadOfClosingIsAlsoRecovered() = runTest {
         val rig = rig()
         rig.session.start()
