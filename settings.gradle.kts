@@ -1,5 +1,5 @@
 pluginManagement {
-    includeBuild(".claude/worktrees/cool-fermi-152681/build-logic")
+    includeBuild("build-logic")
     repositories {
         gradlePluginPortal()
         mavenCentral()
