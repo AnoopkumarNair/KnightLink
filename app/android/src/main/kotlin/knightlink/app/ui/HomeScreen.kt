@@ -9,17 +9,22 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +44,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import knightlink.app.R
@@ -55,6 +61,10 @@ import knightlink.app.session.VehicleSummary
 import knightlink.app.session.groupByPrefix
 import knightlink.app.text
 import knightlink.app.textRes
+import knightlink.app.ui.voice.VoiceBoxDisplayMode
+import knightlink.app.ui.voice.VoiceBoxRenderer
+import knightlink.app.voice.VoiceSettings
+import kotlin.math.roundToInt
 
 /** Wide enough for the cards and the live values side by side: any phone in landscape. */
 private val WIDE_LAYOUT_MIN_WIDTH = 600.dp
@@ -68,12 +78,39 @@ class ConnectionActions(
     val onChooseAdapter: () -> Unit,
     val onDisconnect: () -> Unit,
     val onStartScan: () -> Unit = {},
+    val onResumeScan: () -> Unit = {},
     val onCancelScan: () -> Unit = {},
     val onDismissScan: () -> Unit = {},
+    /** False while Android may stop the app in the background (battery optimisation applies); the card then asks the user to allow it. */
+    val backgroundAllowed: Boolean = true,
+    val onAllowBackground: () -> Unit = {},
 )
 
 /** What the drive-data card shows and can do: whether the phone's location is being recorded, and how to allow it. */
 class DriveDataActions(val locationAllowed: Boolean, val onAllowLocation: () -> Unit)
+
+/**
+ * What the voice card shows and can do. [available] is false until the service (which owns the voice) is bound: the controls are
+ * then shown but disabled.
+ *
+ * @property lastSpoken the text of the last line spoken, shown under the buttons; null before the first
+ */
+class VoiceActions(
+    val settings: VoiceSettings,
+    val lastSpoken: String?,
+    val available: Boolean,
+    val onSpokenStatusChange: (Boolean) -> Unit,
+    val onVolumeChange: (Float) -> Unit,
+    val onTest: () -> Unit,
+    val onSayAgain: () -> Unit,
+    val activePersonaName: String = "K.I.T.T.",
+    val activeArchetype: String = "bar-meter",
+    val visualizerLevel: Float = 0f,
+) {
+    companion object {
+        val Unavailable = VoiceActions(VoiceSettings(), null, false, {}, {}, {}, {})
+    }
+}
 
 /**
  * The one screen. Portrait: a single scrolling list (cards, then the live values). Landscape: the cards on the left, the live
@@ -91,6 +128,7 @@ fun HomeScreen(
     onShareLog: () -> Unit,
     modifier: Modifier = Modifier,
     driveData: DriveDataActions = DriveDataActions(locationAllowed = false, onAllowLocation = {}),
+    voice: VoiceActions = VoiceActions.Unavailable,
 ) {
     // Grouping is a function of the values only; it is redone when they change, not on every recomposition.
     val groups = remember(state.liveValues) { groupByPrefix(state.liveValues) }
@@ -99,7 +137,7 @@ fun HomeScreen(
         if (maxWidth >= WIDE_LAYOUT_MIN_WIDTH) {
             Row(Modifier.fillMaxSize()) {
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                    summaryItems(state, recordings, lastAdapter, actions, driveData, onShareLatest, onShareLog)
+                    summaryItems(state, recordings, lastAdapter, actions, driveData, voice, onShareLatest, onShareLog)
                 }
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
                     liveItems(groups)
@@ -107,7 +145,7 @@ fun HomeScreen(
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                summaryItems(state, recordings, lastAdapter, actions, driveData, onShareLatest, onShareLog)
+                summaryItems(state, recordings, lastAdapter, actions, driveData, voice, onShareLatest, onShareLog)
                 liveItems(groups)
             }
         }
@@ -120,10 +158,12 @@ private fun LazyListScope.summaryItems(
     lastAdapter: LastAdapter?,
     actions: ConnectionActions,
     driveData: DriveDataActions,
+    voice: VoiceActions,
     onShareLatest: () -> Unit,
     onShareLog: () -> Unit,
 ) {
     item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
+    item(key = "voice", contentType = "card") { VoiceCard(voice) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
     item(key = "drive-data", contentType = "card") { DriveDataCard(driveData, state.tyres) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
@@ -161,6 +201,12 @@ private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapt
                     Text(stringResource(R.string.action_start_demo))
                 }
             } else {
+                if (!actions.backgroundAllowed) {
+                    Text(stringResource(R.string.background_explanation), style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = actions.onAllowBackground, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.action_allow_background))
+                    }
+                }
                 if (status == ConnectionStatus.Live) ScanSection(scan, resources, actions)
                 // One button for both kinds of link.
                 Button(onClick = actions.onDisconnect, modifier = Modifier.fillMaxWidth()) {
@@ -175,6 +221,24 @@ private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapt
 @Composable
 private fun ScanSection(scan: ScanStatus, resources: android.content.res.Resources, actions: ConnectionActions) {
     val text = scan.text(resources)
+    // Running a scan again replaces the result on the screen, so it is asked about first.
+    var confirmRerun by rememberSaveable { mutableStateOf(false) }
+    if (confirmRerun) {
+        AlertDialog(
+            onDismissRequest = { confirmRerun = false },
+            title = { Text(stringResource(R.string.scan_rerun_title)) },
+            text = { Text(stringResource(R.string.scan_rerun_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmRerun = false
+                        actions.onStartScan()
+                    },
+                ) { Text(stringResource(R.string.action_run_again)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmRerun = false }) { Text(stringResource(R.string.action_keep_result)) } },
+        )
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (text != null) {
             // A live region: a screen reader says the progress, and above all the pause notice, without being asked.
@@ -193,12 +257,83 @@ private fun ScanSection(scan: ScanStatus, resources: android.content.res.Resourc
                 OutlinedButton(onClick = actions.onCancelScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_cancel_scan)) }
             ScanStatus.Unavailable -> Unit
             ScanStatus.Ready, is ScanStatus.Finished, is ScanStatus.Failed -> {
-                OutlinedButton(onClick = actions.onStartScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_full_scan)) }
+                if (scan is ScanStatus.Finished && scan.resumable) {
+                    Button(onClick = actions.onResumeScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_resume_scan)) }
+                }
+                if (scan is ScanStatus.Finished) {
+                    OutlinedButton(onClick = { confirmRerun = true }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_run_again)) }
+                } else {
+                    OutlinedButton(onClick = actions.onStartScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_full_scan)) }
+                }
                 if (scan == ScanStatus.Ready) Text(stringResource(R.string.scan_hint), style = MaterialTheme.typography.bodySmall)
                 if (scan !is ScanStatus.Ready) {
                     OutlinedButton(onClick = actions.onDismissScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_dismiss_scan)) }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun VoiceCard(voice: VoiceActions) {
+    val percent = (voice.settings.volume * 100).roundToInt()
+    val volumeLabel = stringResource(R.string.voice_volume)
+    val volumeState = stringResource(R.string.voice_volume_percent, percent)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(stringResource(R.string.voice_title), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    voice.activePersonaName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            // Embedded live audio-reactive visualizer box
+            VoiceBoxRenderer(
+                archetype = voice.activeArchetype,
+                level = voice.visualizerLevel,
+                displayMode = VoiceBoxDisplayMode.PORTRAIT_HERO,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(130.dp),
+            )
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    stringResource(R.string.voice_spoken_status),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(checked = voice.settings.spokenStatus, onCheckedChange = voice.onSpokenStatusChange, enabled = voice.available)
+            }
+            Text(volumeLabel, style = MaterialTheme.typography.bodyMedium)
+            Slider(
+                value = voice.settings.volume,
+                onValueChange = voice.onVolumeChange,
+                valueRange = VoiceSettings.MIN_VOLUME..VoiceSettings.MAX_VOLUME,
+                enabled = voice.available,
+                modifier = Modifier.semantics {
+                    contentDescription = volumeLabel
+                    stateDescription = volumeState
+                },
+            )
+            Button(onClick = voice.onTest, enabled = voice.available, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.action_test_voice))
+            }
+            OutlinedButton(onClick = voice.onSayAgain, enabled = voice.available && voice.lastSpoken != null, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.action_say_again))
+            }
+            voice.lastSpoken?.let { Text(stringResource(R.string.voice_last_spoken, it), style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

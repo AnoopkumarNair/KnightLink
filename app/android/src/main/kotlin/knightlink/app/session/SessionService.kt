@@ -1,5 +1,6 @@
 package knightlink.app.session
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,21 +8,36 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import knightlink.app.MainActivity
 import knightlink.app.R
+import knightlink.app.SharedPreferencesStringStore
 import knightlink.app.data.AndroidAssetSource
 import knightlink.app.data.AppConfig
 import knightlink.app.data.DefinitionStore
 import knightlink.app.data.DefinitionStoreException
 import knightlink.app.text
+import knightlink.app.voice.AndroidSpeechEngine
+import knightlink.app.voice.ConnectionAnnouncer
+import knightlink.app.voice.KnightPackManager
+import knightlink.app.voice.KnightVoicePlayer
+import knightlink.app.voice.VoiceSettingsStore
+import knightlink.app.voice.statusUtterance
+import knightlink.app.voice.text
+import knightlink.core.runtime.VehicleSession
 import knightlink.platform.ble.BleTransport
+import knightlink.voice.api.QueuedSpeaker
+import knightlink.voice.api.Speaker
+import knightlink.voice.api.SpeechState
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,8 +48,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -53,6 +71,10 @@ class SessionService : Service() {
     /** The activity's handle on the service. In-process only, so it hands out the controller itself. */
     inner class LocalBinder : Binder() {
         val controller: SessionController get() = this@SessionService.controller
+        val speaker: Speaker get() = this@SessionService.speaker
+        val voiceSettings: VoiceSettingsStore get() = this@SessionService.voiceSettings
+        val knightPackManager: KnightPackManager get() = this@SessionService.knightPackManager
+        val knightVoicePlayer: KnightVoicePlayer get() = this@SessionService.knightVoicePlayer
     }
 
     // The handler matters: an unexpected exception of the session is reported through the scope (the session also shows it as
@@ -65,6 +87,14 @@ class SessionService : Service() {
     private lateinit var notifications: SessionNotifications
     private lateinit var assets: AndroidAssetSource
     private lateinit var connectionLog: ConnectionLog
+    lateinit var knightPackManager: KnightPackManager
+        private set
+    lateinit var knightVoicePlayer: KnightVoicePlayer
+        private set
+    private lateinit var voiceSettings: VoiceSettingsStore
+    private lateinit var speechEngine: AndroidSpeechEngine
+    private lateinit var queuedSpeaker: QueuedSpeaker
+    private val speaker: Speaker get() = queuedSpeaker
 
     @Volatile
     private var closed = false
@@ -76,11 +106,14 @@ class SessionService : Service() {
     @Volatile
     private var foreground = false
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         assets = AndroidAssetSource(applicationContext.assets)
         connectionLog = ConnectionLog.of(connectionLogDirectory(applicationContext))
         val store = DefinitionStore(assets)
+        val memoryStore = FileVehicleMemoryStore(applicationContext)
         controller = SessionController(
             scope = scope,
             config = { AppConfig.load(assets) },
@@ -92,10 +125,14 @@ class SessionService : Service() {
             ),
             recordings = FileRecordSinkFactory(RecordingStore(recordingsDirectory(applicationContext))),
             connectionLog = connectionLog,
+            sessionConfig = VehicleSession.Config(memory = memoryStore),
             samples = AndroidSampleSource(applicationContext),
             tyreSensors = AndroidAdvertisementSource(applicationContext),
         )
         notifications = SessionNotifications(this)
+        knightPackManager = KnightPackManager(applicationContext)
+        knightVoicePlayer = KnightVoicePlayer(applicationContext, scope)
+        startVoice()
         watchSession()
     }
 
@@ -158,10 +195,18 @@ class SessionService : Service() {
      * met, or the system refuses a foreground start for any other reason, the service carries on as an ordinary one.
      */
     private fun enterForeground() {
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
+        var type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val hasLocation = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            if (hasLocation) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
+        }
         try {
             ServiceCompat.startForeground(this, SessionNotifications.ID, notifications.build(controller.uiState.value.connection), type)
             foreground = true
+            acquireWakeLock()
             connectionLog.app("service: running in the foreground")
         } catch (e: RuntimeException) {
             // SecurityException (precondition missing), ForegroundServiceStartNotAllowedException and
@@ -175,6 +220,24 @@ class SessionService : Service() {
     private fun leaveForeground() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
         foreground = false
+        releaseWakeLock()
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val powerManager = getSystemService(PowerManager::class.java)
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KnightLink:Session")?.apply {
+                setReferenceCounted(false)
+                acquire(WAKELOCK_TIMEOUT_MS)
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+            wakeLock = null
+        }
     }
 
     private fun demoScenarioId(): String =
@@ -185,6 +248,27 @@ class SessionService : Service() {
             Log.e(TAG, "Cannot read the app config", e)
             ""
         }
+
+    /**
+     * The voice: settings, speech engine with automotive acronym expansion, the queue in front of it, and the announcer that turns connection changes into lines.
+     * Created with the service (also when it only runs bound and idle), so every screen and feature shares one voice.
+     */
+    private fun startVoice() {
+        voiceSettings = VoiceSettingsStore(
+            SharedPreferencesStringStore(applicationContext.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)),
+        )
+        speechEngine = AndroidSpeechEngine(
+            applicationContext,
+            volume = { voiceSettings.settings.value.volume },
+            lexicon = { knightPackManager.getActivePack()?.lexicon },
+        )
+        queuedSpeaker = QueuedSpeaker(speechEngine, scope)
+        val announcer = ConnectionAnnouncer(
+            isEnabled = { voiceSettings.settings.value.spokenStatus },
+            announce = { speaker.speak(statusUtterance(it.text(applicationContext.resources))) },
+        )
+        scope.launch { announcer.collect(controller.uiState.map { it.connection }.distinctUntilChanged()) }
+    }
 
     /** The notification follows the status (at most once a second); leaving the idle state for good stops the service. */
     private fun watchSession() {
@@ -207,6 +291,7 @@ class SessionService : Service() {
         if (closed) return
         sawActive = false
         foreground = false
+        releaseWakeLock()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         notifications.cancel()
         stopSelf()
@@ -214,10 +299,18 @@ class SessionService : Service() {
 
     override fun onDestroy() {
         closed = true
+        releaseWakeLock()
         notifications.cancel()
         // The session must stop and its stream must close, and neither may block the main thread: do it on the service's own
         // scope, and cancel the scope only once that is done. NonCancellable keeps the cleanup out of the scope's cancellation.
-        scope.launch(NonCancellable) { controller.disconnect() }.invokeOnCompletion { scope.cancel() }
+        scope.launch(NonCancellable) {
+            controller.disconnect()
+            delay(SPEECH_SETTLE_MS)
+            withTimeoutOrNull(SPEECH_GRACE_MS) { speaker.state.first { it is SpeechState.Idle } }
+            queuedSpeaker.close()
+            speechEngine.close()
+            knightVoicePlayer.stop()
+        }.invokeOnCompletion { scope.cancel() }
         super.onDestroy()
     }
 
@@ -228,6 +321,9 @@ class SessionService : Service() {
         private const val ACTION_DISCONNECT = "knightlink.app.action.DISCONNECT"
         private const val EXTRA_ADDRESS = "knightlink.app.extra.ADDRESS"
         private const val NOTIFICATION_INTERVAL_MS = 1000L
+        private const val WAKELOCK_TIMEOUT_MS = 4 * 60 * 60 * 1000L
+        private const val SPEECH_SETTLE_MS = 300L
+        private const val SPEECH_GRACE_MS = 6000L
 
         fun startDemoIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_START_DEMO)
 

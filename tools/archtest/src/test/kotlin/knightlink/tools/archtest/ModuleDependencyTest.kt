@@ -24,8 +24,10 @@ class ModuleDependencyTest {
             "recorder" to setOf("transport", "protocol", "common"),
         )
 
-    private val accessor = Regex("""projects\.(core|tools)\.(\w+)""")
-    private val pathString = Regex("""project\(\s*":(core|tools):([\w-]+)"\s*\)""")
+    private val voiceAllowed: Map<String, Set<String>> = mapOf("api" to emptySet())
+
+    private val accessor = Regex("""projects\.(core|tools|voice)\.(\w+)""")
+    private val pathString = Regex("""project\(\s*":(core|tools|voice):([\w-]+)"\s*\)""")
     private val sourceSetBlock = Regex("""(\w+)\.dependencies\s*\{""")
     private val plainBlock = Regex("""^\s*(\w+)\s*\{""")
     private val testConfiguration = Regex("""^\s*test\w*\(""")
@@ -44,6 +46,28 @@ class ModuleDependencyTest {
             val allowedDeps = allowed[module.name] ?: continue
             val deps = productionDependencies(File(module, "build.gradle.kts").readText(), "core")
             (deps - allowedDeps).forEach { violations += "core/${module.name} must not depend on core/$it" }
+        }
+        assertTrue(violations.isEmpty(), violations.joinToString("\n"))
+    }
+
+    @Test
+    fun everyVoiceModuleIsInTheRuleTable() {
+        val actual = RepoFiles.voiceModules().map { it.name }.toSet()
+        assertEquals(emptySet(), actual - voiceAllowed.keys, "Voice modules missing from the dependency rule table (add them deliberately)")
+        assertEquals(emptySet(), voiceAllowed.keys - actual, "Rule table lists voice modules that no longer exist")
+    }
+
+    @Test
+    fun voiceModulesOnlyDependOnAllowedVoiceModules() {
+        val violations = mutableListOf<String>()
+        for (module in RepoFiles.voiceModules()) {
+            val allowedDeps = voiceAllowed[module.name] ?: continue
+            val text = File(module, "build.gradle.kts").readText()
+            (productionDependencies(text, "voice") - allowedDeps).forEach { violations += "voice/${module.name} must not depend on voice/$it" }
+            // The contract is a leaf: it may not lean on the car side or on tooling in any form, tests included.
+            for (group in listOf("core", "tools")) {
+                references(stripComments(text), group).forEach { violations += "voice/${module.name} depends on $group/$it" }
+            }
         }
         assertTrue(violations.isEmpty(), violations.joinToString("\n"))
     }

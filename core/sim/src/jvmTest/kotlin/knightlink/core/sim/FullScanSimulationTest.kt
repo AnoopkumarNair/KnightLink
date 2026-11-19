@@ -226,18 +226,32 @@ class FullScanSimulationTest {
     @Test
     fun aControlUnitThatAnswersAnythingUnexpectedIsNotAskedFurtherAndTheRestOfTheScanGoesOn() = runTest(timeout = 120.seconds) {
         val vehicle = simulation.buildVehicle()
+        vehicle.ecu(0x7E1).refuse("221E66", 0x10) // general reject
+        val env = env(vehicle)
+        val result = env.scan(plan).run()
+
+        assertEquals(ScanOutcome.COMPLETED, result.outcome)
+        val gearbox = result.sweeps.first { it.requestId == "7E1" }
+        assertTrue(gearbox.stoppedBecause!!.contains("10") && gearbox.stoppedBecause!!.contains("1E66"), gearbox.stoppedBecause)
+        // The candidates come first, in the order of the file: 1E12, 1E1F, 1E65 were answered, then 1E66 stopped it.
+        assertEquals(setOf("1E12", "1E1F", "1E65"), gearbox.positive.map { it.did }.toSet())
+        assertEquals(4, gearbox.asked)
+        // The other units are swept as usual.
+        assertEquals(4, result.sweeps.first { it.requestId == "7E0" }.positive.size)
+    }
+
+    @Test
+    fun conditionsNotCorrectSkipsTheDidAndTheSweepContinues() = runTest(timeout = 120.seconds) {
+        val vehicle = simulation.buildVehicle()
         vehicle.ecu(0x7E1).refuse("221E66", 0x22) // conditions not correct
         val env = env(vehicle)
         val result = env.scan(plan).run()
 
         assertEquals(ScanOutcome.COMPLETED, result.outcome)
         val gearbox = result.sweeps.first { it.requestId == "7E1" }
-        assertTrue(gearbox.stoppedBecause!!.contains("22") && gearbox.stoppedBecause!!.contains("1E66"), gearbox.stoppedBecause)
-        // The candidates come first, in the order of the file: 1E12, 1E1F, 1E65 were answered, then 1E66 stopped it.
-        assertEquals(setOf("1E12", "1E1F", "1E65"), gearbox.positive.map { it.did }.toSet())
-        assertEquals(4, gearbox.asked)
-        // The other units are swept as usual.
-        assertEquals(4, result.sweeps.first { it.requestId == "7E0" }.positive.size)
+        assertNull(gearbox.stoppedBecause)
+        assertFalse("1E66" in gearbox.positive.map { it.did })
+        assertTrue(gearbox.positive.size >= 3)
     }
 
     @Test

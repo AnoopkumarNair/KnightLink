@@ -27,9 +27,11 @@ internal class WriteRetrier(
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val initialBackoffMs: Long = DEFAULT_INITIAL_BACKOFF_MS,
     private val maxBackoffMs: Long = DEFAULT_MAX_BACKOFF_MS,
+    private val maxRejections: Int = 0,
 ) {
     init {
         require(maxAttempts >= 1) { "maxAttempts must be at least 1" }
+        require(maxRejections >= 0) { "maxRejections must not be negative" }
         require(initialBackoffMs in 1..maxBackoffMs) { "backoff must satisfy 1 <= initial <= max" }
     }
 
@@ -39,10 +41,17 @@ internal class WriteRetrier(
     /** Runs [attempt] until it is [WriteAttempt.Accepted]. Throws [TransportException] on rejection or when still busy after the last try. */
     suspend fun run(attempt: suspend () -> WriteAttempt) {
         var busyCount = 0
+        var rejectionCount = 0
         while (true) {
             when (val result = attempt()) {
                 WriteAttempt.Accepted -> return
-                is WriteAttempt.Rejected -> throw TransportException("Writing to the adapter failed: ${result.reason}")
+                is WriteAttempt.Rejected -> {
+                    rejectionCount++
+                    if (rejectionCount > maxRejections) {
+                        throw TransportException("Writing to the adapter failed: ${result.reason}")
+                    }
+                    delay(maxBackoffMs)
+                }
                 WriteAttempt.Busy -> {
                     busyCount++
                     if (busyCount >= maxAttempts) {

@@ -1,14 +1,17 @@
 package knightlink.app
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -51,8 +54,18 @@ import knightlink.app.ui.ConnectionActions
 import knightlink.app.ui.DriveDataActions
 import knightlink.app.ui.HomeScreen
 import knightlink.app.ui.SessionViewModel
+import knightlink.app.ui.VoiceActions
+import knightlink.app.ui.voice.ThemePack
+import knightlink.app.ui.voice.VoiceOverlay
+import knightlink.app.ui.voice.rememberReduceMotion
+import knightlink.app.voice.VoiceSettings
 import knightlink.platform.ble.BlePermissions
 import knightlink.platform.ble.DiscoveredAdapter
+import knightlink.voice.api.Priority
+import knightlink.voice.api.SpeakResult
+import knightlink.voice.api.Speaker
+import knightlink.voice.api.SpeechState
+import knightlink.voice.api.Utterance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,6 +97,19 @@ class MainActivity : ComponentActivity() {
 
     private val locationAllowed = MutableStateFlow(false)
 
+    /** Whether Android's battery optimisation leaves this app alone (the phone's sensors stalled for tens of seconds before link drops without it). */
+    private val backgroundExempt = MutableStateFlow(true)
+
+    /** Asks Android to exempt the app from battery optimisation; the system dialog explains and the user decides. */
+    @SuppressLint("BatteryLife")
+    private fun allowBackground() {
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (_: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+    }
+
     // Nothing to read from the result: if Bluetooth is on afterwards, "Scan again" works.
     private val enableBluetooth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
 
@@ -102,6 +128,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         locationAllowed.value = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        backgroundExempt.value = getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(packageName) ?: true
     }
 
     @Composable
@@ -118,6 +145,19 @@ class MainActivity : ComponentActivity() {
         val pickerOpen by viewModel.pickerOpen.collectAsStateWithLifecycle()
         val denial by viewModel.permissionDenial.collectAsStateWithLifecycle()
         val location by locationAllowed.collectAsStateWithLifecycle()
+        val backgroundAllowed by backgroundExempt.collectAsStateWithLifecycle()
+
+        val speaker by viewModel.speaker.collectAsStateWithLifecycle()
+        val voiceStore by viewModel.voiceSettings.collectAsStateWithLifecycle()
+        val voiceSettings by remember(voiceStore) { voiceStore?.settings ?: DEFAULT_VOICE_SETTINGS }.collectAsStateWithLifecycle()
+        val lastSpoken by remember(speaker) { speaker?.lastSpoken ?: NO_LINE }.collectAsStateWithLifecycle()
+        val speechState by remember(speaker) { speaker?.state ?: IDLE_SPEECH_STATE }.collectAsStateWithLifecycle()
+        val activePack by viewModel.activePack.collectAsStateWithLifecycle()
+        val player by viewModel.knightVoicePlayer.collectAsStateWithLifecycle()
+        val playerLoudness by remember(player) { player?.visualizerLoudness ?: ZERO_LEVEL }.collectAsStateWithLifecycle()
+
+        val currentSpeakingLevel = (speechState as? SpeechState.Speaking)?.level?.takeIf { it >= 0f } ?: 0f
+        val visualizerLevel = maxOf(currentSpeakingLevel, playerLoudness)
 
         HomeScreen(
             state = state,
@@ -129,8 +169,11 @@ class MainActivity : ComponentActivity() {
                 onChooseAdapter = { begin(PendingStart.ChooseAdapter) },
                 onDisconnect = { startService(SessionService.disconnectIntent(this)) },
                 onStartScan = { controller?.startFullScan() },
+                onResumeScan = { controller?.resumeFullScan() },
                 onCancelScan = { controller?.cancelFullScan() },
                 onDismissScan = { controller?.dismissFullScan() },
+                backgroundAllowed = backgroundAllowed,
+                onAllowBackground = ::allowBackground,
             ),
             onShareLatest = ::shareLatest,
             onShareLog = ::shareConnectionLog,
@@ -140,7 +183,36 @@ class MainActivity : ComponentActivity() {
                     locationRequest.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                 },
             ),
+            voice = VoiceActions(
+                settings = voiceSettings,
+                lastSpoken = lastSpoken?.text,
+                available = speaker != null && voiceStore != null,
+                onSpokenStatusChange = { voiceStore?.setSpokenStatus(it) },
+                onVolumeChange = { voiceStore?.setVolume(it) },
+                onTest = { speaker?.let(::testVoice) },
+                onSayAgain = { speaker?.repeatLast() },
+                activePersonaName = activePack?.manifest?.name ?: "K.I.T.T.",
+                activeArchetype = activePack?.visualizer?.archetype ?: "bar-meter",
+                visualizerLevel = visualizerLevel,
+            ),
         )
+
+        var overlayDismissedForUtterance by remember { mutableStateOf<Utterance?>(null) }
+        val currentUtterance = (speechState as? SpeechState.Speaking)?.utterance
+        val showOverlay = speechState !is SpeechState.Idle && (currentUtterance == null || currentUtterance != overlayDismissedForUtterance)
+
+        if (showOverlay) {
+            VoiceOverlay(
+                state = speechState,
+                lastSpoken = lastSpoken?.text,
+                pack = ThemePack.DEFAULT,
+                reduceMotion = rememberReduceMotion(),
+                onSayAgain = { speaker?.repeatLast() },
+                onStop = { speaker?.skip() },
+                onDismiss = { overlayDismissedForUtterance = currentUtterance },
+                archetype = activePack?.visualizer?.archetype ?: "bar-meter",
+            )
+        }
 
         if (pickerOpen) {
             AdapterPickerDialog(
@@ -170,6 +242,15 @@ class MainActivity : ComponentActivity() {
                 text = { Text(stringResource(R.string.share_failed, message)) },
             )
         }
+    }
+
+    /**
+     * Speaks the sample line. Pressing the button twice within the quiet period would make the speaker drop the identical line, but a
+     * test must always be heard, so then the last line (this one) is said again.
+     */
+    private fun testVoice(speaker: Speaker) {
+        val result = speaker.speak(Utterance(getString(R.string.voice_test), Priority.ANSWER, category = "test"))
+        if (result == SpeakResult.UNCHANGED) speaker.repeatLast()
     }
 
     /** The recordings count and size: read when the screen appears and when a connection starts or ends, and every few seconds while one is active. */
@@ -334,5 +415,9 @@ class MainActivity : ComponentActivity() {
         const val SHARE_DIRECTORY = "shared"
         const val RECORDINGS_REFRESH_MS = 5000L
         val IDLE_STATE = MutableStateFlow(UiState.IDLE)
+        val DEFAULT_VOICE_SETTINGS = MutableStateFlow(VoiceSettings())
+        val NO_LINE = MutableStateFlow<Utterance?>(null)
+        val IDLE_SPEECH_STATE = MutableStateFlow<SpeechState>(SpeechState.Idle)
+        val ZERO_LEVEL = MutableStateFlow(0f)
     }
 }

@@ -34,6 +34,14 @@ public sealed interface SessionState {
     public data class WaitingForIgnition(val probes: Int, val busFault: String?) : SessionState
 
     /**
+     * Every ECU answered "NO DATA" for a few seconds in a row: the ignition is off and the car is asleep. Polling is stopped (asking a sleeping
+     * car again and again helps nobody) and one cheap `01 00` is sent every few seconds; the session goes back to [Polling] when it is answered.
+     *
+     * @property checks how many of those wake-up requests have gone unanswered so far
+     */
+    public data class VehicleAsleep(val checks: Int) : SessionState
+
+    /**
      * Live data is being polled.
      *
      * @property report what the probe found on this vehicle. Contains the full VIN: never log or export it unredacted
@@ -85,8 +93,12 @@ public sealed interface ScanState {
     /** The scan is running; [progress] says where, and whether it waits for a car that moves. */
     public data class Running(val progress: knightlink.core.scan.ScanProgress) : ScanState
 
-    /** The scan ended; the result says how. */
-    public data class Finished(val result: knightlink.core.scan.ScanResult) : ScanState
+    /**
+     * The scan ended; the result says how (completed, stopped, cancelled, or the link was lost: [knightlink.core.scan.ScanResult.resumable]).
+     *
+     * @property restored true when this is the part-way result of a scan in an earlier session, remembered for the vehicle so that it can be resumed
+     */
+    public data class Finished(val result: knightlink.core.scan.ScanResult, val restored: Boolean = false) : ScanState
 
     /** The scan was not started or failed at once; [reason] is in words. */
     public data class Failed(val reason: String) : ScanState

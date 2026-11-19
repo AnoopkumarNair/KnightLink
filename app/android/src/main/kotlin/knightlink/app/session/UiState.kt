@@ -67,7 +67,13 @@ sealed interface ScanStatus {
     ) : ScanStatus
 
     /** The scan ended, however it ended; [summary] counts what it found. */
-    data class Finished(val outcome: ScanOutcome, val detail: String?, val summary: ScanSummary, val minutes: Int) : ScanStatus
+    data class Finished(
+        val outcome: ScanOutcome,
+        val detail: String?,
+        val summary: ScanSummary,
+        val minutes: Int,
+        val resumable: Boolean = false,
+    ) : ScanStatus
 
     data class Failed(val reason: String) : ScanStatus
 }
@@ -82,6 +88,7 @@ fun ScanState.toStatus(): ScanStatus = when (this) {
         result.detail,
         result.summary,
         ((result.durationMs + MILLIS_PER_MINUTE - 1) / MILLIS_PER_MINUTE).toInt(),
+        result.resumable,
     )
     is ScanState.Failed -> ScanStatus.Failed(reason)
 }
@@ -100,6 +107,9 @@ sealed interface ConnectionStatus {
 
     /** The link is up but no ECU answers, usually because the ignition is off; [busFault] is set when the adapter said the vehicle bus is not reachable. */
     data class WaitingForIgnition(val probes: Int, val busFault: Boolean) : ConnectionStatus
+
+    /** Every ECU answered NO DATA (the ignition is off and the car is asleep); [checks] wake-up attempts have been sent so far. */
+    data class VehicleAsleep(val checks: Int) : ConnectionStatus
 
     data object Live : ConnectionStatus
 
@@ -162,6 +172,7 @@ fun SessionState.toStatus(): ConnectionStatus = when (this) {
     SessionState.Initialising -> ConnectionStatus.Initialising
     is SessionState.Probing -> ConnectionStatus.Probing(stage)
     is SessionState.WaitingForIgnition -> ConnectionStatus.WaitingForIgnition(probes, busFault != null)
+    is SessionState.VehicleAsleep -> ConnectionStatus.VehicleAsleep(checks)
     is SessionState.Recovering -> ConnectionStatus.Recovering(attempt, reason)
     is SessionState.Polling -> ConnectionStatus.Live
     is SessionState.Reconnecting -> ConnectionStatus.Reconnecting(attempt, retryIn.wholeSecondsRoundedUp(), cause)

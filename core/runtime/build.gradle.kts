@@ -18,6 +18,7 @@ kotlin {
             api(projects.core.adapter)
             api(projects.core.common)
             implementation(projects.core.protocol)
+            implementation(libs.kotlinx.serialization.json)
         }
     }
 }

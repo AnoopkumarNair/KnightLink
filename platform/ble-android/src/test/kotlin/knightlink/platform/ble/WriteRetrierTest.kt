@@ -77,6 +77,15 @@ class WriteRetrierTest {
         }
 
     @Test
+    fun aRejectedWriteIsRetriedOnceWhenConfigured() =
+        runTest {
+            val retrier = WriteRetrier(maxRejections = 1, maxBackoffMs = 10)
+            retrier.run(script(WriteAttempt.Rejected("status 133"), WriteAttempt.Accepted))
+
+            assertEquals(10, currentTime)
+        }
+
+    @Test
     fun invalidSettingsAreRejected() {
         assertFailsWith<IllegalArgumentException> { WriteRetrier(maxAttempts = 0) }
         assertFailsWith<IllegalArgumentException> { WriteRetrier(initialBackoffMs = 0) }

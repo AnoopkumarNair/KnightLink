@@ -35,6 +35,9 @@ internal class OperationSlot {
 
     @Volatile private var terminal: Throwable? = null
 
+    /** The operation in flight (`WRITE`, ...) or `idle`, for a log line about a failure. */
+    fun describeState(): String = current.get()?.kind?.name ?: "idle"
+
     /** Claims the slot for [kind]. Throws [IllegalStateException] if an operation is already in flight (a programming error). */
     fun begin(kind: OpKind): Ticket {
         val ticket = Ticket(kind)

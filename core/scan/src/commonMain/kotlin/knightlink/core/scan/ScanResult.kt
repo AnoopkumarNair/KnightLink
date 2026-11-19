@@ -17,6 +17,9 @@ public enum class ScanOutcome {
 
     /** The scan stopped itself for a safety reason (a control unit stopped answering); [ScanResult.detail] says which. */
     STOPPED,
+
+    /** The link to the adapter was lost part-way; what was found until then is in the result, and the scan can be resumed from its last completed stage. */
+    LINK_LOST,
 }
 
 /**
@@ -58,6 +61,8 @@ public data class DidAnswer(
     val hex: String,
     /** Nothing in a scan says what a value means: whatever answers is a guess about the car until it is verified. */
     val provenance: Provenance = Provenance.INFERRED,
+    /** What is known about the identifier without a drive, e.g. that it mirrors a Mode 01 PID; null when nothing. */
+    val label: String? = null,
 )
 
 /** What the sweep of one control unit found. */
@@ -103,7 +108,12 @@ public data class ScanResult(
     val sweeps: List<SweepResult> = emptyList(),
     val battery: List<BatteryReading> = emptyList(),
     val warnings: List<String> = emptyList(),
+    /** The control units the standard probe found, VIN masked; what a resumed scan needs to carry on from the readiness stage. */
+    val probeEcus: List<EcuReport> = emptyList(),
 ) {
+    /** True when the scan can be resumed: it ended part-way (link lost, cancelled) rather than completing or stopping for safety. */
+    public val resumable: Boolean get() = outcome == ScanOutcome.LINK_LOST || outcome == ScanOutcome.CANCELLED
+
     /** Counts for the summary: control units found, codes by status, identifiers per unit. */
     public val summary: ScanSummary
         get() = ScanSummary(

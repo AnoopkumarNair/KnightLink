@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "themes/ember",
+  "name": "Ember",
+  "visualiser": {
+    "style": "bar-meter",
+    "colors": {
+      "low": "#B3171F",
+      "high": "#FFB000",
+      "off": "#26B3171F",
+      "background": "#0B0708",
+      "text": "#F2E6DC"
+    },
+    "columns": [11, 15, 11]
+  }
+}

@@ -16,6 +16,7 @@ fun ConnectionStatus.text(resources: Resources): String = when (this) {
     is ConnectionStatus.Probing -> resources.getString(R.string.status_probing, resources.getString(stage.textRes()))
     is ConnectionStatus.WaitingForIgnition ->
         resources.getString(if (busFault) R.string.status_bus_not_reachable else R.string.status_waiting_for_ignition, probes)
+    is ConnectionStatus.VehicleAsleep -> resources.getString(R.string.status_vehicle_asleep, checks)
     is ConnectionStatus.Recovering -> resources.getString(R.string.status_recovering, attempt, reason)
     ConnectionStatus.Live -> resources.getString(R.string.status_live)
     is ConnectionStatus.Reconnecting -> resources.getString(R.string.status_reconnecting, retryInSeconds, cause)
@@ -75,6 +76,7 @@ fun ScanStatus.text(resources: Resources): String? = when (this) {
             ScanOutcome.CANCELLED ->
                 resources.getString(R.string.scan_stopped_by_user, minutes, found.ecus)
             ScanOutcome.STOPPED -> resources.getString(R.string.scan_stopped_early, minutes, detail ?: "", found.ecus)
+            ScanOutcome.LINK_LOST -> resources.getString(R.string.scan_link_lost, minutes, found.ecus)
         }
     }
     is ScanStatus.Failed -> resources.getString(R.string.scan_failed, reason)

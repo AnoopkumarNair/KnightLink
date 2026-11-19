@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import knightlink.core.transport.ByteStream
 import knightlink.core.transport.TransportException
 import knightlink.core.transport.ble.BleSerialProfile
@@ -81,7 +82,7 @@ internal class GattLink(
 
     private val slot = OperationSlot()
     private val writeLock = Mutex()
-    private val retrier = WriteRetrier()
+    private val retrier = WriteRetrier(maxRejections = 1)
     private val received = Channel<ByteArray>(RECEIVE_BUFFER_CHUNKS)
     private val gattRef = AtomicReference<BluetoothGatt?>(null)
     private val released = AtomicBoolean(false)
@@ -336,6 +337,11 @@ internal class GattLink(
                     } ?: throw TransportException("Writing to the adapter timed out after ${config.writeTimeout}; the link is assumed lost.")
                 }
             } catch (e: TransportException) {
+                // The Android status code is in the message; the queue state says whether something else was in flight (a leaked operation).
+                Log.w(
+                    TAG,
+                    "Write failed: ${e.message}; operation slot ${slot.describeState()}, ${chunks.size} chunk(s) of ${bytes.size} bytes, handed over: $handedOver",
+                )
                 // A failed or timed-out write leaves the stack's single operation slot in an unknown state and a
                 // command half-sent, so the link is abandoned; the session above reconnects.
                 finish(e)
@@ -485,6 +491,8 @@ internal class GattLink(
         }
 
     private companion object {
+        const val TAG = "GattLink"
+
         /** The 16-bit UUID of the client characteristic configuration descriptor (Bluetooth assigned number). */
         const val CLIENT_CONFIG_DESCRIPTOR = 0x2902
 
