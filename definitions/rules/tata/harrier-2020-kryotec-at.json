@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "id": "rules/tata/harrier-2020-kryotec-at",
+  "title": "Tata Harrier BS6 2.0L Kryotec AT (2020): spoken safety rules",
+  "vehicle": "vehicles/tata/harrier-2020-kryotec-at",
+  "notes": "Every number is an initial value chosen on reasoning, not measured on the car yet: tune them from real drives. A signal is only used while its definition is standard or verified.",
+  "signals": {
+    "notes": "Max ages: the DPF and exhaust are polled about twice a second, so 5 s tolerates a few lost replies; engine speed and speed are polled fast; coolant and AdBlue are slow-tier values read every few seconds.",
+    "regenStatus": { "id": "dpf.regen_status", "maxAgeMs": 5000, "notes": "PID 8B byte B, standard layer." },
+    "soot": { "id": "dpf.soot_pct", "maxAgeMs": 5000, "notes": "PID 8B byte C, standard layer." },
+    "egt": [ { "id": "exhaust.egt_b1s1", "maxAgeMs": 5000, "notes": "PID 78, standard layer. Bank 1 sensor 1 only: the other EGT signals are not in this car's capture." } ],
+    "rpm": { "id": "engine.rpm", "maxAgeMs": 3000 },
+    "speed": { "id": "vehicle.speed", "maxAgeMs": 3000 },
+    "coolant": { "id": "engine.coolant_temp", "maxAgeMs": 30000 },
+    "adblueLevel": { "id": "def.level_pct", "ecu": "rdcm", "maxAgeMs": 30000, "notes": "From the reductant controller, verified against the 2026-11-17 recording. The standard-layer def.reagent_level_pct is only inferred and must not be used here." }
+  },
+  "engine": { "runningRpm": 300, "notes": "Initial value: below a typical cranking-to-idle speed, far under the ~800 rpm idle seen on the car." },
+  "dpf": {
+    "notes": "Soot figures are percent of the ECU's own soot scale. Initial values, tune on the car.",
+    "regenActiveMask": 2,
+    "sootRisingPct": 80,
+    "sootRisingClearPct": 75,
+    "sootHighPct": 100,
+    "sootHighHoldMs": 120000,
+    "completedSootPct": 30,
+    "regenEndConfirmReadings": 2,
+    "resultHoldMs": 120000,
+    "maxRemainingEstimateMs": 3600000
+  },
+  "cooldown": {
+    "notes": "Initial values: 300 degC is where the exhaust is clearly hot at idle (about 140 degC) and below regeneration heat (above 300); two minutes idle is the usual turbo cool-down advice.",
+    "egtHotC": 300,
+    "cooldownIdleMs": 120000,
+    "stoppedSpeedKmh": 0
+  },
+  "adblue": {
+    "notes": "Initial values: warn at a tenth of the tank so there is a few hundred km of margin, call it critical at 3 %.",
+    "lowPct": 10,
+    "criticalPct": 3,
+    "clearMarginPct": 2
+  },
+  "coolant": {
+    "notes": "Initial values: normal running is about 90 degC; 110 degC is clearly past it.",
+    "highC": 110,
+    "clearMarginC": 3
+  },
+  "alerts": {
+    "notes": "Initial values: critical alerts repeat every two minutes, warnings every quarter hour, the rest are spoken once.",
+    "reannounceMs": { "critical": 120000, "warning": 900000, "advisory": 0, "info": 0 },
+    "quietAfterClearMs": 60000,
+    "minGapMs": 3000,
+    "eventLifetimeMs": 120000
+  }
+}

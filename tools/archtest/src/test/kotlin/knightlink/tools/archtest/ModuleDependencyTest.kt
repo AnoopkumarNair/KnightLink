@@ -22,6 +22,7 @@ class ModuleDependencyTest {
             "scan" to setOf("protocol", "signals", "vehicle", "common"),
             "runtime" to setOf("adapter", "transport", "protocol", "scheduler", "telemetry", "signals", "vehicle", "scan", "common"),
             "recorder" to setOf("transport", "protocol", "common"),
+            "rules" to setOf("telemetry", "signals", "common"),
         )
 
     private val voiceAllowed: Map<String, Set<String>> = mapOf("api" to emptySet())
