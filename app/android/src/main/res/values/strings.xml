@@ -9,6 +9,7 @@
     <string name="status_initialising">Initialising adapter</string>
     <string name="status_probing">Reading vehicle capabilities: %1$s</string>
     <string name="status_waiting_for_ignition">Connected to the adapter. Waiting for the ignition: the car does not answer yet (check %1$d)</string>
+    <string name="status_vehicle_asleep">Vehicle asleep (ignition off). Waiting for ignition (check %1$d)</string>
     <string name="status_bus_not_reachable">Connected to the adapter, but the vehicle bus is not reachable. Is the ignition on? (check %1$d)</string>
     <string name="status_recovering">Lost the data, setting the adapter up again (try %1$d): %2$s</string>
     <string name="status_live">Live</string>
@@ -29,6 +30,13 @@
 
     <!-- Full scan -->
     <string name="action_full_scan">Full scan (parked)</string>
+    <string name="action_resume_scan">Resume scan</string>
+    <string name="action_run_again">Run again</string>
+    <string name="action_keep_result">Keep result</string>
+    <string name="scan_rerun_title">Run the scan again?</string>
+    <string name="scan_rerun_message">A new scan takes several minutes with the car parked and replaces the result shown now.</string>
+    <string name="action_allow_background">Allow background running</string>
+    <string name="background_explanation">Android may pause KnightLink in the background to save battery, which stalls the sensors of the phone and can drop the adapter link while you drive. Allowing background running keeps it going.</string>
     <string name="scan_hint">Park the car with the ignition on, then start the scan. It reads everything the car answers, changes nothing, and takes about ten minutes. It pauses by itself if the car moves.</string>
     <string name="action_cancel_scan">Stop the scan</string>
     <string name="action_dismiss_scan">Dismiss</string>
@@ -46,6 +54,7 @@
     <string name="scan_finished_ids">Identifiers that answered: %1$s.</string>
     <string name="scan_stopped_early">Scan stopped early: %2$s. What it found so far is kept. Minutes taken: %1$d. Control units found: %3$d.</string>
     <string name="scan_stopped_by_user">Scan stopped by you. What it found so far is kept. Minutes taken: %1$d. Control units found: %2$d.</string>
+    <string name="scan_link_lost">Scan interrupted: the connection to the adapter was lost. What it found so far is kept and the scan can be resumed. Minutes taken: %1$d. Control units found: %2$d.</string>
     <string name="scan_failed">The scan did not start: %1$s</string>
 
     <!-- Drive data -->
@@ -134,6 +143,24 @@
     <string name="action_share_connection_log">Share connection log</string>
     <string name="share_log_chooser_title">Share connection log</string>
     <string name="share_failed">Could not prepare the recording: %1$s</string>
+
+    <!-- Voice: the lines that are spoken, and the Voice card -->
+    <string name="voice_connected">Adapter connected. Live data is on.</string>
+    <string name="voice_waiting_for_ignition">Connected to the adapter. Waiting for the ignition.</string>
+    <string name="voice_bus_not_reachable">The adapter is connected but can\'t reach the car. Is the ignition on?</string>
+    <string name="voice_connection_lost">Lost the adapter. Retrying.</string>
+    <string name="voice_reconnected">Reconnected.</string>
+    <string name="voice_failed">Connection failed: %1$s</string>
+    <string name="voice_failed_no_reason">Connection failed.</string>
+    <string name="voice_disconnected">Disconnected.</string>
+    <string name="voice_test">This is KnightLink. Voice output is working.</string>
+    <string name="voice_title">Voice</string>
+    <string name="voice_spoken_status">Speak connection status</string>
+    <string name="voice_volume">Volume</string>
+    <string name="voice_volume_percent">%1$d%%</string>
+    <string name="action_test_voice">Test voice</string>
+    <string name="action_say_again">Say again</string>
+    <string name="voice_last_spoken">Last said: %1$s</string>
 
     <!-- Notification -->
     <string name="notification_channel_name">Vehicle session</string>

@@ -103,6 +103,8 @@ public class FullScan(
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val config: Config = Config(),
     private val whileMoving: suspend (speedKmh: Int?) -> Unit = { delay(DEFAULT_MOVING_WAIT) },
+    /** What an earlier, unfinished scan of this car found: its finished stages are not run again and its results are carried on. */
+    private val resume: ScanResult? = null,
 ) {
     /**
      * @property requestsPerSecond the pace of every request the scan sends, the probe's included; null takes the plan's. Never above
@@ -116,6 +118,9 @@ public class FullScan(
      * @property silenceBeforePing consecutive unanswered requests to a control unit after which it is asked whether it is still there
      * @property silentRunLimit consecutive unanswered requests after which the rest of a range is skipped: a control unit that ignores
      *   identifiers it does not have would otherwise cost a timeout for each of them
+     * @property conditionsRunLimit consecutive identifiers answered "conditions not correct" after which a control unit is not asked any more
+     *   (one such answer only skips that identifier)
+     * @property isLinkLoss tells an error that means the link to the adapter is gone (the scan then ends as [ScanOutcome.LINK_LOST] and can be resumed)
      */
     public data class Config(
         val requestsPerSecond: Double? = null,
@@ -126,10 +131,13 @@ public class FullScan(
         val multiFrameSettle: Duration = 500.milliseconds,
         val silenceBeforePing: Int = 8,
         val silentRunLimit: Int = 48,
+        val conditionsRunLimit: Int = 5,
+        val isLinkLoss: (Throwable) -> Boolean = { false },
     ) {
         init {
             require(requestsPerSecond == null || requestsPerSecond > 0.0) { "requestsPerSecond must be positive" }
             require(speedCheckEvery >= 1) { "speedCheckEvery must be at least 1" }
+            require(conditionsRunLimit >= 1) { "conditionsRunLimit must be at least 1" }
             require(silenceBeforePing >= 1 && silentRunLimit >= silenceBeforePing) { "silenceBeforePing must be at least 1 and no more than silentRunLimit" }
         }
     }
@@ -192,6 +200,7 @@ public class FullScan(
     private lateinit var voltageMark: TimeMark
     private var pausedMs = 0L
     private var failures = 0
+    private var priorDurationMs = 0L
 
     /**
      * Runs the scan to its end and returns its result (also in [result]). A scan that is stopped by a safety rule ends with
@@ -202,6 +211,7 @@ public class FullScan(
     public suspend fun run(): ScanResult {
         check(!started) { "A scan runs once" }
         started = true
+        restore()
         begin = timeSource.markNow()
         speedMark = begin
         voltageMark = begin
@@ -229,8 +239,13 @@ public class FullScan(
             withContext(NonCancellable) { restoreAdapter() }
             throw e
         } catch (e: Throwable) {
-            outcome = ScanOutcome.CANCELLED
-            detail = if (e is CancellationException) "cancelled" else "stopped by an error: ${e.message ?: e::class.simpleName}"
+            val lost = e !is CancellationException && config.isLinkLoss(e)
+            outcome = if (lost) ScanOutcome.LINK_LOST else ScanOutcome.CANCELLED
+            detail = when {
+                lost -> "link lost"
+                e is CancellationException -> "cancelled"
+                else -> "stopped by an error: ${e.message ?: e::class.simpleName}"
+            }
             failure = e
         }
         withContext(NonCancellable) {
@@ -252,6 +267,10 @@ public class FullScan(
     }
 
     private suspend fun stage(stage: ScanStage, body: suspend () -> Unit) {
+        if (stage.name.lowercase() in stagesDone) {
+            note("stage ${stage.ordinal + 1} of ${ScanStage.entries.size}: ${stage.name.lowercase()} was done before, not run again")
+            return
+        }
         _progress.value = ScanProgress(stage = stage, running = true)
         note("stage ${stage.ordinal + 1} of ${ScanStage.entries.size}: ${stage.name.lowercase()}")
         body()
@@ -261,7 +280,7 @@ public class FullScan(
     private fun snapshot(outcome: ScanOutcome, detail: String?): ScanResult = ScanResult(
         outcome = outcome,
         detail = detail,
-        durationMs = begin.elapsedNow().inWholeMilliseconds,
+        durationMs = priorDurationMs + begin.elapsedNow().inWholeMilliseconds,
         pausedMs = pausedMs,
         stagesDone = stagesDone.toList(),
         ecus = units.values.sortedBy { it.requestId }.map { unit ->
@@ -282,7 +301,34 @@ public class FullScan(
         sweeps = sweeps.toList(),
         battery = battery.toList(),
         warnings = warnings.toList(),
+        probeEcus = probeEcus.map { it.copy(vin = it.vin?.let(::maskVin)) },
     )
+
+    /** Carries on from [resume]: what an earlier scan found is taken over, and its finished stages are skipped. */
+    private suspend fun restore() {
+        val earlier = resume ?: return
+        stagesDone += earlier.stagesDone
+        probeEcus = earlier.probeEcus
+        for (ecu in earlier.ecus) {
+            val unit = Found(ecu.requestId.toInt(16), ecu.responseId.toInt(16), ecu.foundBy)
+            unit.name = ecu.name
+            unit.identity += ecu.identity
+            unit.stored = ecu.storedCodes
+            unit.pending = ecu.pendingCodes
+            unit.permanent = ecu.permanentCodes
+            unit.uds = ecu.udsFaults
+            unit.note = ecu.note
+            if (ecu.foundBy == "discovery") unit.ping = identification(DID_VIN)
+            units[unit.responseId] = unit
+        }
+        readiness += earlier.readiness
+        sweeps += earlier.sweeps
+        battery += earlier.battery
+        warnings += earlier.warnings
+        pausedMs = earlier.pausedMs
+        priorDurationMs = earlier.durationMs
+        note("resumes an earlier scan (${earlier.outcome.name.lowercase()}); stages done: ${earlier.stagesDone.joinToString(", ").ifEmpty { "none" }}")
+    }
 
     // Stage 1: the standard probe ---------------------------------------------------------------------------
 
@@ -393,6 +439,8 @@ public class FullScan(
         val sorted = units.values.sortedBy { it.requestId }
         for ((index, unit) in sorted.withIndex()) {
             val dids = (IDENTIFICATION_FIRST..IDENTIFICATION_LAST).toList()
+            // A resumed scan may have read some of them already.
+            unit.identity.removeAll { it.did.toInt(16) in IDENTIFICATION_FIRST..IDENTIFICATION_LAST }
             val answers = ArrayList<DidAnswer>()
             val stats = Stats()
             val ended = readDids(unit, dids, ScanStage.IDENTIFICATION, unit.label, index * dids.size, sorted.size * dids.size, stats) { did, bytes ->
@@ -477,6 +525,7 @@ public class FullScan(
 
     private suspend fun sweep() {
         for (target in plan.targets) {
+            if (sweeps.any { it.requestId.equals(target.requestId, ignoreCase = true) }) continue
             val unit = units.values.firstOrNull { it.requestId == target.requestCanId }
             val chunks = plan.chunksFor(target)
             val planned = chunks.sumOf { it.size }
@@ -491,7 +540,7 @@ public class FullScan(
             var done = 0
             for (chunk in chunks) {
                 val ended = readDids(unit, chunk, ScanStage.SWEEP, target.label, done, planned, stats) { did, bytes ->
-                    positives += DidAnswer(did.hex(), bytes.toHex())
+                    positives += DidAnswer(did.hex(), bytes.toHex(), label = mirrorLabel(did))
                 }
                 done += chunk.size
                 if (ended is RangeEnd.Stop) {
@@ -550,6 +599,7 @@ public class FullScan(
         onPositive: (Int, ByteArray) -> Unit,
     ): RangeEnd {
         var silentRun = 0
+        var conditionsRun = 0
         for ((index, did) in dids.withIndex()) {
             _progress.value = ScanProgress(stage, subject, doneBefore + index, total, running = true)
             // Only a quarter-second between progress updates would be enough, but the flow conflates anyway.
@@ -557,12 +607,14 @@ public class FullScan(
             when (val answer = askDid(unit, did)) {
                 is Answer.Positive -> {
                     silentRun = 0
+                    conditionsRun = 0
                     unit.silentRun = 0
                     rememberPing(unit, did)
                     onPositive(did, answer.data)
                 }
                 is Answer.Partial -> {
                     silentRun = 0
+                    conditionsRun = 0
                     unit.silentRun = 0
                     // The reply is longer than one frame and was cut after the first: wait for the control unit to give up on it, then ask for it whole.
                     delay(config.multiFrameSettle)
@@ -573,8 +625,18 @@ public class FullScan(
                 is Answer.Negative -> {
                     silentRun = 0
                     unit.silentRun = 0
+                    if (answer.code != NRC_CONDITIONS_NOT_CORRECT) conditionsRun = 0
                     when (answer.code) {
                         NRC_OUT_OF_RANGE -> stats.refused++
+                        NRC_CONDITIONS_NOT_CORRECT -> {
+                            // One refusal for the unit's present state is no reason to give up on it: only this identifier is skipped.
+                            stats.refused++
+                            if (++conditionsRun >= config.conditionsRunLimit) {
+                                return RangeEnd.Stop(
+                                    "answered ${nrcText(answer.code)} to $conditionsRun identifiers in a row, last ${did.hex()}; not asked any further",
+                                )
+                            }
+                        }
                         NRC_SECURITY_ACCESS_DENIED -> stats.protectedDids += did.hex()
                         NRC_SERVICE_NOT_SUPPORTED -> return RangeEnd.Stop("does not support service 22")
                         else -> return RangeEnd.Stop("answered ${nrcText(answer.code)} to ${did.hex()}; not asked any further")
@@ -624,6 +686,10 @@ public class FullScan(
     }
 
     private fun identification(did: Int): ByteArray = byteArrayOf(SERVICE_READ_DATA.toByte(), (did shr 8).toByte(), did.toByte())
+
+    /** A data identifier F4xx repeats Mode 01 PID xx (the same data under UDS); the label says so, and it is not polled again as a discovery item. */
+    private fun mirrorLabel(did: Int): String? =
+        if (did in MODE01_MIRROR_FIRST..MODE01_MIRROR_LAST) "mirrors Mode 01 PID ${(did and 0xFF).toString(16).uppercase().padStart(2, '0')}" else null
 
     private fun Int.hex(): String = toString(16).uppercase().padStart(4, '0')
 
@@ -683,7 +749,8 @@ public class FullScan(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (++failures >= MAX_FAILURES_IN_A_ROW) throw e
+            // A lost link is not a slow adapter: waiting for two more failures would only delay the ending.
+            if (config.isLinkLoss(e) || ++failures >= MAX_FAILURES_IN_A_ROW) throw e
             null
         }
     }
@@ -849,6 +916,9 @@ public class FullScan(
         const val MIDS_PER_RANGE = 0x20
         const val LAST_MID_RANGE = 0xE0
 
+        const val MODE01_MIRROR_FIRST = 0xF400
+        const val MODE01_MIRROR_LAST = 0xF4FF
+
         const val DID_VIN = 0xF190
         const val DID_SPARE_PART_NUMBER = 0xF187
         const val IDENTIFICATION_FIRST = 0xF180
@@ -856,6 +926,7 @@ public class FullScan(
 
         const val NRC_SERVICE_NOT_SUPPORTED = 0x11
         const val NRC_SUB_FUNCTION_NOT_SUPPORTED = 0x12
+        const val NRC_CONDITIONS_NOT_CORRECT = 0x22
         const val NRC_OUT_OF_RANGE = 0x31
         const val NRC_SECURITY_ACCESS_DENIED = 0x33
 

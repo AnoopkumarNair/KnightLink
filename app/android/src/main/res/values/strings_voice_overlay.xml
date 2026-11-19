@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Speaking screen -->
+    <string name="voice_listening">Listening…</string>
+    <string name="voice_thinking">Thinking…</string>
+    <string name="voice_say_again">Say again</string>
+    <string name="voice_stop">Stop</string>
+    <string name="voice_dismiss">Hide</string>
+</resources>

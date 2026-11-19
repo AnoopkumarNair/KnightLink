@@ -11,6 +11,7 @@ import knightlink.core.recorder.Recording
 import knightlink.core.recorder.TrafficExchange
 import knightlink.core.recorder.trafficExchanges
 import knightlink.core.scan.ScanEcu
+import knightlink.core.scan.ScanOutcome
 import knightlink.core.scan.ScanResult
 import knightlink.core.signals.SignalCatalog
 import knightlink.core.telemetry.TelemetryDecoder
@@ -20,12 +21,26 @@ import kotlin.math.sqrt
 /** The vehicle definition whose lengths and formulas turn the recorded vehicle speed and engine speed into numbers, unless `--definition` says another. */
 internal const val DEFAULT_VEHICLE = "vehicles/tata/harrier-2020-kryotec-at"
 
-/** The full scan's result in a recording: the last `scan-result` event, or the `.scan.json` file written next to the recording. */
-internal fun scanResultOf(recording: Recording, recordingFile: File? = null): ScanResult? {
+/** Every `scan-result` event of a recording, in order. */
+internal fun scanResultsIn(recording: Recording): List<ScanResult> {
     val prefix = SessionEvents.SCAN_RESULT + ": "
-    recording.events.lastOrNull { it.kind == EventKind.EVENT && it.payload.startsWith(prefix) }?.let {
-        return ScanResult.fromJson(it.payload.removePrefix(prefix))
+    return recording.events.filter { it.kind == EventKind.EVENT && it.payload.startsWith(prefix) }.mapNotNull {
+        try {
+            ScanResult.fromJson(it.payload.removePrefix(prefix))
+        } catch (_: IllegalArgumentException) {
+            null
+        }
     }
+}
+
+/**
+ * The full scan's result in a recording: the last COMPLETED `scan-result` event (a recording may hold several scans, and a later one that was
+ * cancelled or lost its link must not hide the one that finished); when none completed, the last of any kind; or the `.scan.json` file
+ * written next to the recording.
+ */
+internal fun scanResultOf(recording: Recording, recordingFile: File? = null): ScanResult? {
+    val all = scanResultsIn(recording)
+    (all.lastOrNull { it.outcome == ScanOutcome.COMPLETED } ?: all.lastOrNull())?.let { return it }
     val sidecar = recordingFile?.let { File(it.parentFile, it.name.removeSuffix(".jsonl") + ".scan.json") }
     return sidecar?.takeIf { it.isFile }?.let { ScanResult.fromJson(it.readText(Charsets.UTF_8)) }
 }
@@ -36,6 +51,17 @@ internal fun fullscanReport(rawArgs: List<String>) {
     val recording = readRecording(path)
     val result = scanResultOf(recording, File(path)) ?: fail("$path holds no full scan result (no scan-result event, and no .scan.json beside it)")
     renderScanReport(result).forEach(::println)
+    val others = scanResultsIn(recording).filter { it != result }
+    if (others.isNotEmpty()) {
+        println()
+        println("Other scans in this recording (not reported above):")
+        for (other in others) {
+            println(
+                "  ${other.outcome.name.lowercase()}${other.detail?.let { " ($it)" }.orEmpty()}, stages done: " +
+                    other.stagesDone.joinToString(", ").ifEmpty { "none" } + ", ${other.ecus.size} control units",
+            )
+        }
+    }
 }
 
 /** The report as lines. The VIN is already masked in the result; nothing here could show more. */

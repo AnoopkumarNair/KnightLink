@@ -5,6 +5,7 @@ import knightlink.core.common.SessionEvents
 import knightlink.core.common.emit
 import knightlink.core.common.toHex
 import knightlink.core.protocol.DiagnosticLink
+import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmLine
 import knightlink.core.protocol.ElmLineParser
 import knightlink.core.protocol.ElmResponse
@@ -71,6 +72,10 @@ public data class DriverStats(
     val searchingWaits: Int = 0,
     /** Commands sent a second time because the adapter had said STOPPED. */
     val resends: Int = 0,
+    /** Requests whose first answer was "response pending" (7F xx 78) and which were kept waiting for the final answer. */
+    val pendingWaits: Int = 0,
+    /** Requests whose final answer never came within the pending limits (so the pending answer stands). */
+    val pendingGaveUp: Int = 0,
 )
 
 /**
@@ -117,6 +122,10 @@ public class Elm327Driver(
      * @property minRequestInterval the shortest time between the starts of two diagnostic requests: a hard ceiling on the load
      *   KnightLink puts on the vehicle bus (20 ms = at most 50 requests a second), whatever the scheduler asks for. One request
      *   is in flight at a time anyway, so a real ELM327 over Bluetooth stays well below it.
+     * @property slowReply a reply that took longer than this is written to the log (with the request, never a reply's content)
+     * @property pendingTimeout how long, in all, a request whose answer is "response pending" (negative response code 0x78) waits for the final
+     *   answer, which comes without a new request
+     * @property pendingRounds how many further replies one request reads while its answer stays "response pending"
      * @property timeSource the clock of [minRequestInterval]
      */
     public data class Config(
@@ -130,12 +139,17 @@ public class Elm327Driver(
         val essentialCommands: List<String> = listOf("ATE0", "ATH1", "ATSP"),
         val detectResets: Boolean = true,
         val minRequestInterval: Duration = DEFAULT_MIN_REQUEST_INTERVAL,
+        val slowReply: Duration = 2.seconds,
+        val pendingTimeout: Duration = 5.seconds,
+        val pendingRounds: Int = 3,
         val timeSource: TimeSource = TimeSource.Monotonic,
     ) {
         init {
             require(commandTimeout > Duration.ZERO) { "commandTimeout must be positive" }
             require(resetTimeout > Duration.ZERO) { "resetTimeout must be positive" }
             require(searchingTimeout > Duration.ZERO) { "searchingTimeout must be positive" }
+            require(pendingTimeout > Duration.ZERO) { "pendingTimeout must be positive" }
+            require(pendingRounds >= 0) { "pendingRounds must not be negative" }
             require(minRequestInterval >= MIN_REQUEST_INTERVAL_FLOOR) { "minRequestInterval must be at least $MIN_REQUEST_INTERVAL_FLOOR" }
         }
 
@@ -148,6 +162,7 @@ public class Elm327Driver(
     }
 
     private var lastRequestStart: TimeMark? = null
+    private var slowReplies = 0
 
     private val framer = ElmStreamFramer()
     private val framerLock = Mutex()
@@ -404,9 +419,52 @@ public class Elm327Driver(
         lastRequestStart = config.timeSource.markNow()
         val reply = exchange(payload.toHex() + suffix, timeout)
         resetHint(reply, diagnostic = true)?.let { return Attempt(null, it) }
-        val response = decoder.decode(reply.lines)
+        val response = settlePending(withoutSupersededPending(decoder.decode(reply.lines)), requestId)
         countStatuses(response, requestId)
         return Attempt(response, null)
+    }
+
+    private fun isPending(message: DiagnosticResponse): Boolean = message is DiagnosticResponse.Negative && message.code == PENDING_CODE
+
+    /** An ECU that sent "response pending" and then its final answer in the same read gives only the final answer. */
+    private fun withoutSupersededPending(response: ElmResponse): ElmResponse {
+        val finalSources = response.messages.filterNot(::isPending).map { it.sourceId }.toSet()
+        if (response.messages.none { isPending(it) && it.sourceId in finalSources }) return response
+        return ElmResponse(
+            response.messages.filterNot { isPending(it) && it.sourceId in finalSources },
+            response.statuses,
+            response.protocolErrors,
+            response.text,
+            response.respondingIds,
+        )
+    }
+
+    /**
+     * An answer that is only "response pending" (the ECU is busy and will answer by itself) is not an answer: the same request's further
+     * replies are read, without sending it again (a resend would restart the ECU's work), until the final one or [Config.pendingTimeout]
+     * or [Config.pendingRounds] more replies. When nothing final arrives the pending answer is returned as it was.
+     */
+    private suspend fun settlePending(first: ElmResponse, requestId: Int): ElmResponse {
+        if (config.pendingRounds == 0 || first.messages.isEmpty() || !first.messages.all(::isPending)) return first
+        counters = counters.copy(pendingWaits = counters.pendingWaits + 1)
+        val id = requestId.toString(16).uppercase()
+        var rounds = 0
+        val settled = withTimeoutOrNull(config.pendingTimeout) {
+            while (rounds < config.pendingRounds) {
+                rounds++
+                val next = responses.receiveCatching().getOrNull() ?: return@withTimeoutOrNull null
+                val decoded = withoutSupersededPending(decoder.decode(next))
+                if (decoded.messages.isNotEmpty() && !decoded.messages.all(::isPending)) return@withTimeoutOrNull decoded
+            }
+            null
+        }
+        if (settled != null) {
+            if (shouldLog(counters.pendingWaits)) note(SessionEvents.RESPONSE_PENDING, "$id answered after response pending ($rounds extra replies)")
+            return settled
+        }
+        counters = counters.copy(pendingGaveUp = counters.pendingGaveUp + 1)
+        note(SessionEvents.RESPONSE_PENDING, "$id still pending after $rounds extra replies; giving up on the final answer")
+        return first
     }
 
     /** A sign in [reply] that the adapter lost its settings since the init script ran, in words; null when there is none. */
@@ -479,8 +537,14 @@ public class Elm327Driver(
                 if (stale.any { it.contains(BANNER, ignoreCase = true) || isLowVoltageReset(it) }) unsolicitedReset = true
             }
         }
+        val asked = config.timeSource.markNow()
         stream.write((text + "\r").encodeToByteArray())
         val lines = awaitReply(text, timeout)
+        val took = asked.elapsedNow()
+        if (took >= config.slowReply && !text.compact().startsWith("AT")) {
+            val count = ++slowReplies
+            if (shouldLog(count)) note(SessionEvents.SLOW_REPLY, "'${text.trim()}' took ${took.inWholeMilliseconds} ms (count $count)")
+        }
         val sent = text.compact()
         val echoed = sent.isNotEmpty() && lines.any { it.compact() == sent }
         return Reply(lines.filterNot { it.compact() == sent }, echoed)
@@ -517,6 +581,7 @@ public class Elm327Driver(
     private fun String.compact(): String = filterNot { it.isWhitespace() }.uppercase()
 
     private companion object {
+        const val PENDING_CODE = 0x78
         const val BANNER = "ELM327"
         const val SEARCHING_WORD = "SEARCHING"
         const val MAX_LOGGED_REPLY = 40

@@ -28,6 +28,7 @@ Milestones M0 (foundation) and M1 (protocol core and simulator) are in place: th
 | `tools/cli` | Developer tool: run a simulated vehicle through the real stack, record and replay sessions, scrub recordings, or decode captured frames |
 | `definitions/` | Vehicle, adapter and sensor knowledge as data |
 | `fixtures/` | Golden frames used by tests; `raw/` holds local, git-ignored captures |
+| `docs/` | Architecture decisions, implementation plans, and `.knightpack` voice persona specification (`docs/KNIGHTPACK_SPEC_AND_INTEGRATION.md`) |
 | `docs/adr/` | Architecture decisions |
 | `build-logic/` | Gradle convention plugins |
 

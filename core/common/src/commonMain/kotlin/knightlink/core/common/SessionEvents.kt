@@ -65,6 +65,18 @@ public object SessionEvents {
     /** The adapter asked for a command twice (it said STOPPED) and it was sent again. */
     public const val RESEND: String = "resend"
 
+    /** The vehicle answered NO DATA everywhere for a few seconds (ignition off), polling paused; and the wake-up that ended it. */
+    public const val ASLEEP: String = "asleep"
+
+    /** A reply took longer than the slow-reply limit (2 s). */
+    public const val SLOW_REPLY: String = "slow-reply"
+
+    /** What was remembered about the vehicle between sessions: reused, restored, saved (no VIN, no key). */
+    public const val MEMORY: String = "memory"
+
+    /** A request was answered "response pending" (7F xx 78) and the driver kept reading for the ECU's final answer (or gave up). */
+    public const val RESPONSE_PENDING: String = "response-pending"
+
     /** How fast polling is going: requests per second and the update rate of every signal over the last 30 seconds. Written every 30 seconds. */
     public const val RATES: String = "rates"
 

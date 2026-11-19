@@ -78,13 +78,18 @@ class FullScanSessionTest {
 
     private class Run(val session: VehicleSession, val recording: () -> Recording, val adapter: () -> VirtualElm327)
 
-    private fun TestScope.start(withPlan: Boolean = true, onVehicle: (knightlink.core.sim.VirtualVehicle) -> Unit = {}): Run {
+    private fun TestScope.start(
+        withPlan: Boolean = true,
+        memory: knightlink.core.runtime.VehicleMemoryStore? = null,
+        onVehicle: (knightlink.core.sim.VirtualVehicle) -> Unit = {},
+    ): Run {
         val vehicle = simulation.buildVehicle().also(onVehicle)
         val simulated = SimulatedTransport(vehicle = { vehicle }, config = VirtualElm327.Config(responseDelay = 40.milliseconds))
         val sink = InMemoryRecordSink()
         val transport = RecordingTransport(simulated, { sink }, testTimeSource, RecordingHeader(adapterDefinition.id, "full scan"), externalSamples = true)
         val config = VehicleSession.Config(
             scanPlan = if (withPlan) plan else null,
+            memory = memory,
             driver = knightlink.core.adapter.Elm327Driver.Config(warmUp = false, postResetDelay = Duration.ZERO),
         )
         val session = VehicleSession(transport, adapterDefinition.initScript, catalog, backgroundScope, testTimeSource, config, transport)
@@ -228,6 +233,115 @@ class FullScanSessionTest {
         }
     }
 
+    private fun TestScope.untilScanSettles(run: Run, limit: Duration = 30.seconds * 60): ScanState.Finished {
+        var waited = Duration.ZERO
+        while (waited < limit) {
+            val state = run.session.scan.value
+            if (state is ScanState.Finished && state.result.outcome == ScanOutcome.COMPLETED) return state
+            elapse(5.seconds)
+            waited += 5.seconds
+        }
+        return assertIs<ScanState.Finished>(run.session.scan.value)
+    }
+
+    @Test
+    fun aLinkLostDuringTheScanKeepsThePartialResultAndTheScanResumesFromItsLastStage() = runTest(timeout = 240.seconds) {
+        val run = start()
+        elapse(15.seconds)
+        assertTrue(run.session.startScan())
+        elapse(90.seconds)
+        assertIs<ScanState.Running>(run.session.scan.value)
+        run.adapter().disconnect()
+        elapse(30.seconds)
+        val lost = assertIs<ScanState.Finished>(run.session.scan.value)
+        assertEquals(ScanOutcome.LINK_LOST, lost.result.outcome)
+        assertEquals("link lost", lost.result.detail)
+        assertTrue(lost.result.resumable)
+        assertTrue(lost.result.ecus.isNotEmpty(), "what it found so far is kept")
+        assertIs<SessionState.Polling>(run.session.state.value)
+
+        assertTrue(run.session.resumeScan())
+        val done = untilScanSettles(run).result
+        assertEquals(ScanOutcome.COMPLETED, done.outcome, done.detail)
+        assertEquals(listOf("probe", "readiness", "discovery", "identification", "faults", "sweep"), done.stagesDone)
+        assertEquals(8, done.ecus.size)
+        assertTrue(done.durationMs > lost.result.durationMs)
+        run.session.stop()
+    }
+
+    @Test
+    fun aSessionWithNothingToResumeRefusesToResume() = runTest {
+        val run = start()
+        elapse(15.seconds)
+        assertFalse(run.session.resumeScan())
+        run.session.stop()
+    }
+
+    @Test
+    fun theProbeTheScanAndTheDiscoveryIdentifiersAreRestoredByANewSessionWithoutAnyVin() = runTest(timeout = 300.seconds) {
+        val store = knightlink.core.runtime.InMemoryVehicleMemoryStore()
+        val first = start(memory = store)
+        elapse(15.seconds)
+        assertTrue(first.session.startScan())
+        untilScanEnds(first)
+        elapse(5.seconds)
+        first.session.stop()
+        val vin = simulation.ecus.first { it.id == "ecm" }.vin!!
+        assertTrue(store.texts().isNotEmpty() && store.texts().none { vin in it }, "the memory holds no VIN")
+        val remembered = assertNotNull(store.lastKey()?.let(store::load))
+        assertEquals(ScanOutcome.COMPLETED, remembered.scan?.outcome)
+
+        // A new session, as after an app restart: no probe, the discovery identifiers are polled at once, without a scan.
+        val second = start(memory = store)
+        val states = ArrayList<SessionState>()
+        backgroundScope.launch { second.session.state.collect { states += it } }
+        elapse(60.seconds)
+        assertTrue(states.none { it is SessionState.Probing }, "the remembered probe was reused: $states")
+        assertIs<SessionState.Polling>(second.session.state.value)
+        assertEquals(ScanState.Idle, second.session.scan.value, "a completed scan is not shown again")
+        val polled = second.adapter().received.map { it.filterNot(Char::isWhitespace).uppercase() }
+        assertTrue(polled.any { it.startsWith("221E12") } && polled.any { it.startsWith("22E011") }, "discovery polling survived: ${polled.take(30)}")
+        assertTrue(polled.none { it.startsWith("22F4") }, "F4xx identifiers mirror Mode 01 PIDs and are not polled")
+        second.session.stop()
+    }
+
+    @Test
+    fun aVehicleThatDoesNotAnswerTheCheapProbeAsRememberedIsProbedInFull() = runTest(timeout = 120.seconds) {
+        val store = knightlink.core.runtime.InMemoryVehicleMemoryStore()
+        val first = start(memory = store)
+        elapse(15.seconds)
+        first.session.stop()
+        assertNotNull(store.lastKey())
+        val states = ArrayList<SessionState>()
+        val second = start(memory = store, onVehicle = { it.ecu(0x7E0).remove("0105") })
+        backgroundScope.launch { second.session.state.collect { states += it } }
+        elapse(30.seconds)
+        assertTrue(states.any { it is SessionState.Probing }, "a changed vehicle is probed again: $states")
+        second.session.stop()
+    }
+
+    @Test
+    fun aCancelledScanIsRestoredByANewSessionAndCanBeResumedThere() = runTest(timeout = 300.seconds) {
+        val store = knightlink.core.runtime.InMemoryVehicleMemoryStore()
+        val first = start(memory = store)
+        elapse(15.seconds)
+        assertTrue(first.session.startScan())
+        elapse(90.seconds)
+        first.session.cancelScan()
+        elapse(10.seconds)
+        assertEquals(ScanOutcome.CANCELLED, assertIs<ScanState.Finished>(first.session.scan.value).result.outcome)
+        first.session.stop()
+
+        val second = start(memory = store)
+        elapse(20.seconds)
+        val restored = assertIs<ScanState.Finished>(second.session.scan.value)
+        assertTrue(restored.restored && restored.result.resumable)
+        assertTrue(second.session.resumeScan())
+        val done = untilScanSettles(second).result
+        assertEquals(ScanOutcome.COMPLETED, done.outcome, done.detail)
+        second.session.stop()
+    }
+
     @Test
     fun aSessionWithoutAPlanCannotScan() = runTest {
         val run = start(withPlan = false)
@@ -268,7 +382,7 @@ class FullScanSessionTest {
     @Test
     fun aCarThatMovesPausesTheScanWhilePollingContinuesAndItResumesWhenParkedAgain() = runTest(timeout = 240.seconds) {
         lateinit var vehicle: knightlink.core.sim.VirtualVehicle
-        val run = start { vehicle = it }
+        val run = start(onVehicle = { vehicle = it })
         elapse(15.seconds)
         assertTrue(run.session.startScan())
         elapse(60.seconds)

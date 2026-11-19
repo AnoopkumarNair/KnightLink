@@ -1,5 +1,6 @@
 package knightlink.app.session
 
+import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
 import knightlink.core.signals.SignalValue
 import knightlink.core.telemetry.Reading
@@ -40,6 +41,7 @@ class UiStateTest {
         assertEquals(ConnectionStatus.Live, SessionState.Polling(report(), coverage()).toStatus())
         assertEquals(ConnectionStatus.WaitingForIgnition(3, busFault = false), SessionState.WaitingForIgnition(3, null).toStatus())
         assertEquals(ConnectionStatus.WaitingForIgnition(1, busFault = true), SessionState.WaitingForIgnition(1, "CAN_ERROR").toStatus())
+        assertEquals(ConnectionStatus.VehicleAsleep(4), SessionState.VehicleAsleep(4).toStatus())
         assertEquals(ConnectionStatus.Recovering(2, "nothing answered"), SessionState.Recovering(2, "nothing answered").toStatus())
     }
 
@@ -191,4 +193,14 @@ class UiStateTest {
         missing = listOf(MissingParameter("7A", null, listOf("dpf.a", "dpf.b"))),
         unmapped = listOf(UnmappedPids("7E1", listOf("05", "0D"))),
     )
+
+    @Test
+    fun aScanThatLostTheLinkIsShownAsResumableAndACompletedOneIsNot() {
+        val lost = knightlink.core.scan.ScanResult(outcome = knightlink.core.scan.ScanOutcome.LINK_LOST, detail = "link lost")
+        val shown = ScanState.Finished(lost).toStatus() as ScanStatus.Finished
+        assertEquals(knightlink.core.scan.ScanOutcome.LINK_LOST, shown.outcome)
+        assertEquals(true, shown.resumable)
+        val done = ScanState.Finished(knightlink.core.scan.ScanResult(outcome = knightlink.core.scan.ScanOutcome.COMPLETED)).toStatus() as ScanStatus.Finished
+        assertEquals(false, done.resumable)
+    }
 }

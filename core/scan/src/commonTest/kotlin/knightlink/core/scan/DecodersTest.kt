@@ -142,6 +142,21 @@ class DecodersTest {
     }
 
     @Test
+    fun limitsWithTheMinimumAboveTheMaximumAreSignedAndJudgedThatWay() {
+        // Limits -200..200 (FF38..00C8): a value of 5 passes, a value of -250 (FF06) fails, a value of 300 fails.
+        val data = "01800B0005FF3800C8" + "01810B" + "FF06FF3800C8" + "01820B012CFF3800C8"
+        val tests = Mode06Decoder.results(data).single().tests
+        assertEquals(TestResult("80", "0B", 5, -200, 200, true, signed = true), tests[0])
+        assertEquals(-250, tests[1].value)
+        assertFalse(tests[1].withinLimits)
+        assertFalse(tests[2].withinLimits)
+        // Ordinary unsigned limits are unchanged, and a high value that is within them still passes.
+        val plain = Mode06Decoder.results("01800B" + "C350" + "0000" + "FFFF").single().tests.single()
+        assertEquals(false, plain.signed)
+        assertEquals(true, plain.withinLimits)
+    }
+
+    @Test
     fun aReplyThatRepeatsTheMonitorIdOnlyOnceIsReadToo() {
         val results = Mode06Decoder.results("01" + "800B01230000FFFF" + "810B00500000FFFF").let { it }
         assertEquals(2, results.single().tests.size)

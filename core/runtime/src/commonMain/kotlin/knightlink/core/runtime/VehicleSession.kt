@@ -6,6 +6,7 @@ import knightlink.core.adapter.Elm327Driver
 import knightlink.core.common.SessionEventSink
 import knightlink.core.common.SessionEvents
 import knightlink.core.common.emit
+import knightlink.core.common.toHex
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmStatus
 import knightlink.core.scan.DidSweepPlan
@@ -19,6 +20,8 @@ import knightlink.core.scheduler.PollingLoop
 import knightlink.core.scheduler.PollingStalledException
 import knightlink.core.signals.CompiledParameter
 import knightlink.core.signals.SignalCatalog
+import knightlink.core.signals.SignalValue
+import knightlink.core.telemetry.Reading
 import knightlink.core.telemetry.TelemetryDecoder
 import knightlink.core.telemetry.TelemetrySnapshot
 import knightlink.core.transport.ByteStream
@@ -27,6 +30,7 @@ import knightlink.core.transport.TransportException
 import knightlink.core.vehicle.CapabilityProbe
 import knightlink.core.vehicle.CapabilityReport
 import knightlink.core.vehicle.DefinitionCoverage
+import knightlink.core.vehicle.stillMatches
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -147,6 +151,14 @@ public class VehicleSession(
         val scan: FullScan.Config = FullScan.Config(),
         /** While a scan waits for a car that moves, the session polls normally for this long between two readings of the speed. */
         val scanPauseSlice: Duration = 5.seconds,
+        /** Where what is learned about a vehicle is kept between sessions (probe, scan, discovery identifiers, gear); null remembers nothing. */
+        val memory: VehicleMemoryStore? = null,
+        /** Every ECU answering NO DATA for this long means the ignition is off: polling stops ([SessionState.VehicleAsleep]). */
+        val asleepAfter: Duration = 3.seconds,
+        /** While the vehicle sleeps, one `01 00` is sent this often to find out when it wakes. */
+        val asleepProbeInterval: Duration = 10.seconds,
+        /** Whether the calculated gear (`transmission.gear_calc`) is worked out and published with the telemetry. */
+        val gearCalc: Boolean = true,
     ) {
         init {
             require(maxBatch in 1..PollScheduler.MAX_BATCH) { "maxBatch must be 1..${PollScheduler.MAX_BATCH}" }
@@ -160,6 +172,8 @@ public class VehicleSession(
             require(incompleteProbeRetries >= 0) { "incompleteProbeRetries must not be negative" }
             require(incompleteProbeInterval > Duration.ZERO) { "incompleteProbeInterval must be positive" }
             require(scanPauseSlice > Duration.ZERO) { "scanPauseSlice must be positive" }
+            require(asleepAfter > Duration.ZERO) { "asleepAfter must be positive" }
+            require(asleepProbeInterval > Duration.ZERO) { "asleepProbeInterval must be positive" }
         }
     }
 
@@ -200,8 +214,35 @@ public class VehicleSession(
     @Volatile
     private var scanJob: Deferred<*>? = null
 
+    /** Set by [stop]: a scan cut short then was stopped, not cut off by the link. */
+    @Volatile
+    private var stopping = false
+
     /** The data identifiers the last scan found, polled raw from then on; kept across reconnects, like [knowledge]. */
     private var discoveryItems: List<PollItem> = emptyList()
+    private var discoveryIds: Set<String> = emptySet()
+
+    // What is remembered about the vehicle between sessions (see [Config.memory]); only the session coroutine and the poll collector touch it.
+    private var vehicleKey: String? = null
+    private var memoryProbe: CapabilityReport? = null
+    private var lastScan: knightlink.core.scan.ScanResult? = null
+    private val history = LinkedHashMap<String, DidHistory>()
+    private var gear = GearEstimator()
+    private var gearRevisionSaved = 0
+
+    @Volatile
+    private var memoryDirty = false
+
+    @Volatile
+    private var activeScheduler: PollScheduler? = null
+
+    /** The part-way result a resumed scan carries on from; set by [resumeScan]. */
+    @Volatile
+    private var resumeFrom: knightlink.core.scan.ScanResult? = null
+
+    /** Since when every answer was a clean NO DATA (the car is asleep), null while anything else was seen. */
+    @Volatile
+    private var noDataSince: TimeMark? = null
 
     /** Where the session is in its life. */
     public val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -253,6 +294,18 @@ public class VehicleSession(
         return scanRequests.trySend(Unit).isSuccess
     }
 
+    /**
+     * Carries on a scan that ended part-way (the link was lost, or it was cancelled) from its last completed stage, keeping what it found. Needs the
+     * part-way result in [scan] (it is restored from the vehicle's memory after a restart too).
+     *
+     * @return false, and does nothing, when there is no such result or a scan cannot start now (see [startScan])
+     */
+    public fun resumeScan(): Boolean {
+        val earlier = (_scan.value as? ScanState.Finished)?.result?.takeIf { it.resumable } ?: return false
+        resumeFrom = earlier
+        return startScan().also { if (!it) resumeFrom = null }
+    }
+
     /** Stops a running scan (or withdraws a request that has not started); polling goes on. The scan's partial result is kept in [scan]. Does nothing otherwise. */
     public fun cancelScan() {
         if (_scan.value is ScanState.Starting) {
@@ -274,6 +327,7 @@ public class VehicleSession(
      * before [start] and more than once. Completes even if the caller's own coroutine is cancelled meanwhile.
      */
     public suspend fun stop() {
+        stopping = true
         withContext(NonCancellable) {
             main.cancelAndJoin()
             _state.value = SessionState.Stopped
@@ -287,7 +341,10 @@ public class VehicleSession(
         } catch (e: CancellationException) {
             _state.value = SessionState.Stopped
             // The scope is being cancelled, so this must not be cancellable: the reason a session ended is what a log is for.
-            withContext(NonCancellable) { note(SessionEvents.END, "the session was stopped") }
+            withContext(NonCancellable) {
+                saveMemory()
+                note(SessionEvents.END, "the session was stopped")
+            }
             throw e
         } catch (e: Exception) {
             // A bug, not a connection problem (those are handled per connection). Show it in the state, then let it reach the scope.
@@ -386,13 +443,14 @@ public class VehicleSession(
         val pollingScript = initScript + config.pollScript
         driver.initialize(if (cached == null) initScript + config.probeScript else pollingScript)
 
-        val known = cached ?: probeUntilVehicleAnswers(driver).also {
+        val known = cached ?: restoreStored(driver) ?: probeUntilVehicleAnswers(driver).also {
             // The probe's timing is done with; polling runs with the definition's own, and a re-init must restore that, not the probe's.
             if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty()) driver.applyScript(pollingScript, send = config.pollScript)
         }
         val items = confirmedPollItems(catalog, known.coverage, primaryEcu, config.pollPeriod)
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
         val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(discoveryItems) }
+        activeScheduler = scheduler
         val loop = PollingLoop(requester, scheduler, timeSource)
         val decoder = TelemetryDecoder(catalog)
 
@@ -401,6 +459,111 @@ public class VehicleSession(
         // With nothing to ask for, silence means nothing: initialising the adapter again would only disturb a link that works.
         // Items that are asked once leave nothing to watch after the first round.
         pollWithRecovery(driver, loop, scheduler, decoder, known, watchSilence = items.any { it.period.isFinite() })
+    }
+
+    // What is remembered between sessions -------------------------------------------------------------------
+
+    /**
+     * The probe of the vehicle remembered last, when every ECU in it still answers `01 00` with the same bitmap (a cheap check that it is the same
+     * vehicle in the same state); null when there is none or it does not match, and the full probe runs. Restores that vehicle's scan, discovery
+     * identifiers and learned gear too.
+     */
+    private suspend fun restoreStored(driver: Elm327Driver): Knowledge? {
+        val store = config.memory ?: return null
+        if (config.reprobeOnReconnect) return null
+        val stored = store.lastKey()?.let { store.load(it) } ?: return null
+        if (!stored.probe.stillMatches(driver)) {
+            note(SessionEvents.MEMORY, "the remembered probe was not reused: the vehicle did not answer 01 00 as remembered")
+            return null
+        }
+        adopt(stored)
+        val reused = Knowledge(stored.probe, DefinitionCoverage.compare(stored.probe, catalog))
+        knowledge = reused
+        note(SessionEvents.PROBE_RESULT, "reused the remembered probe (01 00 matched on every ECU): ${summarise(stored.probe)}")
+        note(SessionEvents.MEMORY, "restored ${discoveryItems.size} discovery identifiers, ${stored.gear.clusters.size} gear ratios")
+        return reused
+    }
+
+    /** Takes over what [stored] remembers about its vehicle. */
+    private fun adopt(stored: VehicleMemory) {
+        vehicleKey = stored.key
+        memoryProbe = stored.probe
+        lastScan = stored.scan
+        history.clear()
+        history.putAll(stored.discovery)
+        gear = GearEstimator(stored.gear)
+        gearRevisionSaved = gear.revision
+        rebuildDiscovery()
+        val partial = stored.scan?.takeIf { it.resumable }
+        if (partial != null && _scan.value == ScanState.Idle) _scan.value = ScanState.Finished(partial, restored = true)
+    }
+
+    /** After a full probe: this vehicle becomes the remembered one (its earlier memory is loaded when there is one), and the probe is saved. */
+    private fun rememberFresh(report: CapabilityReport) {
+        val store = config.memory ?: return
+        val key = VehicleKey.of(report, store.salt) ?: return
+        if (key != vehicleKey) {
+            val earlier = store.load(key)
+            if (earlier != null) {
+                adopt(earlier)
+            } else {
+                vehicleKey = key
+                lastScan = null
+                history.clear()
+                gear = GearEstimator()
+                gearRevisionSaved = 0
+                rebuildDiscovery()
+            }
+        }
+        memoryProbe = report.redacted()
+        memoryDirty = true
+        saveMemory()
+    }
+
+    private fun constantIds(): Set<String> = history.filterValues { it.constant }.keys
+
+    private fun rebuildDiscovery() {
+        val plan = config.scanPlan
+        val scan = lastScan
+        discoveryItems = if (plan != null && scan != null && scan.sweeps.isNotEmpty()) discoveryPollItems(scan, plan, constantIds()) else emptyList()
+        discoveryIds = discoveryItems.map { it.id }.toSet()
+    }
+
+    /** Writes the memory when there is a vehicle to remember and something changed. Never throws: a full disk costs the memory, not the session. */
+    private fun saveMemory() {
+        val store = config.memory ?: return
+        val key = vehicleKey ?: return
+        val probe = memoryProbe ?: return
+        if (!memoryDirty) return
+        try {
+            store.save(VehicleMemory(key = key, probe = probe, scan = lastScan, discovery = history.toMap(), gear = gear.model))
+            memoryDirty = false
+        } catch (_: Exception) {
+            // Remembering is a convenience.
+        }
+    }
+
+    /**
+     * Notes the value of a discovery item that answered. A value that differs from the one before marks the item as changing for good; an item
+     * that was asked once because it never changed then goes back to the slow period.
+     */
+    private fun observeDiscovery(result: PollResult) {
+        val id = result.item.id
+        if (id !in discoveryIds) return
+        val positive = result.response?.messages?.filterIsInstance<DiagnosticResponse.Positive>()
+            ?.firstOrNull { it.service == SERVICE_READ_DATA && it.data.size >= 2 } ?: return
+        val hex = positive.data.copyOfRange(2, positive.data.size).toHex()
+        val old = history[id]
+        val updated = when {
+            old == null -> DidHistory(1, hex, false)
+            else -> DidHistory((old.samples + 1).coerceAtMost(MAX_SAMPLES), hex, old.changed || old.lastHex != hex)
+        }
+        history[id] = updated
+        memoryDirty = true
+        if (old != null && old.constant && updated.changed) {
+            rebuildDiscovery()
+            activeScheduler?.replaceExtras(discoveryItems)
+        }
     }
 
     /**
@@ -427,7 +590,12 @@ public class VehicleSession(
                 if (best == null || report.pidCount() >= best.pidCount()) best = report
                 if (complete || incomplete >= config.incompleteProbeRetries) {
                     val chosen = best
-                    return Knowledge(chosen, DefinitionCoverage.compare(chosen, catalog)).also { if (complete && chosen === report) knowledge = it }
+                    return Knowledge(chosen, DefinitionCoverage.compare(chosen, catalog)).also {
+                        if (complete && chosen === report) {
+                            knowledge = it
+                            rememberFresh(report)
+                        }
+                    }
                 }
                 incomplete++
                 note(SessionEvents.PROBE_INCOMPLETE, "probe $probes: asking again ($incomplete of ${config.incompleteProbeRetries})")
@@ -463,6 +631,12 @@ public class VehicleSession(
                 lastAnswer = timeSource.markNow()
                 continue
             }
+            if (end is PollEnd.Asleep) {
+                waitForWake(driver, known)
+                lastAnswer = timeSource.markNow()
+                setState(SessionState.Polling(known.report, known.coverage))
+                continue
+            }
             val trouble = (end as? PollEnd.Trouble)?.reason ?: continue
             // Something answered since the last re-initialisation: that outage is over, this is a new one.
             if (answers > answersBefore) failedReinits = 0
@@ -490,7 +664,8 @@ public class VehicleSession(
             plan = plan,
             events = events,
             timeSource = timeSource,
-            config = config.scan,
+            config = config.scan.copy(isLinkLoss = { it is AdapterDisconnectedException || it is TransportException }),
+            resume = resumeFrom.also { resumeFrom = null },
             whileMoving = { _ ->
                 // Polling is what the car is for while it moves; a stretch of it, then the scan looks at the speed again. Trouble found here is
                 // met by the ordinary recovery when the scan has ended, so it is not handled in this hook.
@@ -515,15 +690,18 @@ public class VehicleSession(
                 }
             }
         } catch (e: CancellationException) {
+            // The whole connection ended under the scan: the adapter's link was lost (or the session is being stopped). The scan has published what it
+            // found; it stays on the screen, and after a lost link it says so.
+            withContext(NonCancellable) { keepPartialScan(scan, linkLost = !stopping) }
             throw e
         } catch (e: ScanRefusedException) {
             _scan.value = ScanState.Failed(e.message ?: "The scan was refused")
             return
         } catch (e: AdapterDisconnectedException) {
-            _scan.value = ScanState.Failed("The link was lost during the scan")
+            keepPartialScan(scan)
             throw e
         } catch (e: TransportException) {
-            _scan.value = ScanState.Failed("The link was lost during the scan")
+            keepPartialScan(scan)
             throw e
         } catch (e: Exception) {
             // The adapter stopped answering, say: what the scan found so far is in its result; polling goes on and the silence watchdog judges the link.
@@ -535,11 +713,64 @@ public class VehicleSession(
             return
         }
         _scan.value = ScanState.Finished(result)
+        lastScan = result
+        memoryDirty = true
         if (result.sweeps.isNotEmpty()) {
-            discoveryItems = discoveryPollItems(result, plan)
+            rebuildDiscovery()
             scheduler.replaceExtras(discoveryItems)
-            note(SessionEvents.SCAN, "polling ${discoveryItems.size} identifiers that the scan found, raw, about every ${discoveryPeriod(discoveryItems.size)}")
+            note(
+                SessionEvents.SCAN,
+                "polling ${discoveryItems.size} identifiers that the scan found, raw, about every ${discoveryPeriod(discoveryItems.size)} " +
+                    "(${constantIds().count { it in discoveryIds }} of them only once: their value never changed)",
+            )
         }
+        saveMemory()
+    }
+
+    /** The link went during the scan: what it found so far stays on the screen, marked as lost, and can be resumed after the reconnect. */
+    private fun keepPartialScan(scan: FullScan, linkLost: Boolean = true) {
+        var partial = scan.result.value
+        if (partial == null) {
+            _scan.value = ScanState.Failed("The link was lost during the scan")
+            return
+        }
+        if (linkLost && partial.outcome == knightlink.core.scan.ScanOutcome.CANCELLED) {
+            partial = partial.copy(outcome = knightlink.core.scan.ScanOutcome.LINK_LOST, detail = "link lost")
+        }
+        _scan.value = ScanState.Finished(partial)
+        lastScan = partial
+        memoryDirty = true
+        saveMemory()
+    }
+
+    /**
+     * The ignition is off: nothing is polled. One `01 00` goes to the ECUs every [Config.asleepProbeInterval], and this returns when one answers
+     * (the car woke up). A request that fails is no answer; a lost link ends the session's connection as it always does.
+     */
+    private suspend fun waitForWake(driver: Elm327Driver, known: Knowledge) {
+        var checks = 0
+        setState(SessionState.VehicleAsleep(checks))
+        note(
+            SessionEvents.ASLEEP,
+            "every ECU answered NO DATA for ${config.asleepAfter}: the ignition is off; polling paused, asking 01 00 every ${config.asleepProbeInterval}",
+        )
+        while (true) {
+            delay(config.asleepProbeInterval)
+            val awake = known.report.ecus.any { ecu ->
+                try {
+                    driver.request(ecu.requestCanId, byteArrayOf(SERVICE_LIVE_DATA, 0x00), 1).messages
+                        .any { it is DiagnosticResponse.Positive && it.service == SERVICE_LIVE_DATA.toInt() && it.sourceId == ecu.responseCanId }
+                } catch (e: AdapterDisconnectedException) {
+                    throw e
+                } catch (e: AdapterException) {
+                    false
+                }
+            }
+            if (awake) break
+            checks++
+            setState(SessionState.VehicleAsleep(checks))
+        }
+        note(SessionEvents.ASLEEP, "the vehicle answers again after $checks unanswered checks; polling resumes")
     }
 
     /**
@@ -581,6 +812,9 @@ public class VehicleSession(
 
         /** The time limit that the caller gave passed. */
         data object TimeUp : PollEnd
+
+        /** Every answer was NO DATA for [Config.asleepAfter]: the ignition is off. */
+        data object Asleep : PollEnd
     }
 
     /**
@@ -613,6 +847,7 @@ public class VehicleSession(
                         _rates.value = meter.rates(now, RATES_WINDOW)
                         if (now - ratesLogged >= RATES_LOG_INTERVAL) {
                             ratesLogged = now
+                            saveMemory()
                             note(
                                 SessionEvents.RATES,
                                 meter.rates(now, RATES_LOG_INTERVAL).summary(
@@ -628,17 +863,20 @@ public class VehicleSession(
                 trouble.complete(PollEnd.Trouble(unreachableOr("the adapter failed ${e.failures} requests in a row")))
             }
         }
-        val watchdog = if (!watchSilence) {
-            null
-        } else {
-            launch {
-                while (true) {
-                    delay(WATCHDOG_TICK)
-                    val quiet = lastAnswer?.elapsedNow() ?: Duration.ZERO
-                    if (quiet >= config.silenceWindow) {
-                        trouble.complete(PollEnd.Trouble(unreachableOr("nothing answered for ${config.silenceWindow}")))
-                        return@launch
-                    }
+        noDataSince = null
+        val watchdog = launch {
+            while (true) {
+                delay(WATCHDOG_TICK)
+                val quiet = lastAnswer?.elapsedNow() ?: Duration.ZERO
+                // A car that answers NO DATA to everything is asleep, not broken: wait for it instead of initialising the adapter again.
+                val allNoData = noDataSince?.elapsedNow() ?: Duration.ZERO
+                if (allNoData >= config.asleepAfter && quiet >= config.asleepAfter && watchSilence) {
+                    trouble.complete(PollEnd.Asleep)
+                    return@launch
+                }
+                if (watchSilence && quiet >= config.silenceWindow) {
+                    trouble.complete(PollEnd.Trouble(unreachableOr("nothing answered for ${config.silenceWindow}")))
+                    return@launch
                 }
             }
         }
@@ -660,7 +898,7 @@ public class VehicleSession(
         }
         val reason = trouble.await()
         collector.cancelAndJoin()
-        watchdog?.cancelAndJoin()
+        watchdog.cancelAndJoin()
         scanWatcher?.cancelAndJoin()
         timer?.cancelAndJoin()
         reason
@@ -680,6 +918,12 @@ public class VehicleSession(
         // The link is gone: reconnect now instead of letting the loop count to its failure limit first.
         if (error is AdapterDisconnectedException || error is TransportException) throw error
         result.busFault?.let { busFaultSinceAnswer = it }
+        when {
+            result.answered -> noDataSince = null
+            isCleanNoData(result) -> if (noDataSince == null) noDataSince = timeSource.markNow()
+            else -> noDataSince = null
+        }
+        observeDiscovery(result)
         if (result.answered) {
             lastAnswer = timeSource.markNow()
             answers++
@@ -692,6 +936,32 @@ public class VehicleSession(
             val at = sessionStart.elapsedNow()
             readings.forEach { meter.reading(it.signal.id, at) }
             _telemetry.update { it.with(readings, at) }
+            if (config.gearCalc && readings.any { it.signal.id == SIGNAL_RPM || it.signal.id == SIGNAL_SPEED }) publishGear(at)
+        }
+    }
+
+    /** NO DATA from the adapter and nothing else: no frame, no bus fault, no failure. The sign of an ECU that is asleep. */
+    private fun isCleanNoData(result: PollResult): Boolean {
+        val response = result.response ?: return false
+        return result.error == null &&
+            response.messages.isEmpty() &&
+            response.respondingIds.isEmpty() &&
+            response.busFault == null &&
+            ElmStatus.NO_DATA in response.statuses
+    }
+
+    /** The calculated gear from the latest engine speed and vehicle speed, when both are fresh; otherwise unknown. */
+    private fun publishGear(at: Duration) {
+        val snapshot = _telemetry.value
+        val rpm = snapshot.reading(SIGNAL_RPM)
+        val speed = snapshot.reading(SIGNAL_SPEED)
+        if (rpm == null || speed == null) return
+        val fresh = at - rpm.at <= GEAR_MAX_AGE && at - speed.at <= GEAR_MAX_AGE
+        val value = if (fresh) gear.update(at.inWholeMilliseconds, rpm.reading.signal.value, speed.reading.signal.value) else GearEstimator.UNKNOWN
+        _telemetry.update { it.with(listOf(Reading(null, SignalValue(GearEstimator.SIGNAL_ID, value.toDouble(), GearEstimator.UNIT))), at) }
+        if (gear.revision != gearRevisionSaved) {
+            gearRevisionSaved = gear.revision
+            memoryDirty = true
         }
     }
 
@@ -708,6 +978,7 @@ public class VehicleSession(
         is SessionState.Probing -> "Probing, ${state.stage.name}"
         is SessionState.WaitingForIgnition ->
             "WaitingForIgnition, probe ${state.probes} found no ECU" + (state.busFault?.let { ", the adapter said $it" } ?: "")
+        is SessionState.VehicleAsleep -> "VehicleAsleep, ignition off, ${state.checks} wake-up checks unanswered"
         is SessionState.Polling -> "Polling, ${state.report.ecus.size} ECUs, ${state.coverage.confirmed.size} confirmed parameters"
         is SessionState.Recovering -> "Recovering, attempt ${state.attempt}: ${state.reason}"
         is SessionState.Reconnecting -> "Reconnecting, attempt ${state.attempt} in ${state.retryIn}: ${state.cause}"
@@ -769,6 +1040,14 @@ public class VehicleSession(
 
     private companion object {
         const val POLL_RESULT_BUFFER = 64
+        const val SERVICE_LIVE_DATA: Byte = 0x01
+        const val SERVICE_READ_DATA = 0x22
+        const val SIGNAL_RPM = "engine.rpm"
+        const val SIGNAL_SPEED = "vehicle.speed"
+        const val MAX_SAMPLES = 1_000_000
+
+        /** Engine speed and vehicle speed are read a few hundred milliseconds apart; older than this and the pair says nothing about the gear. */
+        val GEAR_MAX_AGE: Duration = 1.seconds
 
         /** How often the silence watchdog looks at the clock. */
         val WATCHDOG_TICK: Duration = 250.milliseconds

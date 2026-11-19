@@ -19,6 +19,8 @@ data class AppConfig(
     val adapterDefinition: String,
     /** Simulation scenario the demo mode plays, e.g. `sim/<name>`. */
     val demoScenario: String,
+    /** Theme pack (colours and visualiser style of the speaking screen), e.g. `themes/<name>`. */
+    val themePack: String = DEFAULT_THEME_PACK,
     /**
      * Tyre sensor definitions (`tpms/<brand>`) whose company ids are listened for during a session; every payload heard is shown read with
      * each of them, side by side, until a capture says which layout the car's sensors use. Empty for no capture.
@@ -28,6 +30,7 @@ data class AppConfig(
     companion object {
         const val PATH = "app-config.json"
         const val SUPPORTED_SCHEMA_VERSION = 1
+        const val DEFAULT_THEME_PACK = "themes/ember"
 
         // Strict, like every other data file of the project: an unknown key is a typo or a newer schema.
         private val json = Json { ignoreUnknownKeys = false }

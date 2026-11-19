@@ -77,8 +77,10 @@ public data class MonitorStatus(
 
 /**
  * One on-board test from service 06: its identifier, the unit and scaling it reports in, the value and the limits, as raw numbers.
- * [withinLimits] is the unsigned comparison of the three; the scaling identifier says how to turn the numbers into a physical value, which
- * this scan does not do.
+ * [withinLimits] compares the three: unsigned, except when the minimum is above the maximum, which is how a test with signed limits shows
+ * up (a minimum of 0xFF38 and a maximum of 0x00C8 are -200 and 200); then all three are read as signed 16-bit numbers, [signed] is true and
+ * [value], [min] and [max] hold the signed numbers. The scaling identifier says how to turn the numbers into a physical value, which this scan
+ * does not do.
  */
 @Serializable
 public data class TestResult(
@@ -88,6 +90,8 @@ public data class TestResult(
     val min: Int,
     val max: Int,
     val withinLimits: Boolean,
+    /** True when the limits were signed 16-bit (the minimum was above the maximum as unsigned numbers). */
+    val signed: Boolean = false,
 )
 
 /** The tests of one on-board monitoring identifier (MID) of service 06. */
@@ -113,9 +117,16 @@ public object Mode06Decoder {
 
     private fun block(data: ByteArray, mid: Int, testAt: Int): Pair<Int, TestResult> {
         fun word(at: Int) = ((data[at].toInt() and 0xFF) shl 8) or (data[at + 1].toInt() and 0xFF)
-        val value = word(testAt + 2)
-        val min = word(testAt + 4)
-        val max = word(testAt + 6)
+        var value = word(testAt + 2)
+        var min = word(testAt + 4)
+        var max = word(testAt + 6)
+        // A minimum above the maximum is only possible with signed limits: read all three as 16-bit two's complement.
+        val signed = min > max
+        if (signed) {
+            value = value.toShort().toInt()
+            min = min.toShort().toInt()
+            max = max.toShort().toInt()
+        }
         return mid to TestResult(
             testId = hex(data[testAt].toInt() and 0xFF),
             scaling = hex(data[testAt + 1].toInt() and 0xFF),
@@ -123,6 +134,7 @@ public object Mode06Decoder {
             min = min,
             max = max,
             withinLimits = value in min..max,
+            signed = signed,
         )
     }
 

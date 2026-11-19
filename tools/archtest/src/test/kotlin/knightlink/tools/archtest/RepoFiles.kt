@@ -11,8 +11,13 @@ object RepoFiles {
         ).also { check(it.isDirectory) { "Repo root does not exist: $it" } }
 
     /** Every core module directory, e.g. `core/protocol`. */
-    fun coreModules(): List<File> =
-        File(root, "core")
+    fun coreModules(): List<File> = modulesIn("core")
+
+    /** Every voice module directory, e.g. `voice/api`. */
+    fun voiceModules(): List<File> = modulesIn("voice")
+
+    private fun modulesIn(group: String): List<File> =
+        File(root, group)
             .listFiles { f -> f.isDirectory && File(f, "build.gradle.kts").isFile }
             .orEmpty()
             .sortedBy { it.name }

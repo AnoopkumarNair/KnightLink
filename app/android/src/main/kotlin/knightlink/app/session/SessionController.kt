@@ -226,6 +226,14 @@ class SessionController(
         return accepted
     }
 
+    /** Resumes an interrupted scan from its last completed stage; false when there is none to resume. */
+    fun resumeFullScan(): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        val accepted = session.resumeScan()
+        connectionLog?.app("full scan resume requested: ${if (accepted) "resumed" else "not possible now"}")
+        return accepted
+    }
+
     /** Stops a running full scan; polling goes on. */
     fun cancelFullScan() {
         synchronized(lock) { current }?.session?.cancelScan()

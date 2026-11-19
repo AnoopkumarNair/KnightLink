@@ -147,6 +147,22 @@ class ScanCommandsTest {
     }
 
     @Test
+    fun theLastCompletedScanIsPreferredToALaterCancelledOne() {
+        val done = result()
+        val lost = done.copy(outcome = ScanOutcome.LINK_LOST, detail = "link lost", stagesDone = listOf("probe"))
+        val events = listOf(
+            RecordingEvent.open(0),
+            RecordingEvent.event(500, SessionEvents.SCAN_RESULT + ": " + done.toJson()),
+            RecordingEvent.event(900, SessionEvents.SCAN_RESULT + ": " + lost.toJson()),
+        )
+        val recording = Recording(RecordingHeader(), events)
+        assertEquals(done, scanResultOf(recording))
+        assertEquals(listOf(done, lost), scanResultsIn(recording))
+        // With none completed, the last one of any kind.
+        assertEquals(lost, scanResultOf(Recording(RecordingHeader(), listOf(RecordingEvent.open(0), events[2]))))
+    }
+
+    @Test
     fun theResultIsFoundInTheRecordingsEventOrInTheFileBesideIt() {
         val event = RecordingEvent.event(500, SessionEvents.SCAN_RESULT + ": " + result().toJson())
         val inRecording = Recording(RecordingHeader(), listOf(RecordingEvent.open(0), event))

@@ -8,7 +8,15 @@ tasks.test {
     inputs
         .files(
             fileTree(rootDir) {
-                include("core/*/build.gradle.kts", "core/*/src/**/*.kt", "definitions/**/*.json", "fixtures/**/*.json", "fixtures/**/*.jsonl")
+                include(
+                    "core/*/build.gradle.kts",
+                    "core/*/src/**/*.kt",
+                    "voice/*/build.gradle.kts",
+                    "voice/*/src/**/*.kt",
+                    "definitions/**/*.json",
+                    "fixtures/**/*.json",
+                    "fixtures/**/*.jsonl",
+                )
             },
         ).withPropertyName("repositoryFiles")
         .withPathSensitivity(PathSensitivity.RELATIVE)

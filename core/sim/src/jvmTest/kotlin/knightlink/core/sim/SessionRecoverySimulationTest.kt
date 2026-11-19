@@ -123,7 +123,7 @@ class SessionRecoverySimulationTest {
 
     @Test
     fun aCarThatFallsSilentGetsTheAdapterInitialisedAgainTwiceAndThenTheLinkIsReopened() = runTest {
-        val rig = rig()
+        val rig = rig(base = VehicleSession.Config(asleepAfter = Duration.INFINITE))
         rig.session.start()
         run(10.seconds)
         assertIs<SessionState.Polling>(rig.session.state.value)
@@ -159,7 +159,7 @@ class SessionRecoverySimulationTest {
 
     @Test
     fun afterTheReconnectTheCarIsProbedAfreshAndASleepingCarKeepsTheLinkInWaitingForIgnition() = runTest {
-        val rig = rig()
+        val rig = rig(base = VehicleSession.Config(asleepAfter = Duration.INFINITE))
         rig.session.start()
         run(10.seconds)
         rig.vehicle.awake = false
@@ -181,7 +181,7 @@ class SessionRecoverySimulationTest {
 
     @Test
     fun aShortSilenceIsRecoveredByOneReinitialisationAndNothingIsReopened() = runTest {
-        val rig = rig()
+        val rig = rig(base = VehicleSession.Config(asleepAfter = Duration.INFINITE))
         rig.session.start()
         run(10.seconds)
 
@@ -200,6 +200,32 @@ class SessionRecoverySimulationTest {
         run(7.seconds)
         assertEquals(before + 1, rig.statesOf<SessionState.Recovering>().size)
         assertEquals(1, rig.statesOf<SessionState.Recovering>().last().attempt)
+    }
+
+    @Test
+    fun aCarThatAnswersNoDataEverywhereGoesToVehicleAsleepAndWakesUpWhenIgnitionReturns() = runTest {
+        val rig = rig()
+        rig.session.start()
+        run(10.seconds)
+        assertIs<SessionState.Polling>(rig.session.state.value)
+
+        // Ignition is switched off: car responds NO DATA
+        rig.vehicle.awake = false
+        run(4.seconds)
+        val asleep = assertIs<SessionState.VehicleAsleep>(rig.session.state.value)
+        assertEquals(0, asleep.checks)
+
+        run(10.seconds)
+        val asleepLater = assertIs<SessionState.VehicleAsleep>(rig.session.state.value)
+        assertTrue(asleepLater.checks > 0)
+        assertTrue(rig.statesOf<SessionState.Recovering>().isEmpty(), "never attempts adapter re-initialisation for sleeping car")
+        assertEquals(1, rig.simulated.opens, "link is never reopened for asleep vehicle")
+
+        // Ignition turned back on
+        rig.vehicle.awake = true
+        run(12.seconds)
+        assertIs<SessionState.Polling>(rig.session.state.value)
+        assertEquals(799.0, rig.session.telemetry.value.value("engine.rpm"))
     }
 
     @Test

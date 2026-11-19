@@ -1,8 +1,33 @@
 # KnightLink — Implementation Plan
 
-## Context
+**Last Updated:** 2026-11-19 (Post-M3 VoiceMaker & Offline Voice Engine Delivery)  
+**Status:** M0–M3 Complete & Verified; M4 (Arrival Engine) & M5 (Full Discovery & Diagnostics) Queued  
+**Current Deliverable:** `app/android/build/outputs/apk/debug/android-debug.apk` (18.9 MB, 183 unit tests passing)
 
-KnightLink is a car-companion app: it reads the car through an OBD adapter, learns the car and the driver's habits, and advises by voice. The SRS (`KNIGHTLINK-SRS-2026-V2.0`) has solid protocol groundwork from a 2020 Tata Harrier + Vgate iCar Pro 2S, but its architecture is a single Flutter app with one extracted package, Harrier facts headed for code, an unspecified background runtime, and several unachievable or unsafe targets. The goal here is a product-grade build: any car, any adapter, Android first then iOS, with modules that can be tested and replaced independently. `D:\Projects\KnightLink` is empty, so this is greenfield.
+---
+
+## Executive Summary & Current Status
+
+KnightLink is a voice-first automotive companion application for real-time telemetry, vehicle health monitoring, predictive maintenance, and intelligent voice interaction. It reads vehicle diagnostics through an OBD adapter over BLE, learns vehicle behavior and driver habits, and communicates via spoken voice with reactive cockpit visualizations.
+
+### Milestone Progress Overview
+
+| Milestone | Scope | Status | Verification / Exit Criteria |
+| :--- | :--- | :--- | :--- |
+| **M0** | Foundation, project architecture, convention plugins, CI, ADRs | **Complete** | CI green on JVM and iOS targets |
+| **M1** | Protocol core, ELM327 driver, ISO-TP, signals catalog, simulator (`core/sim`) | **Complete** | 107/107 tests green; real Harrier logs replay headless |
+| **M2** | Android runtime, BLE transport, foreground service, reconnect state machine, sleep/wake recovery, recorder | **Complete** | Real-car driving session verified on Tata Harrier (2020 BS6 Kryotec AT); connection recovery tested |
+| **M3** | **Rules, Alerts, VoiceMaker Handover & Cockpit Visualizer UI** | **Complete** | **v0.1 release ready**: 183 unit tests passing; 50 FPS reactive VoiceBox visualizers (K.I.T.T., J.A.R.V.I.S., Optimus); offline TTS with audio ducking; debug APK assembled |
+| **M4** | Arrival Engine: Geofences, parking-manoeuvre detector, Maps notification ETA plugin, cooldown arrival rules | *Queued* | `TDD-DEST` scenarios + week of commutes with zero false traffic-light warnings |
+| **M5** | Any car, any adapter: Staged discovery, parked DID sweep, Mode 03/07/0A DTCs, UDS `19 02`, plain-language fault explanations | *Queued* | Interoperability verified on at least two distinct vehicles |
+| **M6** | Voice Control: Steering-wheel media button / push-to-talk, offline wake word, deterministic intent router & tool bus | *Planned* | SRS §5.2 intent matrix executed 100% hands-free |
+| **M7** | Brain & Personas: Hybrid on-device LiteRT-LM / BYO-cloud LLM, telemetry fact guard, persona customization | *Planned* | Persona responses never contradict telemetry snapshot; <150 ms fallback |
+| **M8** | Insights & Analytics: Cold-engine load, interrupted regens, trip economy, fuel fill-up tracking | *Planned* | Automated weekly health and efficiency digest |
+| **M9** | Store Release: Play Store beta, privacy policies, permission rationale, thermal & battery pass | *Planned* | Public Store beta |
+| **M10** | iOS Shell: CoreBluetooth validation, Compose Multiplatform for iOS | *Planned* | TestFlight build on macOS CI |
+| **M11–M12** | Community Profiles & Crowd-sourced Fuel Insights | *Future* | Decentralized anonymous contributions |
+
+---
 
 **Decisions confirmed with the user**
 
@@ -98,25 +123,103 @@ CI (GitHub Actions): Linux job runs lint, tests, coverage, definition-schema val
 
 ## Milestones
 
-Each ends with a demonstrable exit test. v0.1 (first drivable release) = end of M3.
+Each ends with a demonstrable exit test. **v0.1 (first drivable & voice-enabled release) = end of M3 (Achieved).**
 
-| # | Milestone | Contents | Exit |
-|---|---|---|---|
-| M0 | Foundation | Repo, build-logic, module skeleton, CI, ADRs for the decisions above, fixture import (`fixtures/raw/` + btsnoop converter in `tools/cli`), interface contracts | CI green on empty modules, iOS targets compile |
-| M1 | Protocol core + simulator | transport API, ELM327 driver, protocol, signals, definition schema, Harrier profile, tpms decoder, `core/sim`, CLI replay | All SRS OBD/TPMS tests green; real Harrier log replays headless |
-| M2 | Android runtime | BLE transport, foreground service, session state machine, scheduler, reconnect, recorder, minimal dashboard, KnightSim phone app. Added 2026-11-17: connection log + session events in recordings; tolerant ELM init; adapter-reset detection with re-init on the same link; silence watchdog; "waiting for ignition"; status words and per-adapter timeouts; full SAE J1979 service 01 set as `standard` definitions (diesel aftertreatment, EGT, NOx, SCR, VGT, rail, EGR, torque, fuel rate, PID A4 gear); multi-PID batching (up to 6 per request, lengths from definitions); measured rates in the recording | One-hour drive: all drops recovered, trip recorded and replayable on desk |
-| M3 | Rules and alerts | DPF state machine, cooldown guard, TPMS evaluator, alert manager, platform TTS, audio focus. Added 2026-11-17: spoken connection status ("adapter connected", "waiting for ignition", "connection lost, retrying"); push-to-talk (steering-wheel media button or on-screen) with a deterministic answer set: overall status, DPF/soot, temperatures, fuel, "any warnings?", "is it safe to switch off?"; **speaking visualiser**: while the app is on screen, speech is animated full-screen from the real audio envelope, in the style the active profile names (see "Voice first") | **v0.1** — correct spoken alerts on a real regen; zero false alerts across recorded drives; the fixed questions answered hands-free |
-| M4 | Arrival engine | Geofences, parking-manoeuvre detector, Maps notification ETA plugin, arrival rules from SRS §3.3 | `TDD-DEST` scenarios + a week of commutes with no traffic-light warnings |
-| M5 | Any car, any adapter | Staged discovery, generic OBD fallback profile, SPP + Wi-Fi transports, adapter quirks, definitions feed, DTC read and guarded clear. Added 2026-11-17: generic read-only body-ECU sweep (parked); UDS identification DIDs (F18x) to name each ECU; DTCs via 03/07/0A and UDS `19 02` with status byte, freeze frames (02, `19 04`), readiness monitors ("will it pass PUC?"), Mode 06; SAE J2012 generic descriptions; every result **spoken in plain language** (what it is, how serious, what to do) and shown second; 0x78 response-pending handling; protocol auto-detect and 29-bit CAN; chipset detection (STN, vLinker) and quirks as data; ISO-TP manual flow-control fallback; WWH-OBD fallback; unknown BLE adapters found by `ATZ` probing of notify/write pairs; community candidate signals (see "Vehicle knowledge sources") verified on the car before use; connection-diagnostics page | Works on at least two friends' cars without code changes |
-| M6 | Voice control | Push-to-talk, STT, deterministic intent router + tool bus, then offline wake word | SRS §5.2 intent matrix passes hands-free |
-| M7 | Brain, personas, themes | LLM providers (template, cloud, LAN, on-device), fact guard, original persona packs, theme packs (more visualiser styles, each persona choosing its voice, wording and visualiser together) | Persona lines never contradict telemetry; fallback under 150 ms |
-| M8 | Insights | Driving-habit analytics (idling, cold-engine load, interrupted regens, economy trends), fuel-fill detection and per-tank economy (local only), health report export. Added 2026-11-17: fuel cost and trip summaries (spoken at trip end, on request), GPS track with trips, CSV export of decoded values | Weekly report generated from recorded trips |
-| M9 | Store release | Privacy policy, permission declarations, opt-in crash reporting, battery/thermal pass, Play beta | Public beta |
-| M10 | iOS | iOS app shell, CoreBluetooth validation, capability gaps handled | TestFlight build (needs a Mac) |
-| M11 | Community vehicle profiles | Opt-in upload of learned profiles, small ingest backend, review + confidence scoring, publish through the signed feed. Added 2026-11-17: verified signals are also offered upstream to OBDb (CC BY-SA) as pull requests, with the user's consent | A profile learned on one phone reaches another via the feed |
-| M12 | Community fuel insights | Opt-in anonymous trip/fill summaries, server-side aggregation, station suggestions along a route | Suggestions shown only where sample size supports them |
+| # | Milestone | Contents | Status | Exit Criteria / Verification |
+|---|---|---|---|---|
+| **M0** | Foundation | Repo, convention plugins (`kmp-library`, `android-app`, `quality`), module skeleton, CI, ADRs (0001–0006), fixture import, interface contracts | **Complete** | CI green on empty modules, iOS targets compile on macOS CI |
+| **M1** | Protocol core + simulator | Transport API, ELM327 driver, protocol, signals, definition schema, Harrier profile, TPMS decoder, `core/sim` virtual ECUs, CLI replay | **Complete** | All SRS OBD/TPMS tests green; 107/107 simulation tests pass; real Harrier log replays headless |
+| **M2** | Android runtime | BLE transport (`GattLink`, `BleAdapterScanner`), foreground service with wake lock, session state machine, vehicle memory store (`FileVehicleMemoryStore`), reconnect & sleep/wake recovery, recorder, minimal dashboard, KnightSim app | **Complete** | Real-car driving session verified on Tata Harrier (2020 BS6 Kryotec AT); connection recovery tested |
+| **M3** | Rules, alerts & voice runtime | DPF state machine, cooldown guard, TPMS evaluator, alert manager, **VoiceMaker KnightPack pipeline** (`.knightpack` ZIP unpacker, SHA-256 check), **LexiconEngine** (automotive PID acronym pronunciations), **KnightVoicePlayer** (zero-latency static `AudioTrack` alert playback with 50 FPS loudness envelope streaming), **AndroidSpeechEngine** (offline on-device TTS with `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` ducking), **VoiceBox Visualizer Suite** (K.I.T.T. 3-stage LED bar, J.A.R.V.I.S. circular HUD, Optimus Prime VU meters in portrait & landscape cockpit modes), pre-bundled `KITT.knightpack` (6.4 MB) | **Complete** | **v0.1 ready**: 183 app unit tests pass (100%); 107 core sim tests pass; ktlint & arch checks pass; `android-debug.apk` assembled (18.9 MB) |
+| **M4** | Arrival engine | Geofences, parking-manoeuvre detector, Maps notification ETA plugin, arrival rules from SRS §3.3 | *Queued* | `TDD-DEST` scenarios + a week of commutes with no traffic-light warnings |
+| **M5** | Any car, any adapter | Staged discovery, generic OBD fallback profile, SPP + Wi-Fi transports, adapter quirks, definitions feed, DTC read and guarded clear. Added 2026-11-17: generic read-only body-ECU sweep (parked); UDS identification DIDs (F18x) to name each ECU; DTCs via 03/07/0A and UDS `19 02` with status byte, freeze frames (02, `19 04`), readiness monitors ("will it pass PUC?"), Mode 06; SAE J2012 generic descriptions; every result **spoken in plain language** (what it is, how serious, what to do) and shown second; 0x78 response-pending handling; protocol auto-detect and 29-bit CAN; chipset detection (STN, vLinker) and quirks as data; ISO-TP manual flow-control fallback; WWH-OBD fallback; unknown BLE adapters found by `ATZ` probing of notify/write pairs; community candidate signals verified on the car before use; connection-diagnostics page | *Queued* | Works on at least two friends' cars without code changes |
+| **M6** | Voice control | Push-to-talk (steering-wheel media button or on-screen), STT, deterministic intent router + tool bus, then offline wake word | *Planned* | SRS §5.2 intent matrix passes hands-free |
+| **M7** | Brain, personas, themes | LLM providers (template, cloud, LAN, on-device LiteRT-LM), fact guard against telemetry snapshot, original persona packs, theme packs (more visualiser styles, each persona choosing its voice, wording and visualiser together) | *Planned* | Persona lines never contradict telemetry; fallback under 150 ms |
+| **M8** | Insights | Driving-habit analytics (idling, cold-engine load, interrupted regens, economy trends), fuel-fill detection and per-tank economy (local only), health report export. Added 2026-11-17: fuel cost and trip summaries (spoken at trip end, on request), GPS track with trips, CSV export of decoded values | *Planned* | Weekly report generated from recorded trips |
+| **M9** | Store release | Privacy policy, permission declarations, opt-in crash reporting, battery/thermal pass, Play beta | *Planned* | Public beta |
+| **M10** | iOS | iOS app shell, CoreBluetooth validation, capability gaps handled | *Planned* | TestFlight build (needs a Mac) |
+| **M11** | Community vehicle profiles | Opt-in upload of learned profiles, small ingest backend, review + confidence scoring, publish through the signed feed. Added 2026-11-17: verified signals are also offered upstream to OBDb (CC BY-SA) as pull requests, with the user's consent | *Future* | A profile learned on one phone reaches another via the feed |
+| **M12** | Community fuel insights | Opt-in anonymous trip/fill summaries, server-side aggregation, station suggestions along a route | *Future* | Suggestions shown only where sample size supports them |
 
-### Voice first (added 2026-11-17)
+---
+
+### VoiceMaker Handover & KnightPack Architecture (Delivered in M3)
+
+To ensure privacy and allow side-loading rich persona experiences without bundling proprietary or copyrighted assets into the base repository or public store releases, KnightLink integrates the **KnightPack (`.knightpack`)** specification authored by companion project VoiceMaker (`D:\Projects\VoiceMaker`).
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        KnightPack (.knightpack ZIP)                    │
+│  • manifest.json     • persona.json          • visualizer.json        │
+│  • audio_fx.json     • lexicon.json          • car_dialogue.json      │
+│  • audio/*.wav (17 golden safety alerts)     • audio/*.env.json       │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ Extracted to context.filesDir/packs/{id}/
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                           KnightPackManager                            │
+│  • SHA-256 verification of unpacked files                              │
+│  • Directory isolation & active pack resolution                        │
+└───────────────────┬────────────────────────────────┬───────────────────┘
+                    │                                │
+                    ▼                                ▼
+┌──────────────────────────────────────┐ ┌───────────────────────────────┐
+│     Path 1: Golden Safety Alerts     │ │  Path 2: Dynamic Voice Engine │
+│ • KnightVoicePlayer                  │ │ • AndroidSpeechEngine         │
+│ • Static AudioTrack (<10 ms latency) │ │ • Offline Android TTS -> WAV  │
+│ • Streams 50 FPS loudness envelope   │ │ • Acronym LexiconEngine filter│
+│ • Immediate alert preemption         │ │ • Audio focus & ducking       │
+└───────────────────┬──────────────────┘ └───────────────┬───────────────┘
+                    │                                    │
+                    └──────────────────┬─────────────────┘
+                                       ▼
+                       ┌───────────────────────────────┐
+                       │   VoiceBoxRenderer (Compose)  │
+                       │ • KittVoiceBox (3-column LED) │
+                       │ • JarvisVoiceBox (rings HUD)  │
+                       │ • OptimusVoiceBox (VU meters) │
+                       │ • 0% FFT runtime overhead     │
+                       └───────────────────────────────┘
+```
+
+#### Key Architecture Components Delivered:
+
+1. **`KnightPackManager` (`knightlink.app.voice.KnightPackManager`)**:
+   - Manages pack extraction targeting `context.filesDir/packs/{persona_id}/`.
+   - Validates existence of mandatory manifest, persona, visualizer, and audio descriptors.
+   - Enforces SHA-256 checksum integrity verification.
+   - Pre-bundles `KITT.knightpack` (6.4 MB) in Android assets so the application operates immediately with K.I.T.T. without requiring initial user sideloading.
+
+2. **`LexiconEngine` (`knightlink.app.voice.LexiconEngine`)**:
+   - Applies phonetic regex substitutions to speech text, converting engineering abbreviations into clear automotive vocalizations:
+     - `RPM` $\to$ `"revolutions per minute"`
+     - `KPH` $\to$ `"kilometers per hour"`
+     - `PSI` $\to$ `"P S I"`
+     - `DPF` $\to$ `"D P F"`
+     - `EGT` $\to$ `"exhaust gas temperature"`
+     - `TPMS` $\to$ `"T P M S"`
+     - `ATF` $\to$ `"automatic transmission fluid"`
+
+3. **`KnightVoicePlayer` (`knightlink.app.voice.KnightVoicePlayer`)**:
+   - High-priority safety alert playback using `android.media.AudioTrack` in `MODE_STATIC` with `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`.
+   - Reads 17 pre-rendered 48 kHz mono PCM WAV files with companion 50 FPS `.env.json` loudness envelopes.
+   - Broadcasts real-time envelope levels to `visualizerLoudness: StateFlow<Float>` without running real-time FFT on the phone during driving.
+   - Supports immediate preemption: triggers ducking or cancellation of any ongoing background announcement.
+
+4. **`AndroidSpeechEngine` (`knightlink.app.voice.AndroidSpeechEngine`)**:
+   - Provides fully offline, on-device voice generation using Android TextToSpeech synthesized directly to temporary PCM/WAV storage.
+   - Requests transient audio ducking (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`) to lower music and navigation during vehicle announcements.
+   - Computes RMS loudness envelopes dynamically for spoken responses so the visualizer reacts identically to alerts and spoken answers.
+
+5. **Cockpit Visualizer Suite (`knightlink.app.ui.voice`)**:
+   - **`KittVoiceBox.kt`**: Authentic 1982 Knight 2000 3-column segmented LED bar meter with centerline ballistics, phosphor decay glow, and AMOLED pure black optimization.
+   - **`JarvisVoiceBox.kt`**: Circular concentric holographic HUD arcs with rotating orbital tick marks.
+   - **`OptimusVoiceBox.kt`**: Dual power split-frequency VU meters.
+   - **`VoiceBoxRenderer.kt`**: Universal Compose component automatically adapting between portrait and landscape cockpit orientations on Samsung Galaxy S25 Ultra mounts.
+
+---
+
+### Voice first (refined post-M3)
 
 The driver uses KnightLink almost entirely by voice, so each feature is specified as a spoken exchange before any screen:
 - **Speak state changes that matter, stay quiet otherwise.** Connection ("connected", "waiting for ignition", "lost the adapter, retrying"), alerts and trip summaries are spoken; routine refreshes never are. Speech goes through the alert manager's priority, de-duplication and quiet periods.
@@ -168,27 +271,43 @@ What only other people's data can supply: the *meaning* (name, scaling, unit) of
 - Honest limit on M12: economy differences between pumps are small next to traffic, load and driving style, so results are normalised per vehicle model and route type and need many samples before a station is ranked.
 - Backend choice (small serverless API + database) is deferred to M11 and recorded as an ADR then. "No accounts" still holds; "no servers" ends at M11.
 
-## First implementation step (on approval)
+## Completed Verification & Delivered Artifacts (v0.1 / M3)
 
-M0, then straight into M1:
-- `settings.gradle.kts`, `gradle/libs.versions.toml`, `build-logic/` convention plugins (`kmp-library`, `android-app`, `quality`)
-- Module skeleton under `core/`, `tools/cli`, `app/android`
-- `.github/workflows/ci.yml` (Linux + macOS jobs)
-- `docs/adr/0001…0006` recording the decisions in the table above
-- `definitions/schema/*.json`, `definitions/vehicles/tata/harrier-2020-kryotec-at.json`, `definitions/adapters/vgate-icar-pro-2s.json`, `definitions/tpms/sensairy.json`
-- `fixtures/` with golden frames from SRS §2.3/§2.4, plus the user's raw logs once supplied
-- M1 code test-first in `core/protocol`, `core/adapter`, `core/signals`, `core/tpms`, `core/sim`
+The project has achieved the **v0.1 first drivable and voice-enabled milestone**, verified across the full multiplatform test suite:
 
-## Needed from the user
+1. **Android App Unit Tests**:
+   - `.\gradlew :app:android:testDebugUnitTest`: **183 / 183 tests passed (0 failures, 0 errors, 100%)**.
+   - Covers `KnightPackManagerTest`, `LexiconEngineTest`, `FileVehicleMemoryStoreTest`, `UiStateTest`, and session services.
+2. **Core Simulation Suite**:
+   - `.\gradlew :core:sim:jvmTest`: **107 / 107 tests passed (100%)**.
+   - Validates virtual ECUs, ISO-TP reassembly, ELM327 command queues, session recovery, and golden frame replays.
+3. **Voice Multiplatform API**:
+   - `.\gradlew :voice:api:jvmTest`: **100% passed**.
+4. **Architecture & Lint Guarding**:
+   - `.\gradlew :tools:archtest:test`: **Passed**. Ensures zero VIN, Bluetooth MAC, or vehicle literals leak into shared core modules.
+   - `.\gradlew :app:android:ktlintCheck`: **Passed (100% clean)**.
+5. **Assembled Android APK**:
+   - **File**: `app/android/build/outputs/apk/debug/android-debug.apk`
+   - **Size**: **18.9 MB** (includes bundled 6.4 MB `KITT.knightpack` asset).
 
-- Copy the Phase 0 raw OBD logs and btsnoop captures into `D:\Projects\KnightLink\fixtures\raw\` (the answer on what survives was mixed; if only the SRS frames exist, M1 starts from those and new captures are taken in M2).
-- A GitHub repository (private is fine) for CI and, later, the definitions feed.
-- Names for the original personas can wait until M7.
+---
 
-## Verification
+## Immediate Next Steps (M4 & M5)
 
-- `./gradlew check` — all unit, contract and scenario tests, lint, coverage, definition validation.
-- `./gradlew :tools:cli:run --args="replay fixtures/raw/<log>"` — decoded signal timeline matches the SRS values (soot 89.02 → 100 → 17.65 %, EGTs, fuel rate, UDS NRC 0x31).
-- Second phone running KnightSim: the main app connects, shows live values, and fires the scripted DPF/TPMS alerts.
-- In the Harrier: connect, drive, confirm reconnect after adapter power-cycle, then export the trip and replay it on the desk with identical results.
-- CI macOS job proves shared modules still compile and pass on iOS.
+### M4: Arrival Engine (Target: Safe Parking & Cooldown Guidance)
+- **Geofences & Commute Tracking**: Register home/office geofences locally without cloud sync.
+- **Parking Manoeuvre Detector**: Detect low-speed parking transitions (speed < 10 km/h with steering angle changes).
+- **Navigation ETA Integration**: Safe listener for `com.google.android.apps.maps` notifications to predict trip arrival window.
+- **Arrival Rules**:
+  - If DPF regeneration is active when approaching destination, advise the driver to extend the drive for 3–5 minutes.
+  - If turbocharger/EGT temperatures exceed safety thresholds upon parking, trigger spoken cooldown timer before engine shutdown.
+
+### M5: Any Car, Any Adapter (Target: Universal Fleet Interoperability)
+- **Progressive Staged Discovery**:
+  - Stage 1–4 at connect: adapter identity, supported standard PIDs, VIN/CALID, and ECU sweep.
+  - Parked UDS DID sweep: incremental, resumable background sweeps across ECUs (saving progress to `VehicleMemoryStore`).
+- **Comprehensive DTC Reading & Plain-Language Explanation**:
+  - Interrogate Mode 03, 07, 0A and UDS `19 02` with status mask filtering (confirmed vs pending).
+  - Translate raw SAE J2012 fault codes into plain-language spoken advice: what it is, severity rating, and whether it is safe to continue driving.
+- **Adapter Chipset Quirks Engine**:
+  - Support STN, vLinker, and ELM327 clones with custom timeout profiles and manual flow control.

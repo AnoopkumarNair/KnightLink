@@ -22,8 +22,13 @@ import knightlink.app.session.RecordingStore
 import knightlink.app.session.SessionController
 import knightlink.app.session.SessionService
 import knightlink.app.session.requireBle
+import knightlink.app.voice.InstalledKnightPack
+import knightlink.app.voice.KnightPackManager
+import knightlink.app.voice.KnightVoicePlayer
+import knightlink.app.voice.VoiceSettingsStore
 import knightlink.platform.ble.BleAdapterScanner
 import knightlink.platform.ble.DiscoveredAdapter
+import knightlink.voice.api.Speaker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +48,16 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     /** The service's controller; null until the first bind completes, and while the service process is gone. */
     val controller: StateFlow<SessionController?> = connection.controller
+
+    /** The service's voice; null until the first bind completes. It lives in the service so that it speaks with the screen off. */
+    val speaker: StateFlow<Speaker?> = connection.speaker
+
+    /** The voice settings the service's speaker and announcer read; the same instance, so a change here is heard at once. */
+    val voiceSettings: StateFlow<VoiceSettingsStore?> = connection.voiceSettings
+
+    val knightPackManager: StateFlow<KnightPackManager?> = connection.knightPackManager
+    val knightVoicePlayer: StateFlow<KnightVoicePlayer?> = connection.knightVoicePlayer
+    val activePack: StateFlow<InstalledKnightPack?> = connection.activePack
 
     val recordings = RecordingStore(SessionService.recordingsDirectory(application))
 
@@ -140,6 +155,16 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     private class Connection(private val context: Context) : ServiceConnection {
         private val _controller = MutableStateFlow<SessionController?>(null)
         val controller: StateFlow<SessionController?> = _controller.asStateFlow()
+        private val _speaker = MutableStateFlow<Speaker?>(null)
+        val speaker: StateFlow<Speaker?> = _speaker.asStateFlow()
+        private val _voiceSettings = MutableStateFlow<VoiceSettingsStore?>(null)
+        val voiceSettings: StateFlow<VoiceSettingsStore?> = _voiceSettings.asStateFlow()
+        private val _knightPackManager = MutableStateFlow<KnightPackManager?>(null)
+        val knightPackManager: StateFlow<KnightPackManager?> = _knightPackManager.asStateFlow()
+        private val _knightVoicePlayer = MutableStateFlow<KnightVoicePlayer?>(null)
+        val knightVoicePlayer: StateFlow<KnightVoicePlayer?> = _knightVoicePlayer.asStateFlow()
+        private val _activePack = MutableStateFlow<InstalledKnightPack?>(null)
+        val activePack: StateFlow<InstalledKnightPack?> = _activePack.asStateFlow()
         private var bound = false
 
         fun bind() {
@@ -151,19 +176,31 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         fun unbind() {
             if (bound) context.unbindService(this)
             bound = false
+            clear()
+        }
+
+        private fun clear() {
             _controller.value = null
+            _speaker.value = null
+            _voiceSettings.value = null
+            _knightPackManager.value = null
+            _knightVoicePlayer.value = null
+            _activePack.value = null
         }
 
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
-            _controller.value = (service as? SessionService.LocalBinder)?.controller
+            val binder = service as? SessionService.LocalBinder
+            _controller.value = binder?.controller
+            _speaker.value = binder?.speaker
+            _voiceSettings.value = binder?.voiceSettings
+            val packMgr = binder?.knightPackManager
+            _knightPackManager.value = packMgr
+            _knightVoicePlayer.value = binder?.knightVoicePlayer
+            _activePack.value = packMgr?.getActivePack()
         }
 
-        override fun onServiceDisconnected(name: ComponentName) {
-            _controller.value = null
-        }
+        override fun onServiceDisconnected(name: ComponentName) = clear()
 
-        override fun onBindingDied(name: ComponentName) {
-            _controller.value = null
-        }
+        override fun onBindingDied(name: ComponentName) = clear()
     }
 }
