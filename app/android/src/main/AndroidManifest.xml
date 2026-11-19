@@ -23,8 +23,17 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:remove="android:maxSdkVersion" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
-    <!-- Android 11 and later hide other apps from this one unless it asks: without this, TextToSpeech cannot bind to the speech engine. -->
+    <!--
+      Push to talk: the microphone, asked for the first time the talk button is pressed (after an explanation). Nothing is recorded
+      or kept by the app; the phone's speech recogniser hears the audio only between the press and the end of the question.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Android 11 and later: without these the app cannot see the phone's speech recogniser and text-to-speech engine. -->
     <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>

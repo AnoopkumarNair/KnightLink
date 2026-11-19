@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -63,6 +65,9 @@ import knightlink.app.text
 import knightlink.app.textRes
 import knightlink.app.ui.voice.VoiceBoxDisplayMode
 import knightlink.app.ui.voice.VoiceBoxRenderer
+import knightlink.app.voice.MediaButtonGesture
+import knightlink.app.voice.PushToTalkState
+import knightlink.app.voice.RecognitionError
 import knightlink.app.voice.VoiceSettings
 import kotlin.math.roundToInt
 
@@ -85,6 +90,23 @@ class ConnectionActions(
     val backgroundAllowed: Boolean = true,
     val onAllowBackground: () -> Unit = {},
 )
+
+/**
+ * What the push-to-talk card shows and can do.
+ *
+ * @property onDevice true when speech is recognised on the phone
+ */
+class TalkActions(
+    val state: PushToTalkState,
+    val onDevice: Boolean,
+    val gesture: MediaButtonGesture,
+    val onTalk: () -> Unit,
+    val onGesture: (MediaButtonGesture) -> Unit,
+) {
+    companion object {
+        val NONE = TalkActions(PushToTalkState.Idle, onDevice = false, gesture = MediaButtonGesture.OFF, onTalk = {}, onGesture = {})
+    }
+}
 
 /** What the drive-data card shows and can do: whether the phone's location is being recorded, and how to allow it. */
 class DriveDataActions(val locationAllowed: Boolean, val onAllowLocation: () -> Unit)
@@ -129,6 +151,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     driveData: DriveDataActions = DriveDataActions(locationAllowed = false, onAllowLocation = {}),
     voice: VoiceActions = VoiceActions.Unavailable,
+    talk: TalkActions = TalkActions.NONE,
 ) {
     // Grouping is a function of the values only; it is redone when they change, not on every recomposition.
     val groups = remember(state.liveValues) { groupByPrefix(state.liveValues) }
@@ -137,7 +160,7 @@ fun HomeScreen(
         if (maxWidth >= WIDE_LAYOUT_MIN_WIDTH) {
             Row(Modifier.fillMaxSize()) {
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                    summaryItems(state, recordings, lastAdapter, actions, driveData, voice, onShareLatest, onShareLog)
+                    summaryItems(state, recordings, lastAdapter, actions, driveData, voice, talk, onShareLatest, onShareLog)
                 }
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
                     liveItems(groups)
@@ -145,7 +168,7 @@ fun HomeScreen(
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                summaryItems(state, recordings, lastAdapter, actions, driveData, voice, onShareLatest, onShareLog)
+                summaryItems(state, recordings, lastAdapter, actions, driveData, voice, talk, onShareLatest, onShareLog)
                 liveItems(groups)
             }
         }
@@ -159,14 +182,74 @@ private fun LazyListScope.summaryItems(
     actions: ConnectionActions,
     driveData: DriveDataActions,
     voice: VoiceActions,
+    talk: TalkActions,
     onShareLatest: () -> Unit,
     onShareLog: () -> Unit,
 ) {
+    item(key = "talk", contentType = "card") { TalkCard(talk) }
     item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
     item(key = "voice", contentType = "card") { VoiceCard(voice) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
     item(key = "drive-data", contentType = "card") { DriveDataCard(driveData, state.tyres) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
+}
+
+/** Push to talk: the big button, what was heard and answered, where recognition happens, and the steering-wheel button setting. */
+@Composable
+private fun TalkCard(talk: TalkActions) {
+    val state = talk.state
+    val listening = state is PushToTalkState.Listening
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(stringResource(R.string.talk_title), style = MaterialTheme.typography.titleMedium)
+            Button(onClick = talk.onTalk, modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp)) {
+                Text(
+                    stringResource(if (listening) R.string.talk_listening else R.string.talk_ask),
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+            }
+            // One live region for whatever the card has to say, so a screen reader reads the answer (or the failure) without being asked.
+            Column(Modifier.semantics { liveRegion = LiveRegionMode.Polite }, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                when (state) {
+                    PushToTalkState.Idle -> Unit
+                    is PushToTalkState.Listening ->
+                        if (state.partial.isNotBlank()) Text(stringResource(R.string.talk_you, state.partial), style = MaterialTheme.typography.bodyLarge)
+                    is PushToTalkState.Answered -> {
+                        Text(stringResource(R.string.talk_you, state.heard), style = MaterialTheme.typography.bodyMedium)
+                        Text(stringResource(R.string.talk_answer, state.answerText), style = MaterialTheme.typography.titleMedium)
+                    }
+                    is PushToTalkState.Failed -> Text(stringResource(state.error.message()), style = MaterialTheme.typography.bodyLarge)
+                }
+            }
+            Text(
+                stringResource(if (talk.onDevice) R.string.talk_on_device else R.string.talk_online),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(stringResource(R.string.talk_gesture_title), style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for ((gesture, label) in GESTURE_LABELS) {
+                    FilterChip(selected = talk.gesture == gesture, onClick = { talk.onGesture(gesture) }, label = { Text(stringResource(label)) })
+                }
+            }
+            if (talk.gesture != MediaButtonGesture.OFF) Text(stringResource(R.string.talk_gesture_hint), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+private val GESTURE_LABELS = listOf(
+    MediaButtonGesture.OFF to R.string.talk_gesture_off,
+    MediaButtonGesture.LONG_PRESS to R.string.talk_gesture_long_press,
+    MediaButtonGesture.DOUBLE_PRESS to R.string.talk_gesture_double_press,
+)
+
+private fun RecognitionError.message(): Int = when (this) {
+    RecognitionError.NO_MATCH -> R.string.talk_failed_no_match
+    RecognitionError.NO_SPEECH -> R.string.talk_failed_no_speech
+    RecognitionError.NO_PERMISSION -> R.string.talk_failed_no_permission
+    RecognitionError.NETWORK -> R.string.talk_failed_network
+    RecognitionError.BUSY -> R.string.talk_failed_busy
+    RecognitionError.UNAVAILABLE -> R.string.talk_failed_unavailable
+    RecognitionError.OTHER -> R.string.talk_failed_other
 }
 
 @Composable
@@ -392,40 +475,6 @@ private fun TyreSection(tyres: TyreSensors) {
                 }
                 reading.decoded.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
-        }
-    }
-}
-
-@Composable
-private fun VoiceCard(voice: VoiceActions) {
-    val percent = (voice.settings.volume * 100).roundToInt()
-    val volumeLabel = stringResource(R.string.voice_volume)
-    val volumeState = stringResource(R.string.voice_volume_percent, percent)
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.voice_title), style = MaterialTheme.typography.titleMedium)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(stringResource(R.string.voice_spoken_status), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                Switch(checked = voice.settings.spokenStatus, onCheckedChange = voice.onSpokenStatusChange, enabled = voice.available)
-            }
-            Text(volumeLabel, style = MaterialTheme.typography.bodyMedium)
-            Slider(
-                value = voice.settings.volume,
-                onValueChange = voice.onVolumeChange,
-                valueRange = VoiceSettings.MIN_VOLUME..VoiceSettings.MAX_VOLUME,
-                enabled = voice.available,
-                modifier = Modifier.semantics {
-                    contentDescription = volumeLabel
-                    stateDescription = volumeState
-                },
-            )
-            Button(onClick = voice.onTest, enabled = voice.available, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.action_test_voice))
-            }
-            OutlinedButton(onClick = voice.onSayAgain, enabled = voice.available && voice.lastSpoken != null, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.action_say_again))
-            }
-            voice.lastSpoken?.let { Text(stringResource(R.string.voice_last_spoken, it), style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

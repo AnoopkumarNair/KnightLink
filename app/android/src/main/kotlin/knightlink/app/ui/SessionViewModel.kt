@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.os.IBinder
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import knightlink.app.SharedPreferencesStringStore
 import knightlink.app.ble.LastAdapter
@@ -20,13 +21,19 @@ import knightlink.app.session.RecordingStore
 import knightlink.app.session.SessionController
 import knightlink.app.session.SessionService
 import knightlink.app.session.requireBle
+import knightlink.app.voice.AndroidSpeechRecognizer
 import knightlink.app.voice.InstalledKnightPack
 import knightlink.app.voice.KnightPackManager
 import knightlink.app.voice.KnightVoicePlayer
+import knightlink.app.voice.MediaButtonGesture
+import knightlink.app.voice.PushToTalk
+import knightlink.app.voice.StubTtsAnswerOutput
 import knightlink.app.voice.VoiceSettingsStore
 import knightlink.platform.ble.BleAdapterScanner
 import knightlink.platform.ble.DiscoveredAdapter
 import knightlink.voice.api.Speaker
+import knightlink.voice.intents.NoWarningsSource
+import knightlink.voice.intents.VoiceAssistant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -97,6 +104,47 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     private val scanner = BleAdapterScanner(application)
 
+    private val preferences = application.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+
+    // Voice: created here (application context, main thread) so a rotation neither drops a question nor leaks the recogniser.
+    private val recognizer = AndroidSpeechRecognizer(application)
+    private val speech = StubTtsAnswerOutput(application)
+    private val assistant = VoiceAssistant(output = speech, warnings = NoWarningsSource)
+
+    /** Push to talk. Main thread only. Answers from the service's session, or as "not connected" when there is none. */
+    val pushToTalk = PushToTalk(recognizer, assistant) { controller.value?.answerContext() ?: SessionController.NOT_CONNECTED_CONTEXT }
+
+    /** True when speech is recognised on this phone; false when the phone's speech service may send audio online. */
+    val recognisedOnDevice: Boolean get() = recognizer.isOnDevice
+
+    private val _mediaGesture = MutableStateFlow(MediaButtonGesture.parse(preferences.getString(MEDIA_BUTTON_GESTURE, null)))
+
+    /** What the steering-wheel button must do to start push to talk. */
+    val mediaGesture: StateFlow<MediaButtonGesture> = _mediaGesture.asStateFlow()
+
+    fun setMediaGesture(gesture: MediaButtonGesture) {
+        preferences.edit { putString(MEDIA_BUTTON_GESTURE, gesture.name) }
+        _mediaGesture.value = gesture
+    }
+
+    private val _micExplanationOpen = MutableStateFlow(false)
+
+    /** Whether the "why the microphone" explanation is showing; it comes before the system's permission prompt. */
+    val micExplanationOpen: StateFlow<Boolean> = _micExplanationOpen.asStateFlow()
+
+    fun setMicExplanationOpen(open: Boolean) {
+        _micExplanationOpen.value = open
+    }
+
+    private val _micDenial = MutableStateFlow<PermissionDenial?>(null)
+
+    /** Set when the microphone permission was refused, until the user has seen the explanation. */
+    val micDenial: StateFlow<PermissionDenial?> = _micDenial.asStateFlow()
+
+    fun setMicDenial(denial: PermissionDenial?) {
+        _micDenial.value = denial
+    }
+
     /**
      * A scan for the configured adapter, started when collected and stopped when the collection ends. Fails (inside the flow)
      * if the definition has no Bluetooth profile, or the scan cannot start; see [pickerStates].
@@ -136,7 +184,15 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        pushToTalk.cancel()
+        recognizer.close()
+        speech.close()
         connection.unbind()
+    }
+
+    private companion object {
+        const val PREFERENCES = "knightlink"
+        const val MEDIA_BUTTON_GESTURE = "media_button_gesture"
     }
 
     private class Connection(private val context: Context) : ServiceConnection {

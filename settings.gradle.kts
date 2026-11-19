@@ -34,6 +34,7 @@ include(
     ":core:runtime",
     ":core:recorder",
     ":voice:api",
+    ":voice:intents",
     ":tools:cli",
     ":tools:archtest",
 )

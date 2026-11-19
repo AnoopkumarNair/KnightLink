@@ -26,8 +26,18 @@ class ModuleDependencyTest {
 
     private val voiceAllowed: Map<String, Set<String>> = mapOf("api" to emptySet())
 
-    private val accessor = Regex("""projects\.(core|tools|voice)\.(\w+)""")
-    private val pathString = Regex("""project\(\s*":(core|tools|voice):([\w-]+)"\s*\)""")
+    /**
+     * Voice modules sit above core: they may use core modules (only those listed here, for the modules listed) and other voice modules,
+     * never tools, platform or app code. A voice module without a row is held to that general rule only, so a voice module built in
+     * parallel elsewhere does not break this test before it gets its row.
+     */
+    private val allowedVoiceOnCore: Map<String, Set<String>> =
+        mapOf(
+            "intents" to setOf("telemetry", "signals"),
+        )
+
+    private val accessor = Regex("""projects\.(core|tools|voice|platform|app)\.(\w+)""")
+    private val pathString = Regex("""project\(\s*":(core|tools|voice|platform|app):([\w-]+)"\s*\)""")
     private val sourceSetBlock = Regex("""(\w+)\.dependencies\s*\{""")
     private val plainBlock = Regex("""^\s*(\w+)\s*\{""")
     private val testConfiguration = Regex("""^\s*test\w*\(""")
@@ -53,7 +63,7 @@ class ModuleDependencyTest {
     @Test
     fun everyVoiceModuleIsInTheRuleTable() {
         val actual = RepoFiles.voiceModules().map { it.name }.toSet()
-        assertEquals(emptySet(), actual - voiceAllowed.keys, "Voice modules missing from the dependency rule table (add them deliberately)")
+        assertEquals(emptySet(), actual - (voiceAllowed.keys + allowedVoiceOnCore.keys), "Voice modules missing from the dependency rule table (add them deliberately)")
         assertEquals(emptySet(), voiceAllowed.keys - actual, "Rule table lists voice modules that no longer exist")
     }
 
@@ -81,6 +91,38 @@ class ModuleDependencyTest {
             refs.forEach { violations += "core/${module.name} depends on tools/$it" }
         }
         assertTrue(violations.isEmpty(), violations.joinToString("\n"))
+    }
+
+    @Test
+    fun coreNeverDependsOnVoicePlatformOrApp() {
+        val violations = mutableListOf<String>()
+        for (module in RepoFiles.coreModules()) {
+            val text = stripComments(File(module, "build.gradle.kts").readText())
+            for (group in listOf("voice", "platform", "app")) {
+                references(text, group).forEach { violations += "core/${module.name} depends on $group/$it" }
+            }
+        }
+        assertTrue(violations.isEmpty(), violations.joinToString("\n"))
+    }
+
+    @Test
+    fun voiceModulesOnlyDependOnCoreAndVoice() {
+        val violations = mutableListOf<String>()
+        for (module in RepoFiles.voiceModules()) {
+            val text = stripComments(File(module, "build.gradle.kts").readText())
+            for (group in listOf("tools", "platform", "app")) {
+                references(text, group).forEach { violations += "voice/${module.name} depends on $group/$it" }
+            }
+            val allowedCore = allowedVoiceOnCore[module.name] ?: continue
+            (productionDependencies(text, "core") - allowedCore).forEach { violations += "voice/${module.name} must not depend on core/$it" }
+        }
+        assertTrue(violations.isEmpty(), violations.joinToString("\n"))
+    }
+
+    @Test
+    fun voiceRuleTableNamesExistingModules() {
+        val actual = RepoFiles.voiceModules().map { it.name }.toSet()
+        assertEquals(emptySet(), allowedVoiceOnCore.keys - actual, "Voice rule table lists modules that no longer exist")
     }
 
     @Test

@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Vehicle, adapter and sensor knowledge belongs in `definitions/` (ADR 0002), never in `core/`.
+ * Vehicle, adapter and sensor knowledge belongs in `definitions/` (ADR 0002), never in `core/` or `voice/`.
  * Generic protocol constants (0x7DF, ELM327, OBD service numbers) are fine and are not matched here.
  */
 class GenericCoreTest {
@@ -33,7 +33,7 @@ class GenericCoreTest {
     fun noBleUuidOrMacLiteralsInCoreSources() {
         // Applies to main and test sources alike: tests must load such values from definitions/fixtures.
         val offences = mutableListOf<String>()
-        for (module in RepoFiles.coreModules()) {
+        for (module in RepoFiles.coreModules() + RepoFiles.voiceModules()) {
             for (file in RepoFiles.kotlinFiles(module) { true }) {
                 val text = file.readText()
                 uuid.findAll(text).forEach { offences += "${RepoFiles.relative(file)}: UUID literal '${it.value}'" }

@@ -161,6 +161,31 @@
     <string name="action_test_voice">Test voice</string>
     <string name="action_say_again">Say again</string>
     <string name="voice_last_spoken">Last said: %1$s</string>
+    <!-- Push to talk -->
+    <string name="talk_title">Ask KnightLink</string>
+    <string name="talk_ask">Ask</string>
+    <string name="talk_listening">Listening… tap to stop</string>
+    <string name="talk_you">You: %1$s</string>
+    <string name="talk_answer">KnightLink: %1$s</string>
+    <string name="talk_failed_no_match">Didn\'t catch that. Tap Ask and try again.</string>
+    <string name="talk_failed_no_speech">Didn\'t hear anything. Tap Ask and try again.</string>
+    <string name="talk_failed_no_permission">The microphone is not allowed. Tap Ask to allow it.</string>
+    <string name="talk_failed_network">Your phone\'s speech service needs the internet and could not reach it.</string>
+    <string name="talk_failed_busy">The speech service is busy. Try again in a moment.</string>
+    <string name="talk_failed_unavailable">This phone has no speech recognition that KnightLink can use.</string>
+    <string name="talk_failed_other">Speech recognition failed. Tap Ask and try again.</string>
+    <string name="talk_on_device">Recognised on this phone.</string>
+    <string name="talk_online">Your phone\'s speech service may send audio online.</string>
+    <string name="talk_gesture_title">Steering-wheel button</string>
+    <string name="talk_gesture_off">Off</string>
+    <string name="talk_gesture_long_press">Long press</string>
+    <string name="talk_gesture_double_press">Double press</string>
+    <string name="talk_gesture_hint">Works while KnightLink is open and no other app has played media more recently. A single press does nothing.</string>
+    <string name="mic_title">Microphone</string>
+    <string name="mic_explanation">KnightLink listens only after you press the talk button (or the steering-wheel button), until you stop speaking.\n\nRecognition runs on the phone when it supports on-device recognition. Otherwise your phone\'s speech service (for example Google) may process the audio online.\n\nNothing is recorded or kept by KnightLink.</string>
+    <string name="mic_allow">Continue</string>
+    <string name="mic_denied">KnightLink needs the microphone permission to hear your question. It listens only after you press the talk button.</string>
+    <string name="mic_blocked">The permission was blocked. Open the app settings, choose Permissions, and allow the microphone there.</string>
 
     <!-- Notification -->
     <string name="notification_channel_name">Vehicle session</string>
