@@ -8,7 +8,7 @@ import kotlinx.serialization.json.Json
  * Which bundled data the app uses by default. It lives in `assets/app-config.json` so that no vehicle, adapter or
  * scenario name appears in Kotlin code (ADR 0002); supporting another car is a change to that file.
  *
- * All three values are ids as [DefinitionStore] understands them.
+ * All four values are ids as [DefinitionStore] understands them.
  */
 @Serializable
 data class AppConfig(

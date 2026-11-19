@@ -4,15 +4,13 @@ import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
-import android.content.SharedPreferences
 import android.os.IBinder
-import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
+import knightlink.app.SharedPreferencesStringStore
 import knightlink.app.ble.LastAdapter
 import knightlink.app.ble.LastAdapterStore
 import knightlink.app.ble.PendingStart
 import knightlink.app.ble.PermissionDenial
-import knightlink.app.ble.StringStore
 import knightlink.app.data.AndroidAssetSource
 import knightlink.app.data.AppConfig
 import knightlink.app.data.DefinitionStore
@@ -90,7 +88,8 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     /** Whether the adapter picker is showing. Kept here so a rotation does not close it. */
     val pickerOpen: StateFlow<Boolean> = _pickerOpen.asStateFlow()
 
-    private val lastAdapterStore = LastAdapterStore(SharedPreferencesStringStore(application.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)))
+    private val lastAdapterStore =
+        LastAdapterStore(SharedPreferencesStringStore(application.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)))
     private val _lastAdapter = MutableStateFlow(lastAdapterStore.load())
 
     /** The adapter connected to last, if any. */
@@ -138,18 +137,6 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         connection.unbind()
-    }
-
-    private companion object {
-        const val PREFERENCES = "knightlink"
-    }
-
-    private class SharedPreferencesStringStore(private val preferences: SharedPreferences) : StringStore {
-        override fun get(key: String): String? = preferences.getString(key, null)
-
-        override fun put(key: String, value: String?) {
-            preferences.edit { if (value == null) remove(key) else putString(key, value) }
-        }
     }
 
     private class Connection(private val context: Context) : ServiceConnection {

@@ -397,6 +397,40 @@ private fun TyreSection(tyres: TyreSensors) {
 }
 
 @Composable
+private fun VoiceCard(voice: VoiceActions) {
+    val percent = (voice.settings.volume * 100).roundToInt()
+    val volumeLabel = stringResource(R.string.voice_volume)
+    val volumeState = stringResource(R.string.voice_volume_percent, percent)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.voice_title), style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(stringResource(R.string.voice_spoken_status), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Switch(checked = voice.settings.spokenStatus, onCheckedChange = voice.onSpokenStatusChange, enabled = voice.available)
+            }
+            Text(volumeLabel, style = MaterialTheme.typography.bodyMedium)
+            Slider(
+                value = voice.settings.volume,
+                onValueChange = voice.onVolumeChange,
+                valueRange = VoiceSettings.MIN_VOLUME..VoiceSettings.MAX_VOLUME,
+                enabled = voice.available,
+                modifier = Modifier.semantics {
+                    contentDescription = volumeLabel
+                    stateDescription = volumeState
+                },
+            )
+            Button(onClick = voice.onTest, enabled = voice.available, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.action_test_voice))
+            }
+            OutlinedButton(onClick = voice.onSayAgain, enabled = voice.available && voice.lastSpoken != null, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.action_say_again))
+            }
+            voice.lastSpoken?.let { Text(stringResource(R.string.voice_last_spoken, it), style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+}
+
+@Composable
 private fun VehicleCard(vehicle: VehicleSummary, pollingRate: Double?) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

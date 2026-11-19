@@ -80,6 +80,7 @@ dependencies {
     implementation(projects.core.vehicle)
     implementation(projects.voice.api)
     implementation(projects.platform.bleAndroid)
+    implementation(projects.voice.api)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 
