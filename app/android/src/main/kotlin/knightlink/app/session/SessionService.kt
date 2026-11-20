@@ -15,6 +15,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -42,6 +43,7 @@ import knightlink.voice.api.SpeechState
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -110,6 +112,9 @@ class SessionService : Service() {
     // Held while a Bluetooth session runs in the foreground; see acquireWakeLock.
     @Volatile
     private var wakeLock: PowerManager.WakeLock? = null
+
+    // The heartbeat that notices when the whole app stood still; see startStallWatch.
+    private var stallJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -210,6 +215,7 @@ class SessionService : Service() {
             ServiceCompat.startForeground(this, SessionNotifications.ID, notifications.build(controller.uiState.value.connection), type)
             foreground = true
             acquireWakeLock()
+            startStallWatch()
             connectionLog.app("service: running in the foreground")
         } catch (e: RuntimeException) {
             // SecurityException (precondition missing), ForegroundServiceStartNotAllowedException and
@@ -224,6 +230,7 @@ class SessionService : Service() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
         foreground = false
         releaseWakeLock()
+        stopStallWatch()
     }
 
     /**
@@ -244,6 +251,38 @@ class SessionService : Service() {
             Log.w(TAG, "Could not take a wake lock", e)
             connectionLog.app("service: could not take a wake lock (${e::class.simpleName}: ${e.message})")
         }
+    }
+
+    /**
+     * A heartbeat every few seconds that writes a line to the connection log when the app stood still for a while, with which kind of
+     * stand-still it was and the phone's power state when it came back (see [StallWatch]). Whatever the cause of a stall, the recording
+     * alone could not say; this can, from the next drive.
+     */
+    private fun startStallWatch() {
+        if (stallJob?.isActive == true) return
+        stallJob = scope.launch {
+            val watch = StallWatch()
+            while (true) {
+                watch.tick(SystemClock.elapsedRealtime(), SystemClock.uptimeMillis())?.let { stall ->
+                    connectionLog.app(stall.describe() + "; " + powerState())
+                }
+                delay(StallWatch.TICK_MS)
+            }
+        }
+    }
+
+    private fun stopStallWatch() {
+        stallJob?.cancel()
+        stallJob = null
+    }
+
+    /** The phone's power state now, for the line a stall writes: screen, Doze, battery saver, battery exemption, wake lock. */
+    private fun powerState(): String {
+        val power = getSystemService(PowerManager::class.java) ?: return "power state unknown"
+        val lightDoze = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) power.isDeviceLightIdleMode.toString() else "n/a"
+        return "now: screen on ${power.isInteractive}, doze ${power.isDeviceIdleMode}, light doze $lightDoze, " +
+            "battery saver ${power.isPowerSaveMode}, exempt from battery optimisation ${power.isIgnoringBatteryOptimizations(packageName)}, " +
+            "wake lock held ${wakeLock?.isHeld == true}"
     }
 
     private fun releaseWakeLock() {
@@ -308,6 +347,7 @@ class SessionService : Service() {
         sawActive = false
         foreground = false
         releaseWakeLock()
+        stopStallWatch()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         notifications.cancel()
         stopSelf()
@@ -316,6 +356,7 @@ class SessionService : Service() {
     override fun onDestroy() {
         closed = true
         releaseWakeLock()
+        stopStallWatch()
         notifications.cancel()
         // The session must stop and its stream must close, and neither may block the main thread: do it on the service's own
         // scope, and cancel the scope only once that is done. NonCancellable keeps the cleanup out of the scope's cancellation.
