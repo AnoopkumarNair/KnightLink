@@ -331,11 +331,19 @@ class SessionController(
             connectionLog?.app("no full scan in this session: ${e.message}")
             null
         }
+        // The identifiers an earlier scan of this kind of vehicle found: polled raw without a parked scan. Missing or broken costs only that.
+        val seed = try {
+            store.discoverySeed(config.vehicleDefinition)
+        } catch (e: DefinitionStoreException) {
+            connectionLog?.app("no seeded data identifiers: ${e.message}")
+            null
+        }
         val sessionSettings = sessionConfig.copy(
             probeScript = adapter.probeScript,
             pollScript = adapter.pollScript,
             driver = adapter.driverConfig(),
             scanPlan = plan,
+            seedScan = seed,
         )
         // The recording gets every event (it is the replayable record); the text log gets the same ones, except the scan's result, which is
         // a long line of JSON that belongs in the recording and its sidecar, not in a log that is meant to be read on a phone.

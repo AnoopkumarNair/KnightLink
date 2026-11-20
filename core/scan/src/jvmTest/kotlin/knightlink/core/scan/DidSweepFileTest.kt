@@ -71,4 +71,18 @@ class DidSweepFileTest {
             assertTrue(identifiers.size in 2048..2100, "${target.requestId}: ${identifiers.size}")
         }
     }
+
+    @Test
+    fun theHarrierSeedIsAValidScanResultOfTheIdentifiersTheFirstScanFound() {
+        val seedFile = File(System.getProperty("knightlink.repoRoot"), "definitions/discovery/seed/tata/harrier-2020-kryotec-at.json")
+        val seed = ScanResult.fromJson(seedFile.readText())
+        assertEquals(ScanOutcome.COMPLETED, seed.outcome)
+        val targets = plan.targets.map { it.requestId.uppercase() }.toSet()
+        assertTrue(seed.sweeps.all { it.requestId.uppercase() in targets }, "a seeded unit that the plan does not sweep would never be polled")
+        val answers = seed.sweeps.flatMap { it.positive }
+        assertTrue(answers.isNotEmpty())
+        assertTrue(answers.all { Regex("[0-9A-F]{4}").matches(it.did) }, "identifiers are four hex digits")
+        assertTrue(answers.all { a -> a.hex.all { it == '0' } }, "values are zeroed: only their length is kept")
+        assertTrue(seed.ecus.isEmpty() && seed.probeEcus.isEmpty(), "no identities in a seed")
+    }
 }

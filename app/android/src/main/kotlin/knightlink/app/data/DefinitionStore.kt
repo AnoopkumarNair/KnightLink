@@ -3,6 +3,7 @@ package knightlink.app.data
 import knightlink.app.ui.voice.ThemePack
 import knightlink.core.adapter.AdapterDefinition
 import knightlink.core.scan.DidSweepPlan
+import knightlink.core.scan.ScanResult
 import knightlink.core.signals.DefinitionException
 import knightlink.core.signals.DefinitionFile
 import knightlink.core.signals.DefinitionJson
@@ -72,6 +73,26 @@ class DefinitionStore(private val assets: AssetSource) {
             DidSweepPlan.parse(text)
         } catch (e: IllegalArgumentException) {
             throw DefinitionStoreException("Invalid sweep plan: ${e.message}", e)
+        }
+    }
+
+    /**
+     * The data identifiers an earlier full scan found for vehicle definition [vehicleId] (`definitions/discovery/seed/<vehicle>.json`, the
+     * vehicle id without its `vehicles/` prefix), or null when there is none. A seed that is there but unreadable is an error.
+     *
+     * @throws DefinitionStoreException if the file exists and is not a valid scan result.
+     */
+    fun discoverySeed(vehicleId: String): ScanResult? {
+        val path = "$DEFINITIONS_ROOT/$SEED_DIRECTORY/${checked(vehicleId).removePrefix(VEHICLES_PREFIX)}$JSON"
+        val text = try {
+            assets.open(path)
+        } catch (e: IOException) {
+            return null
+        }
+        return try {
+            ScanResult.fromJson(text)
+        } catch (e: IllegalArgumentException) {
+            throw DefinitionStoreException("Invalid discovery seed '$path': ${e.message}", e)
         }
     }
 
@@ -150,6 +171,7 @@ class DefinitionStore(private val assets: AssetSource) {
         private const val DEFINITIONS_ROOT = "definitions"
         private const val SIM_ROOT = "sim"
         private const val SWEEP_PLAN = "discovery/did-sweep"
+        private const val SEED_DIRECTORY = "discovery/seed"
         private const val VEHICLES_PREFIX = "vehicles/"
         private const val ADAPTERS_PREFIX = "adapters/"
         private const val TPMS_PREFIX = "tpms/"

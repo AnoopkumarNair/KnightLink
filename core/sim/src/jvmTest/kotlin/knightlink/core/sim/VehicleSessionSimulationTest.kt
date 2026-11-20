@@ -4,6 +4,11 @@ import knightlink.core.adapter.AdapterDefinition
 import knightlink.core.adapter.Elm327Driver
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleSession
+import knightlink.core.scan.DidAnswer
+import knightlink.core.scan.DidSweepPlan
+import knightlink.core.scan.ScanOutcome
+import knightlink.core.scan.ScanResult
+import knightlink.core.scan.SweepResult
 import knightlink.core.scheduler.PollResult
 import knightlink.core.signals.DefinitionFile
 import knightlink.core.signals.DefinitionJson
@@ -418,6 +423,35 @@ class VehicleSessionSimulationTest {
 
         val polling = assertIs<SessionState.Polling>(rig.session.state.value)
         assertEquals(listOf("7E1", "7E4"), polling.report.ecus.map { it.requestId })
+    }
+
+    private fun seedOf(requestId: String, vararg dids: String) = ScanResult(
+        outcome = ScanOutcome.COMPLETED,
+        sweeps = listOf(SweepResult(requestId, "seed", dids.size, dids.size, positive = dids.map { DidAnswer(it, "000000") })),
+    )
+
+    private val sweepPlan = DidSweepPlan.parse(File(System.getProperty("knightlink.repoRoot"), "definitions/discovery/did-sweep.json").readText())
+
+    @Test
+    fun seededDataIdentifiersArePolledWithoutAScanWhenTheUnitAnswered() = runTest {
+        val rig = rig(config = fastDpf(VehicleSession.Config(scanPlan = sweepPlan, seedScan = seedOf("7E0", "2001", "2002"))))
+        rig.session.start()
+        run(30.seconds)
+
+        assertIs<SessionState.Polling>(rig.session.state.value)
+        val requests = rig.simulated.current!!.requests()
+        assertTrue(requests.any { it.startsWith("222001") }, "the seeded identifier 2001 is never asked")
+        assertTrue(requests.any { it.startsWith("222002") }, "the seeded identifier 2002 is never asked")
+    }
+
+    @Test
+    fun aSeedNamingAControlUnitThatDoesNotAnswerIsNotUsed() = runTest {
+        val rig = rig(config = fastDpf(VehicleSession.Config(scanPlan = sweepPlan, seedScan = seedOf("7E3", "2001"))))
+        rig.session.start()
+        run(30.seconds)
+
+        assertIs<SessionState.Polling>(rig.session.state.value)
+        assertTrue(rig.simulated.current!!.requests().none { it.startsWith("2220") }, "a seed for another car must send nothing")
     }
 
     @Test

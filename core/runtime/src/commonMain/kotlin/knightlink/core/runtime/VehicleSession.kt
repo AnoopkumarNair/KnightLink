@@ -12,6 +12,7 @@ import knightlink.core.protocol.ElmStatus
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.FullScan
 import knightlink.core.scan.ScanRefusedException
+import knightlink.core.scan.ScanResult
 import knightlink.core.scheduler.DiagnosticRequester
 import knightlink.core.scheduler.PollItem
 import knightlink.core.scheduler.PollResult
@@ -147,6 +148,12 @@ public class VehicleSession(
         val incompleteProbeInterval: Duration = 2.seconds,
         /** What a full scan sweeps (see [startScan]); null means this session cannot scan. */
         val scanPlan: DidSweepPlan? = null,
+        /**
+         * The data identifiers an earlier full scan of this kind of vehicle found, so that they are polled raw from the first drive on without
+         * a parked scan (about 9 minutes with the engine running). Used only while no scan of this phone is known, and only when every control
+         * unit in it answered the probe; a real scan replaces it. Needs [scanPlan] for its limits.
+         */
+        val seedScan: ScanResult? = null,
         /** The scan's own settings: pace, how often the speed is read, and so on. */
         val scan: FullScan.Config = FullScan.Config(),
         /** While a scan waits for a car that moves, the session polls normally for this long between two readings of the speed. */
@@ -447,6 +454,7 @@ public class VehicleSession(
             // The probe's timing is done with; polling runs with the definition's own, and a re-init must restore that, not the probe's.
             if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty()) driver.applyScript(pollingScript, send = config.pollScript)
         }
+        applySeed(known.report)
         val items = confirmedPollItems(catalog, known.coverage, primaryEcu, config.pollPeriod)
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
         val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(discoveryItems) }
@@ -518,6 +526,26 @@ public class VehicleSession(
         memoryProbe = report.redacted()
         memoryDirty = true
         saveMemory()
+    }
+
+    /**
+     * Polls the identifiers of [Config.seedScan] when no scan of this phone is known (no stored scan, no scan run in this session). The seed
+     * is for one kind of vehicle: it is used only when every control unit it names answered the probe, so a different car gets nothing from it.
+     */
+    private suspend fun applySeed(report: CapabilityReport) {
+        val seed = config.seedScan ?: return
+        val plan = config.scanPlan ?: return
+        if (discoveryItems.isNotEmpty() || lastScan?.sweeps?.isNotEmpty() == true) return
+        val named = seed.sweeps.filter { it.positive.isNotEmpty() }.map { it.requestId.uppercase() }
+        val answering = report.ecus.map { it.requestId.uppercase() }.toSet()
+        val missing = named.filter { it !in answering }
+        if (named.isEmpty() || missing.isNotEmpty()) {
+            note(SessionEvents.MEMORY, "the seeded identifiers were not used: control unit(s) ${missing.joinToString()} did not answer the probe")
+            return
+        }
+        discoveryItems = discoveryPollItems(seed, plan, constantIds())
+        discoveryIds = discoveryItems.map { it.id }.toSet()
+        note(SessionEvents.MEMORY, "polling ${discoveryItems.size} seeded data identifiers (from an earlier scan of this kind of vehicle), no scan needed")
     }
 
     private fun constantIds(): Set<String> = history.filterValues { it.constant }.keys

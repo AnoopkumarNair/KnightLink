@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "outcome": "COMPLETED",
+  "detail": "Seed for the Tata Harrier 2020 Kryotec AT: the data identifiers that the full scan of 2026-11-18 found answering. Values are zeroed (only their length matters here); identities, VIN and fault codes are not part of it.",
+  "sweeps": [
+    {
+      "requestId": "7E1",
+      "label": "gearbox",
+      "planned": 2049,
+      "asked": 2049,
+      "positive": [
+        {
+          "did": "F400",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "F401",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "F420",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "F430",
+          "hex": "00",
+          "provenance": "inferred"
+        },
+        {
+          "did": "F431",
+          "hex": "0000",
+          "provenance": "inferred"
+        }
+      ]
+    },
+    {
+      "requestId": "7E0",
+      "label": "engine",
+      "planned": 2055,
+      "asked": 2055,
+      "positive": [
+        {
+          "did": "0415",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "0103",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2001",
+          "hex": "000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2002",
+          "hex": "000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2003",
+          "hex": "00",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2004",
+          "hex": "00",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2005",
+          "hex": "00",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2006",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2007",
+          "hex": "000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2008",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2009",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "200A",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "200B",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "200C",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2013",
+          "hex": "00",
+          "provenance": "inferred"
+        }
+      ]
+    },
+    {
+      "requestId": "7E4",
+      "label": "exhaust treatment",
+      "planned": 2048,
+      "asked": 2048,
+      "positive": [
+        {
+          "did": "2001",
+          "hex": "000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2002",
+          "hex": "000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2008",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2009",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "200A",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "200B",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "200C",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "2010",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "DD00",
+          "hex": "00000000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "DD0C",
+          "hex": "00",
+          "provenance": "inferred"
+        },
+        {
+          "did": "DD0D",
+          "hex": "00",
+          "provenance": "inferred"
+        },
+        {
+          "did": "F402",
+          "hex": "0000",
+          "provenance": "inferred"
+        },
+        {
+          "did": "F49B",
+          "hex": "00000000",
+          "provenance": "inferred"
+        }
+      ]
+    }
+  ]
+}
