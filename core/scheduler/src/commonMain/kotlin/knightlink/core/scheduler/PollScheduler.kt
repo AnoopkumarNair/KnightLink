@@ -136,15 +136,24 @@ public class PollScheduler(
 
     /**
      * Replaces the items added by an earlier call (not the ones given at construction) with [items], which share the request budget with the
-     * rest as every item does: the most overdue relative to its own period goes first. New items are due at once. For items that become known
-     * while the session runs, such as the data identifiers a scan found. Call it between polling rounds, not while [next] is running.
+     * rest as every item does: the most overdue relative to its own period goes first. New items are due at once; an item whose id was among
+     * the earlier extras keeps what was learned about its timing (when it was last asked, its misses and back-off), so changing the list
+     * does not make everything due at once again. For items that become known while the session runs, such as the data identifiers a scan
+     * found. Call it between polling rounds, not while [next] is running.
      */
     public fun replaceExtras(items: List<PollItem>) {
+        val earlier = extras.mapNotNull { entryOf[it] }.associateBy { it.item.id }
         entries.removeAll { it.item in extras }
         extras.forEach { entryOf.remove(it) }
         extras = items.toList()
         for (item in extras) {
             val entry = Entry(item)
+            earlier[item.id]?.let { old ->
+                entry.lastPolled = old.lastPolled
+                entry.misses = old.misses
+                entry.backoff = old.backoff
+                entry.batchMisses = old.batchMisses
+            }
             entries += entry
             entryOf[item] = entry
         }

@@ -84,7 +84,7 @@ public fun candidateCheckItems(checks: CandidateChecks, answering: Set<Int>): Li
     checks.checks.filter { it.requestCanId in answering }.flatMap { check ->
         check.identifiers().map { did ->
             PollItem(
-                id = discoveryItemId(check.requestCanId, did.toString(16).padStart(4, '0')),
+                id = "candidate:" + discoveryItemId(check.requestCanId, did.toString(16).padStart(4, '0')),
                 requestId = check.requestCanId,
                 payload = byteArrayOf(0x22, (did shr 8).toByte(), did.toByte()),
                 period = Duration.INFINITE,

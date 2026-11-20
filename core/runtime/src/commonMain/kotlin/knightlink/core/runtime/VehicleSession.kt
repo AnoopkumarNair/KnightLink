@@ -234,13 +234,33 @@ public class VehicleSession(
     /** The data identifiers the last scan found, polled raw from then on; kept across reconnects, like [knowledge]. */
     private var discoveryItems: List<PollItem> = emptyList()
 
-    // The one-time candidate check: asked in this app session already (it is not asked again on a reconnect), and the items of this
-    // connection that have not been asked yet (an item leaves when it has been; the scheduler is given the rest whenever its extras change).
-    private var candidatesAsked = false
-    private val candidatePending = LinkedHashMap<String, PollItem>()
+    // The one-time candidate check. The queue lives as long as the app session: an identifier that was asked leaves it for good, so a
+    // reconnect carries on where the last connection stopped. Only one candidate at a time is given to the scheduler, and the next one only
+    // after CANDIDATE_SPACING: a never-asked item is always due first, so 256 of them at once would push the vehicle's own signals aside.
+    private var candidatesQueued = false
+    private val candidateQueue = ArrayDeque<PollItem>()
+    private var candidateActive: PollItem? = null
+    private var candidateNextAt: Duration = Duration.ZERO
 
-    /** What the scheduler polls beyond the vehicle's own signals: the discovery identifiers, and the candidates not yet asked. */
-    private fun extras(): List<PollItem> = discoveryItems + candidatePending.values
+    /** What the scheduler polls beyond the vehicle's own signals: the discovery identifiers, and the candidate being asked now. */
+    private fun extras(): List<PollItem> = discoveryItems + listOfNotNull(candidateActive)
+
+    /**
+     * Called with every result: the active candidate leaves when it has been asked (answered or refused), and the next one is given to the
+     * scheduler when CANDIDATE_SPACING has passed. Nothing happens when there is no check.
+     */
+    private fun feedCandidates(result: PollResult, now: Duration) {
+        val active = candidateActive
+        if (active != null && result.item.id == active.id) {
+            candidateActive = null
+            candidateNextAt = now + CANDIDATE_SPACING
+            activeScheduler?.replaceExtras(extras())
+        }
+        if (candidateActive == null && candidateQueue.isNotEmpty() && now >= candidateNextAt) {
+            candidateActive = candidateQueue.removeFirst()
+            activeScheduler?.replaceExtras(extras())
+        }
+    }
     private var discoveryIds: Set<String> = emptySet()
 
     // What is remembered about the vehicle between sessions (see [Config.memory]); only the session coroutine and the poll collector touch it.
@@ -468,9 +488,21 @@ public class VehicleSession(
             // The probe's timing is done with; polling runs with the definition's own, and a re-init must restore that, not the probe's.
             if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty()) driver.applyScript(pollingScript, send = config.pollScript)
         }
-        applySeed(known.report)
-        candidatePending.clear()
-        applyCandidates(known.report)
+        // A convenience, never a reason to fail the connection: a bad seed or candidate file only costs itself.
+        try {
+            applySeed(known.report)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            note(SessionEvents.MEMORY, "the seeded identifiers were not used: ${e.message ?: e::class.simpleName}")
+        }
+        try {
+            applyCandidates(known.report)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            note(SessionEvents.MEMORY, "the one-time identifier check was not used: ${e.message ?: e::class.simpleName}")
+        }
         val items = confirmedPollItems(catalog, known.coverage, primaryEcu, config.pollPeriod)
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
         val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(extras()) }
@@ -552,14 +584,15 @@ public class VehicleSession(
         val seed = config.seedScan ?: return
         val plan = config.scanPlan ?: return
         if (discoveryItems.isNotEmpty() || lastScan?.sweeps?.isNotEmpty() == true) return
-        val named = seed.sweeps.filter { it.positive.isNotEmpty() }.map { it.requestId.uppercase() }
+        // Per control unit: a unit that did not answer the probe (asleep, slow to wake) costs only its own identifiers.
         val answering = report.ecus.map { it.requestId.uppercase() }.toSet()
-        val missing = named.filter { it !in answering }
-        if (named.isEmpty() || missing.isNotEmpty()) {
-            note(SessionEvents.MEMORY, "the seeded identifiers were not used: control unit(s) ${missing.joinToString()} did not answer the probe")
+        val usable = seed.copy(sweeps = seed.sweeps.filter { it.positive.isNotEmpty() && it.requestId.uppercase() in answering })
+        val items = if (usable.sweeps.isEmpty()) emptyList() else discoveryPollItems(usable, plan, constantIds())
+        if (items.isEmpty()) {
+            note(SessionEvents.MEMORY, "the seeded identifiers were not used: no control unit they name answered the probe, or none is worth polling")
             return
         }
-        discoveryItems = discoveryPollItems(seed, plan, constantIds())
+        discoveryItems = items
         discoveryIds = discoveryItems.map { it.id }.toSet()
         note(SessionEvents.MEMORY, "polling ${discoveryItems.size} seeded data identifiers (from an earlier scan of this kind of vehicle), no scan needed")
     }
@@ -567,13 +600,22 @@ public class VehicleSession(
     /** Adds the one-time candidate check (once per app session) for the control units that answered the probe. */
     private suspend fun applyCandidates(report: CapabilityReport) {
         val checks = config.candidateChecks ?: return
-        if (candidatesAsked) return
+        if (candidatesQueued) {
+            // A reconnect: the one that was in flight when the link went is asked again, then the queue carries on.
+            candidateActive?.let { candidateQueue.addFirst(it) }
+            candidateActive = null
+            candidateNextAt = Duration.ZERO
+            return
+        }
         val answering = report.ecus.mapNotNull { it.requestId.toIntOrNull(16) }.toSet()
         val items = candidateCheckItems(checks, answering)
-        candidatesAsked = true
+        candidatesQueued = true
         if (items.isEmpty()) return
-        items.forEach { candidatePending[it.id] = it }
-        note(SessionEvents.MEMORY, "asking ${items.size} untested data identifiers once, to see whether any answers (read-only)")
+        candidateQueue.addAll(items)
+        note(
+            SessionEvents.MEMORY,
+            "asking ${items.size} untested data identifiers once, one about every ${CANDIDATE_SPACING.inWholeSeconds} s, to see whether any answers (read-only)",
+        )
     }
 
     private fun constantIds(): Set<String> = history.filterValues { it.constant }.keys
@@ -979,7 +1021,7 @@ public class VehicleSession(
             isCleanNoData(result) -> if (noDataSince == null) noDataSince = timeSource.markNow()
             else -> noDataSince = null
         }
-        candidatePending.remove(result.item.id)
+        feedCandidates(result, sessionStart.elapsedNow())
         observeDiscovery(result)
         if (result.answered) {
             lastAnswer = timeSource.markNow()
@@ -1115,3 +1157,6 @@ public class VehicleSession(
         val RATES_LOG_INTERVAL: Duration = 30.seconds
     }
 }
+
+/** The pause between two identifiers of the one-time check: it must not take more than a small share of the bus. */
+private val CANDIDATE_SPACING: Duration = 1.seconds

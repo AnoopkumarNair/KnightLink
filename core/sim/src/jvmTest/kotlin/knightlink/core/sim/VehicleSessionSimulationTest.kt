@@ -473,6 +473,76 @@ class VehicleSessionSimulationTest {
         assertTrue(rig.simulated.current!!.requests().none { it.startsWith("221F1") }, "not asked again on a reconnect in the same app session")
     }
 
+    private fun wholeRange() = CandidateChecks.parse(
+        """{"schemaVersion":1,"id":"t","checks":[{"requestId":"7E1","label":"u","ranges":[{"from":"1F00","to":"1FFF"}]}]}""",
+    )
+
+    @Test
+    fun aFullRangeOfCandidatesIsPacedAndNeitherStarvesTheLiveSignalsNorTriggersRecovery() = runTest {
+        // The review of 2026-11-20: 256 never-asked items were all due first, so live polling stopped and the silence watchdog kept firing.
+        val baseline = rig(config = fastDpf())
+        baseline.session.start()
+        run(60.seconds)
+        val baselineLive = baseline.simulated.current!!.requests().count { it.startsWith("01") }
+
+        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = wholeRange())))
+        rig.session.start()
+        run(60.seconds)
+
+        val requests = rig.simulated.current!!.requests()
+        val candidates = requests.count { it.startsWith("221F") }
+        assertTrue(candidates in 35..75, "about one a second, not a burst: $candidates in about 55 s")
+        val live = requests.count { it.startsWith("01") }
+        assertTrue(live * 10 >= baselineLive * 7, "the live signals keep most of their share: $live requests against $baselineLive without the check")
+        assertTrue(rig.kinds.none { it is SessionState.Recovering || it is SessionState.Reconnecting }, "no recovery: ${rig.kinds.distinct()}")
+        assertIs<SessionState.Polling>(rig.session.state.value)
+    }
+
+    @Test
+    fun everyCandidateIsAskedExactlyOnceEvenWhenTheAdapterIsInitialisedAgain() = runTest {
+        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = wholeRange())))
+        rig.session.start()
+        run(120.seconds)
+        // A reset mid-way makes the loop start again ("restart"); what was asked must not be asked again.
+        rig.simulated.current!!.disconnect()
+        run(250.seconds)
+
+        val all = rig.simulated.current!!.requests().filter { it.startsWith("221F") }
+        val first = all.groupingBy { it }.eachCount()
+        assertTrue(first.values.all { it == 1 }, "asked twice: ${first.filterValues { it > 1 }.keys}")
+    }
+
+    @Test
+    fun aSeedForSeveralUnitsStillWorksWhenOneOfThemDidNotAnswer() = runTest {
+        val seed = ScanResult(
+            outcome = ScanOutcome.COMPLETED,
+            sweeps = listOf(
+                SweepResult("7E0", "engine", 1, 1, positive = listOf(DidAnswer("2001", "000000"))),
+                SweepResult("7E3", "absent", 1, 1, positive = listOf(DidAnswer("2002", "000000"))),
+            ),
+        )
+        val rig = rig(config = fastDpf(VehicleSession.Config(scanPlan = sweepPlan, seedScan = seed)))
+        rig.session.start()
+        run(30.seconds)
+
+        val requests = rig.simulated.current!!.requests()
+        assertTrue(requests.any { it.startsWith("222001") }, "the unit that answered keeps its identifiers")
+        assertTrue(requests.none { it.startsWith("222002") }, "the unit that did not answer is left out")
+    }
+
+    @Test
+    fun aBrokenSeedCostsTheSeedAndNotTheConnection() = runTest {
+        val seed = ScanResult(
+            outcome = ScanOutcome.COMPLETED,
+            sweeps = listOf(SweepResult("7E0", "engine", 1, 1, positive = listOf(DidAnswer("20O1", "0G")))),
+        )
+        val rig = rig(config = fastDpf(VehicleSession.Config(scanPlan = sweepPlan, seedScan = seed)))
+        rig.session.start()
+        run(30.seconds)
+
+        assertIs<SessionState.Polling>(rig.session.state.value)
+    }
+
     @Test
     fun aCandidateCheckForAUnitThatDoesNotAnswerSendsNothing() = runTest {
         val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = candidates("7E3"))))

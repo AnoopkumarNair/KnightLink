@@ -113,7 +113,8 @@ class SessionService : Service() {
     @Volatile
     private var wakeLock: PowerManager.WakeLock? = null
 
-    // The heartbeat that notices when the whole app stood still; see startStallWatch.
+    // The heartbeat that notices when the whole app stood still; see startStallWatch. Touched from the main thread and from the scope.
+    @Volatile
     private var stallJob: Job? = null
 
     override fun onCreate() {
@@ -203,6 +204,8 @@ class SessionService : Service() {
      * met, or the system refuses a foreground start for any other reason, the service carries on as an ordinary one.
      */
     private fun enterForeground() {
+        // The heartbeat runs whether or not the system lets the service become a foreground one: that is when it is most worth having.
+        startStallWatch()
         var type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val hasLocation = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -215,7 +218,6 @@ class SessionService : Service() {
             ServiceCompat.startForeground(this, SessionNotifications.ID, notifications.build(controller.uiState.value.connection), type)
             foreground = true
             acquireWakeLock()
-            startStallWatch()
             connectionLog.app("service: running in the foreground")
         } catch (e: RuntimeException) {
             // SecurityException (precondition missing), ForegroundServiceStartNotAllowedException and
@@ -258,19 +260,26 @@ class SessionService : Service() {
      * stand-still it was and the phone's power state when it came back (see [StallWatch]). Whatever the cause of a stall, the recording
      * alone could not say; this can, from the next drive.
      */
+    @Synchronized
     private fun startStallWatch() {
         if (stallJob?.isActive == true) return
         stallJob = scope.launch {
             val watch = StallWatch()
             while (true) {
-                watch.tick(SystemClock.elapsedRealtime(), SystemClock.uptimeMillis())?.let { stall ->
-                    connectionLog.app(stall.describe() + "; " + powerState())
+                try {
+                    watch.tick(SystemClock.elapsedRealtime(), SystemClock.uptimeMillis())?.let { stall ->
+                        connectionLog.app(stall.describe() + "; " + powerState())
+                    }
+                } catch (e: RuntimeException) {
+                    // A diagnostic must never end itself silently: say so once per failure and carry on.
+                    Log.w(TAG, "Stall watch failed", e)
                 }
                 delay(StallWatch.TICK_MS)
             }
         }
     }
 
+    @Synchronized
     private fun stopStallWatch() {
         stallJob?.cancel()
         stallJob = null
