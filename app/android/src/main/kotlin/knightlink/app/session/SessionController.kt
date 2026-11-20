@@ -338,12 +338,20 @@ class SessionController(
             connectionLog?.app("no seeded data identifiers: ${e.message}")
             null
         }
+        // Only on a real link: the demo's car is virtual, and asking it about identifiers would only slow its scenario down.
+        val candidates = try {
+            if (target is ConnectionTarget.Ble) store.candidateChecks(config.vehicleDefinition) else null
+        } catch (e: DefinitionStoreException) {
+            connectionLog?.app("no one-time identifier check: ${e.message}")
+            null
+        }
         val sessionSettings = sessionConfig.copy(
             probeScript = adapter.probeScript,
             pollScript = adapter.pollScript,
             driver = adapter.driverConfig(),
             scanPlan = plan,
             seedScan = seed,
+            candidateChecks = candidates,
         )
         // The recording gets every event (it is the replayable record); the text log gets the same ones, except the scan's result, which is
         // a long line of JSON that belongs in the recording and its sidecar, not in a log that is meant to be read on a phone.

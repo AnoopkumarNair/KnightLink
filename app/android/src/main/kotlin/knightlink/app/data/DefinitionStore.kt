@@ -2,6 +2,7 @@ package knightlink.app.data
 
 import knightlink.app.ui.voice.ThemePack
 import knightlink.core.adapter.AdapterDefinition
+import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.ScanResult
 import knightlink.core.signals.DefinitionException
@@ -97,6 +98,26 @@ class DefinitionStore(private val assets: AssetSource) {
     }
 
     /**
+     * The identifiers to try once for vehicle definition [vehicleId] (`definitions/discovery/candidates/<vehicle>.json`), or null when there
+     * is no such file.
+     *
+     * @throws DefinitionStoreException if the file exists and is not valid.
+     */
+    fun candidateChecks(vehicleId: String): CandidateChecks? {
+        val path = "$DEFINITIONS_ROOT/$CANDIDATES_DIRECTORY/${checked(vehicleId).removePrefix(VEHICLES_PREFIX)}$JSON"
+        val text = try {
+            assets.open(path)
+        } catch (e: IOException) {
+            return null
+        }
+        return try {
+            CandidateChecks.parse(text)
+        } catch (e: IllegalArgumentException) {
+            throw DefinitionStoreException("Invalid candidate file '$path': ${e.message}", e)
+        }
+    }
+
+    /**
      * The decoder of tyre sensor definition [id] (`tpms/<brand>`).
      *
      * @throws DefinitionStoreException if the file is missing or invalid, or a formula does not compile.
@@ -172,6 +193,7 @@ class DefinitionStore(private val assets: AssetSource) {
         private const val SIM_ROOT = "sim"
         private const val SWEEP_PLAN = "discovery/did-sweep"
         private const val SEED_DIRECTORY = "discovery/seed"
+        private const val CANDIDATES_DIRECTORY = "discovery/candidates"
         private const val VEHICLES_PREFIX = "vehicles/"
         private const val ADAPTERS_PREFIX = "adapters/"
         private const val TPMS_PREFIX = "tpms/"

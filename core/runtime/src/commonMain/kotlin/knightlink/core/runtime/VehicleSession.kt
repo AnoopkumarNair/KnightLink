@@ -9,6 +9,7 @@ import knightlink.core.common.emit
 import knightlink.core.common.toHex
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmStatus
+import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.FullScan
 import knightlink.core.scan.ScanRefusedException
@@ -154,6 +155,11 @@ public class VehicleSession(
          * unit in it answered the probe; a real scan replaces it. Needs [scanPlan] for its limits.
          */
         val seedScan: ScanResult? = null,
+        /**
+         * Identifiers no scan has asked yet, asked once per app session while connected, for the control units that answered the probe (see
+         * [candidateCheckItems]). Their answers show in the recording; nothing else is done with them.
+         */
+        val candidateChecks: CandidateChecks? = null,
         /** The scan's own settings: pace, how often the speed is read, and so on. */
         val scan: FullScan.Config = FullScan.Config(),
         /** While a scan waits for a car that moves, the session polls normally for this long between two readings of the speed. */
@@ -227,6 +233,14 @@ public class VehicleSession(
 
     /** The data identifiers the last scan found, polled raw from then on; kept across reconnects, like [knowledge]. */
     private var discoveryItems: List<PollItem> = emptyList()
+
+    // The one-time candidate check: asked in this app session already (it is not asked again on a reconnect), and the items of this
+    // connection that have not been asked yet (an item leaves when it has been; the scheduler is given the rest whenever its extras change).
+    private var candidatesAsked = false
+    private val candidatePending = LinkedHashMap<String, PollItem>()
+
+    /** What the scheduler polls beyond the vehicle's own signals: the discovery identifiers, and the candidates not yet asked. */
+    private fun extras(): List<PollItem> = discoveryItems + candidatePending.values
     private var discoveryIds: Set<String> = emptySet()
 
     // What is remembered about the vehicle between sessions (see [Config.memory]); only the session coroutine and the poll collector touch it.
@@ -455,9 +469,11 @@ public class VehicleSession(
             if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty()) driver.applyScript(pollingScript, send = config.pollScript)
         }
         applySeed(known.report)
+        candidatePending.clear()
+        applyCandidates(known.report)
         val items = confirmedPollItems(catalog, known.coverage, primaryEcu, config.pollPeriod)
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
-        val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(discoveryItems) }
+        val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(extras()) }
         activeScheduler = scheduler
         val loop = PollingLoop(requester, scheduler, timeSource)
         val decoder = TelemetryDecoder(catalog)
@@ -548,6 +564,18 @@ public class VehicleSession(
         note(SessionEvents.MEMORY, "polling ${discoveryItems.size} seeded data identifiers (from an earlier scan of this kind of vehicle), no scan needed")
     }
 
+    /** Adds the one-time candidate check (once per app session) for the control units that answered the probe. */
+    private suspend fun applyCandidates(report: CapabilityReport) {
+        val checks = config.candidateChecks ?: return
+        if (candidatesAsked) return
+        val answering = report.ecus.mapNotNull { it.requestId.toIntOrNull(16) }.toSet()
+        val items = candidateCheckItems(checks, answering)
+        candidatesAsked = true
+        if (items.isEmpty()) return
+        items.forEach { candidatePending[it.id] = it }
+        note(SessionEvents.MEMORY, "asking ${items.size} untested data identifiers once, to see whether any answers (read-only)")
+    }
+
     private fun constantIds(): Set<String> = history.filterValues { it.constant }.keys
 
     private fun rebuildDiscovery() {
@@ -590,7 +618,7 @@ public class VehicleSession(
         memoryDirty = true
         if (old != null && old.constant && updated.changed) {
             rebuildDiscovery()
-            activeScheduler?.replaceExtras(discoveryItems)
+            activeScheduler?.replaceExtras(extras())
         }
     }
 
@@ -745,7 +773,7 @@ public class VehicleSession(
         memoryDirty = true
         if (result.sweeps.isNotEmpty()) {
             rebuildDiscovery()
-            scheduler.replaceExtras(discoveryItems)
+            scheduler.replaceExtras(extras())
             note(
                 SessionEvents.SCAN,
                 "polling ${discoveryItems.size} identifiers that the scan found, raw, about every ${discoveryPeriod(discoveryItems.size)} " +
@@ -951,6 +979,7 @@ public class VehicleSession(
             isCleanNoData(result) -> if (noDataSince == null) noDataSince = timeSource.markNow()
             else -> noDataSince = null
         }
+        candidatePending.remove(result.item.id)
         observeDiscovery(result)
         if (result.answered) {
             lastAnswer = timeSource.markNow()

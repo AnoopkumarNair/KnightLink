@@ -4,6 +4,7 @@ import knightlink.core.adapter.AdapterDefinition
 import knightlink.core.adapter.Elm327Driver
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleSession
+import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidAnswer
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.ScanOutcome
@@ -452,6 +453,32 @@ class VehicleSessionSimulationTest {
 
         assertIs<SessionState.Polling>(rig.session.state.value)
         assertTrue(rig.simulated.current!!.requests().none { it.startsWith("2220") }, "a seed for another car must send nothing")
+    }
+
+    private fun candidates(requestId: String) = CandidateChecks.parse(
+        """{"schemaVersion":1,"id":"t","checks":[{"requestId":"$requestId","label":"u","ranges":[{"from":"1F10","to":"1F13"}]}]}""",
+    )
+
+    @Test
+    fun theCandidateCheckAsksEachIdentifierOnceForAnAnsweringUnitAndNotAgainAfterAReconnect() = runTest {
+        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = candidates("7E1"))))
+        rig.session.start()
+        run(30.seconds)
+        val first = rig.simulated.current!!.requests().filter { it.startsWith("221F1") }
+        assertEquals(listOf("221F10", "221F11", "221F12", "221F13"), first.map { it.take(6) }.distinct().sorted())
+        assertEquals(4, first.size, "each identifier is asked once")
+
+        rig.simulated.current!!.disconnect()
+        run(30.seconds)
+        assertTrue(rig.simulated.current!!.requests().none { it.startsWith("221F1") }, "not asked again on a reconnect in the same app session")
+    }
+
+    @Test
+    fun aCandidateCheckForAUnitThatDoesNotAnswerSendsNothing() = runTest {
+        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = candidates("7E3"))))
+        rig.session.start()
+        run(30.seconds)
+        assertTrue(rig.simulated.current!!.requests().none { it.startsWith("221F1") })
     }
 
     @Test
