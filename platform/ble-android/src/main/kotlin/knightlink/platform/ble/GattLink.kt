@@ -189,6 +189,7 @@ internal class GattLink(
         awaitConnected()
         delay(config.settleAfterConnect)
         ensureOpen()
+        requestFastLink(gatt)
         payloadBytes = negotiatePayloadSize(gatt)
         val found = resolveSerialChannel(gatt)
         enableNotifications(gatt, found.first, found.second)
@@ -211,6 +212,22 @@ internal class GattLink(
                 "Timed out after ${config.connectTimeout} waiting for the adapter. " +
                     "Check that it is plugged in, in range, and not connected to another phone.",
             )
+    }
+
+    /**
+     * Asks for a short connection interval (see [BleTransport.Config.highPriorityLink]). A hint with no callback to wait for, and the SDK
+     * offers no public way to read the interval that was granted: what it changes shows in the round-trip times of the recording.
+     */
+    private fun requestFastLink(gatt: BluetoothGatt) {
+        if (!config.highPriorityLink) return
+        val accepted =
+            try {
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            } catch (e: SecurityException) {
+                // The permission is checked again by the next operation, which fails the connection properly; a hint is not worth that.
+                false
+            }
+        Log.i(TAG, "Requested a fast connection interval: ${if (accepted) "accepted by the stack" else "refused by the stack"}")
     }
 
     /** Asks for a bigger MTU; whatever comes back (or the default if nothing does) decides how large each write may be. */

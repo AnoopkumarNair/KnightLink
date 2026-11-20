@@ -55,6 +55,13 @@ public class BleTransport(
          * an operation started right after the connection; a short settle time avoids that.
          */
         val settleAfterConnect: Duration = 1.seconds,
+        /**
+         * Ask Android for a short connection interval (`CONNECTION_PRIORITY_HIGH`, about 11 to 15 ms instead of the default 30 to 50 ms).
+         * Every exchange with the adapter is a few intervals long, so this can shorten the round trip of each request: on 2026-11-20 a
+         * batched request took about 70 ms and the adapter was busy 83 % of the time. It costs the phone a little more radio power while
+         * connected, and a phone or adapter may grant something else (the request is a hint). A failure of the request is ignored.
+         */
+        val highPriorityLink: Boolean = true,
     ) {
         init {
             require(requestedMtu == null || requestedMtu in MIN_MTU..MAX_MTU) { "requestedMtu must be in $MIN_MTU..$MAX_MTU, was $requestedMtu" }
