@@ -87,18 +87,6 @@ class DidSweepFileTest {
     }
 
     @Test
-    fun theHarrierCandidateFileIsValidAndAsksTheGearboxForTheUntestedRange() {
-        val file = File(System.getProperty("knightlink.repoRoot"), "definitions/discovery/candidates/tata/harrier-2020-kryotec-at.json")
-        val checks = CandidateChecks.parse(file.readText())
-        val gearbox = checks.checks.single { it.requestId == "7E1" }
-        val asked = gearbox.identifiers()
-        assertTrue(0x1F12 in asked && 0x1F00 in asked && 0x1FFF in asked)
-        assertEquals(256, asked.size)
-        // 1E00-1EFF was swept by the first scan: nothing here repeats it.
-        assertTrue(asked.none { it in 0x1E00..0x1EFF })
-    }
-
-    @Test
     fun aCandidateFileThatAsksForTooMuchOrIsMalformedIsRefused() {
         val big = """{"schemaVersion":1,"id":"x","checks":[{"requestId":"7E1","label":"g","ranges":[{"from":"0000","to":"0FFF"}]}]}"""
         assertTrue(runCatching { CandidateChecks.parse(big) }.isFailure)

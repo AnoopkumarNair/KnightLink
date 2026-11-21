@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "id": "discovery/candidates/tata/harrier-2020-kryotec-at",
-  "notes": "Identifiers that no scan has asked yet and that are worth one try, asked once per app session while connected (read-only service 22). 2026-11-20: a community database (OBDb, unconfirmed for the Harrier) names 1F12 (torque converter temperature) on the gearbox; the 2026-11-18 scan covered 1E00-1EFF but not 1F00-1FFF. Answers appear in the recording as 22 1Fxx requests to 7E1 and their 62 replies. Delete this file once the answer is known.",
-  "checks": [
-    { "requestId": "7E1", "label": "gearbox", "ranges": [ { "from": "1F00", "to": "1FFF" } ] }
-  ]
-}
