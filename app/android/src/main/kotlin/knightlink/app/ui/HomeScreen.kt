@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -63,8 +62,6 @@ import knightlink.app.session.VehicleSummary
 import knightlink.app.session.groupByPrefix
 import knightlink.app.text
 import knightlink.app.textRes
-import knightlink.app.ui.voice.VoiceBoxDisplayMode
-import knightlink.app.ui.voice.VoiceBoxRenderer
 import knightlink.app.voice.MediaButtonGesture
 import knightlink.app.voice.PushToTalkState
 import knightlink.app.voice.RecognitionError
@@ -376,16 +373,6 @@ private fun VoiceCard(voice: VoiceActions) {
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
-
-            // Embedded live audio-reactive visualizer box
-            VoiceBoxRenderer(
-                archetype = voice.activeArchetype,
-                level = voice.visualizerLevel,
-                displayMode = VoiceBoxDisplayMode.PORTRAIT_HERO,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(130.dp),
-            )
 
             Row(
                 Modifier.fillMaxWidth(),

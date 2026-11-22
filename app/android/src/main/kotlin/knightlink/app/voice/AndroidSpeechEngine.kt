@@ -152,8 +152,34 @@ class AndroidSpeechEngine(
             tts.setAudioAttributes(attributes)
             val locale = pickLocale(Locale.getDefault()) { isUsable(tts.isLanguageAvailable(it)) }
             languageAvailable = locale != null && isUsable(tts.setLanguage(locale))
+            if (languageAvailable && locale != null) chooseDeepVoice(locale)
             if (!languageAvailable) Log.w(TAG, "The speech engine has no usable language; relying on its own default")
         }
+    }
+
+    /**
+     * Prefers an installed male voice for the language and lowers the pitch for a heavier sound. Android reports no gender, so a voice
+     * counts as male when its name says so (`#male_1`) or carries one of the codes Google's voices are known to use for men; with
+     * none of those installed the engine's own voice stays and only the pitch changes. The pitch applies to whichever voice is used.
+     */
+    private fun chooseDeepVoice(locale: Locale) {
+        try {
+            val candidates = tts.voices.orEmpty().filter {
+                it.locale.language == locale.language && !it.isNetworkConnectionRequired && "notInstalled" !in it.features.orEmpty()
+            }
+            val male = candidates.firstOrNull { it.name.contains("male", ignoreCase = true) && !it.name.contains("female", ignoreCase = true) }
+                ?: candidates.firstOrNull { voice -> MALE_VOICE_CODES.any { "-x-$it-" in voice.name } }
+            if (male != null) {
+                tts.voice = male
+                Log.i(TAG, "Speaking with the male voice ${male.name}")
+            } else {
+                Log.i(TAG, "No male voice found among ${candidates.size} installed; lowering the pitch only")
+            }
+        } catch (e: RuntimeException) {
+            // A voice list the engine cannot give is not worth losing the language for.
+            Log.w(TAG, "Could not choose a voice: ${e.message}")
+        }
+        tts.setPitch(DEEP_PITCH)
     }
 
     private fun isUsable(availability: Int): Boolean =
@@ -293,6 +319,12 @@ class AndroidSpeechEngine(
 
     private companion object {
         const val TAG = "KnightLinkVoice"
+
+        /** 1.0 is the voice's own pitch; lower is deeper. */
+        const val DEEP_PITCH = 0.8f
+
+        /** Codes in Google voice names (`en-us-x-<code>-local`) that are men's voices; the list is a best effort and harmless when wrong. */
+        val MALE_VOICE_CODES = listOf("iol", "iom", "tpd", "rjs", "gbb", "gbd", "ene", "end", "cxx")
         const val CACHE_DIRECTORY = "voice"
         const val INIT_TIMEOUT_MS = 5_000L
         const val SYNTHESIS_TIMEOUT_MS = 10_000L
