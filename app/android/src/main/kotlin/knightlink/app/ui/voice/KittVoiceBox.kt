@@ -113,7 +113,7 @@ private fun DrawScope.drawColumn(
         val topLeft = Offset(x, midY + offset * pitch - barHeight / 2f)
         if (on) {
             val halo = barHeight * 0.45f
-            drawRoundRect(lit.copy(alpha = alpha * 0.22f), Offset(topLeft.x - halo, topLeft.y - halo), Size(width + halo * 2, barHeight + halo * 2), corner)
+            drawRoundRect(lit.copy(alpha = alpha * 0.09f), Offset(topLeft.x - halo, topLeft.y - halo), Size(width + halo * 2, barHeight + halo * 2), corner)
         }
         drawRoundRect(lit.copy(alpha = alpha), topLeft, Size(width, barHeight), corner)
     }
