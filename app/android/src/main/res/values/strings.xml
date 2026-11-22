@@ -34,6 +34,10 @@
     <string name="drive_mode_eco">Eco</string>
     <string name="drive_mode_city">City</string>
     <string name="drive_mode_sport">Sport</string>
+    <string name="capture_passive">Passive capture</string>
+    <string name="capture_back_to_active">Back to active polling</string>
+    <string name="capture_hint">Passive capture only listens to what the car broadcasts and asks it nothing; live values pause meanwhile. Use it for a stretch of the drive, then go back.</string>
+    <string name="capture_live_paused">Passive capture: live values paused</string>
     <string name="drive_no_refuel">No refuel seen yet. One is noticed when the fuel level jumps up, also after the car was switched off to fill it.</string>
     <string name="drive_last_refuel">Last refuel: about %1$d L (level %2$d%% to %3$d%%) %4$s</string>
     <string name="drive_refuel_count">Refuels found in all: %1$d</string>

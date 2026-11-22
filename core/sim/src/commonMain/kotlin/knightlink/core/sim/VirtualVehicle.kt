@@ -106,8 +106,30 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
     }
 }
 
+/**
+ * A frame the car sends on its own, over and over, whether anyone asks or not (gear, torque, odometer ...).
+ *
+ * @property id the 11-bit CAN identifier
+ * @property periodMs milliseconds between two frames
+ * @property data the data bytes (0..8) of the n-th frame, counting from 0; may change over time
+ */
+public class VirtualBroadcast(public val id: Int, public val periodMs: Int, public val data: (Int) -> ByteArray) {
+    init {
+        require(id in 0..0x7FF) { "an 11-bit identifier is 0..7FF" }
+        require(periodMs > 0) { "periodMs must be positive" }
+    }
+}
+
 /** A simulated vehicle: a set of ECUs on one 11-bit CAN bus. */
 public class VirtualVehicle(public val ecus: List<VirtualEcu>) {
+    /** The frames the car broadcasts by itself; heard by an adapter that monitors the bus ([VirtualElm327] `ATMA`), never by a request. */
+    public val broadcasts: MutableList<VirtualBroadcast> = ArrayList()
+
+    /** Adds a broadcast: [id] every [periodMs] ms with the bytes [data] gives for the n-th frame. */
+    public fun broadcast(id: Int, periodMs: Int, data: (Int) -> ByteArray) {
+        broadcasts += VirtualBroadcast(id, periodMs, data)
+    }
+
     /** False simulates a car with the ignition off: the adapter works, but no ECU answers anything. */
     public var awake: Boolean = true
 

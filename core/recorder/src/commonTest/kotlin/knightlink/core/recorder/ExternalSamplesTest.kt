@@ -216,4 +216,13 @@ class ExternalSamplesTest {
         assertEquals("mode ECO", ExternalSamples.scrub("mode ECO"))
         assertEquals("mode -", ExternalSamples.scrub("mode my street 12"))
     }
+
+    @Test
+    fun aCaptureLineSaysPassiveOrActiveAndNothingElseSurvivesScrubbing() {
+        assertEquals("capture passive", ExternalSamples.captureLine(passive = true))
+        assertEquals("capture active", ExternalSamples.captureLine(passive = false))
+        assertEquals("capture passive", ExternalSamples.scrub("capture passive"))
+        assertEquals("capture active", ExternalSamples.scrub("capture active"))
+        assertEquals("capture active", ExternalSamples.scrub("capture my street 12"))
+    }
 }

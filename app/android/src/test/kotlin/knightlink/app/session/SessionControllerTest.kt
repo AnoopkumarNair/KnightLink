@@ -354,4 +354,23 @@ class SessionControllerTest {
         assertTrue(state.liveValues.isNotEmpty(), "the last values are kept")
         assertNotNull(state.vehicle, "the vehicle card is kept")
     }
+
+    @Test
+    fun passiveCaptureShowsInTheStateAndTheSessionCanBeSwitchedBackAndForth() = runTest {
+        val rig = rig()
+        assertFalse(rig.controller.setCaptureMode(passive = true), "nothing to switch without a session")
+        rig.controller.connect(demo)
+        awaitLive(rig.controller)
+        advanceTimeBy(1.seconds)
+        assertEquals(knightlink.core.runtime.CaptureMode.ACTIVE, rig.controller.uiState.value.captureMode)
+
+        assertTrue(rig.controller.setCaptureMode(passive = true))
+        advanceTimeBy(1.seconds)
+        assertEquals(knightlink.core.runtime.CaptureMode.PASSIVE, rig.controller.uiState.value.captureMode)
+        assertTrue(rig.controller.setCaptureMode(passive = false))
+        advanceTimeBy(3.seconds)
+        assertEquals(knightlink.core.runtime.CaptureMode.ACTIVE, rig.controller.uiState.value.captureMode)
+
+        rig.controller.disconnect()
+    }
 }

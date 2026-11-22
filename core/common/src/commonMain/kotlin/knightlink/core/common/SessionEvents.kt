@@ -92,6 +92,12 @@ public object SessionEvents {
     /** The full scan is over (finished, cancelled or stopped by a fault). The detail is the result as one line of JSON, with the VIN masked. */
     public const val SCAN_RESULT: String = "scan-result"
 
+    /** What one slice of passive capture heard: group, duration, frame count, the busiest identifiers (no frame contents). */
+    public const val PASSIVE_SLICE: String = "passive-slice"
+
+    /** Passive capture started or ended (button, link loss, silent bus, adapter that cannot monitor). The detail says why. */
+    public const val CAPTURE_MODE: String = "capture-mode"
+
     /** The session ended. The detail says why. */
     public const val END: String = "end"
 

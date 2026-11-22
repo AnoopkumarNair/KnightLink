@@ -15,12 +15,17 @@ import knightlink.core.protocol.ElmStreamFramer
 import knightlink.core.transport.ByteStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
@@ -285,6 +290,62 @@ public class Elm327Driver(
     override suspend fun request(requestId: Int, payload: ByteArray, expectedResponses: Int?): ElmResponse =
         request(requestId, payload, expectedResponses, config.commandTimeout)
 
+    /**
+     * Sends one adapter command on the passive capture path, which [ReadOnlyPolicy.passiveViolation] gates (much narrower than for
+     * [command]). Used to set up and to restore the adapter around [monitor].
+     */
+    public suspend fun passiveCommand(text: String): List<String> =
+        lock.withLock { exchangeOnce(text, config.commandTimeout, passive = true).lines }
+
+    /**
+     * Listens to the bus without sending anything: `ATMA`, then, after [listenFor] (or when [until] completes, or when the adapter ends the
+     * monitoring itself), the stop character, then the wait for the prompt. Returns every line the adapter printed meanwhile, frames and
+     * status words alike, for [knightlink.core.runtime.PassiveCapture] to read. The adapter must have been set up with `ATCSM1` first.
+     *
+     * Cancelling stops the monitoring too (the adapter is not left streaming), as far as the link still works. Every wait has a limit: the
+     * stop character is sent twice, [stopTimeout] each, before giving up.
+     *
+     * @throws AdapterTimeoutException when the adapter does not come back to its prompt after the stop character
+     * @throws AdapterDisconnectedException when the link ends
+     */
+    public suspend fun monitor(listenFor: Duration, stopTimeout: Duration, until: Deferred<*>? = null): List<String> = lock.withLock {
+        checkAllowed(MONITOR_COMMAND, passive = true)
+        disconnection?.let { throw it }
+        discardStale()
+        // The adapter forgets nothing it was told, but the next request must not rely on the header it had before monitoring.
+        currentHeader = null
+        stream.write((MONITOR_COMMAND + "\r").encodeToByteArray())
+        val early = try {
+            withTimeoutOrNull(listenFor) {
+                select<ChannelResult<List<String>>?> {
+                    responses.onReceiveCatching { it }
+                    until?.onAwait { null }
+                }
+            }
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                try {
+                    haltMonitoring(stopTimeout)
+                } catch (_: Exception) {
+                    // The link may be gone; there is nothing left to stop.
+                }
+            }
+            throw e
+        }
+        // The adapter ended the monitoring by itself (an error status, say): its prompt is already here and nothing needs stopping.
+        if (early != null) return@withLock early.getOrNull() ?: throw checkNotNull(disconnection) { "responses closed without a reason" }
+        haltMonitoring(stopTimeout)
+    }
+
+    private suspend fun haltMonitoring(stopTimeout: Duration): List<String> {
+        repeat(STOP_ATTEMPTS) {
+            stream.write(ReadOnlyPolicy.MONITOR_STOP.encodeToByteArray())
+            val result = withTimeoutOrNull(stopTimeout) { responses.receiveCatching() }
+            if (result != null) return result.getOrNull() ?: throw checkNotNull(disconnection) { "responses closed without a reason" }
+        }
+        throw AdapterTimeoutException(MONITOR_COMMAND, stopTimeout * STOP_ATTEMPTS)
+    }
+
     public fun stop() {
         reader.cancel()
     }
@@ -522,21 +583,11 @@ public class Elm327Driver(
 
     private fun isStopped(line: String): Boolean = (parser.parse(line) as? ElmLine.Status)?.status == ElmStatus.STOPPED
 
-    private suspend fun exchangeOnce(text: String, timeout: Duration): Reply {
-        // The only write to the adapter is below, so this is the one place the read-only guarantee is enforced.
-        ReadOnlyPolicy.violation(text)?.let { reason ->
-            note(SessionEvents.INIT_STEP, "refused (read-only): $reason")
-            throw ReadOnlyViolationException("Refused to send a command: $reason")
-        }
+    private suspend fun exchangeOnce(text: String, timeout: Duration, passive: Boolean = false): Reply {
+        // The writes to the adapter are here and in [monitor]'s stop, so this is where the read-only guarantee is enforced.
+        checkAllowed(text, passive)
         disconnection?.let { throw it }
-        framerLock.withLock {
-            // A partial line belongs to a command that was given up on; anything queued is a reply nobody is waiting for.
-            framer.reset()
-            while (true) {
-                val stale = responses.tryReceive().getOrNull() ?: break
-                if (stale.any { it.contains(BANNER, ignoreCase = true) || isLowVoltageReset(it) }) unsolicitedReset = true
-            }
-        }
+        discardStale()
         val asked = config.timeSource.markNow()
         stream.write((text + "\r").encodeToByteArray())
         val lines = awaitReply(text, timeout)
@@ -548,6 +599,24 @@ public class Elm327Driver(
         val sent = text.compact()
         val echoed = sent.isNotEmpty() && lines.any { it.compact() == sent }
         return Reply(lines.filterNot { it.compact() == sent }, echoed)
+    }
+
+    private suspend fun checkAllowed(text: String, passive: Boolean) {
+        (if (passive) ReadOnlyPolicy.passiveViolation(text) else ReadOnlyPolicy.violation(text))?.let { reason ->
+            note(SessionEvents.INIT_STEP, "refused (read-only): $reason")
+            throw ReadOnlyViolationException("Refused to send a command: $reason")
+        }
+    }
+
+    private suspend fun discardStale() {
+        framerLock.withLock {
+            // A partial line belongs to a command that was given up on; anything queued is a reply nobody is waiting for.
+            framer.reset()
+            while (true) {
+                val stale = responses.tryReceive().getOrNull() ?: break
+                if (stale.any { it.contains(BANNER, ignoreCase = true) || isLowVoltageReset(it) }) unsolicitedReset = true
+            }
+        }
     }
 
     private suspend fun awaitReply(text: String, timeout: Duration): List<String> {
@@ -581,6 +650,8 @@ public class Elm327Driver(
     private fun String.compact(): String = filterNot { it.isWhitespace() }.uppercase()
 
     private companion object {
+        const val MONITOR_COMMAND = "ATMA"
+        const val STOP_ATTEMPTS = 2
         const val PENDING_CODE = 0x78
         const val BANNER = "ELM327"
         const val SEARCHING_WORD = "SEARCHING"

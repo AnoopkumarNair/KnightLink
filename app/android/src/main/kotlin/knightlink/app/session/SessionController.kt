@@ -10,6 +10,7 @@ import knightlink.core.common.plus
 import knightlink.core.recorder.ExternalSamples
 import knightlink.core.recorder.RecordingHeader
 import knightlink.core.recorder.RecordingTransport
+import knightlink.core.runtime.CaptureMode
 import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleSession
@@ -102,6 +103,9 @@ class SessionController(
 
         /** Whether the drive mode has been written into the recording of the link that is polling now (every link opens a new recording). */
         var modeStamped = false
+
+        /** The capture mode last written into the recording of this link; null until the link's first line. */
+        var captureStamped: CaptureMode? = null
 
         /** What the tyre sensor capture shows now; set while it runs. */
         @Volatile
@@ -285,6 +289,17 @@ class SessionController(
         return true
     }
 
+    /**
+     * Switches the live session to passive capture (the adapter only listens to the car's broadcast, live values pause) or back to active
+     * polling. The change goes into the recording as a `capture` line (see [publish]). False when there is no session or it cannot do it now.
+     */
+    fun setCaptureMode(passive: Boolean): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        val accepted = session.setCaptureMode(if (passive) CaptureMode.PASSIVE else CaptureMode.ACTIVE)
+        connectionLog?.app("passive capture ${if (passive) "on" else "off"} requested: ${if (accepted) "accepted" else "not possible now"}")
+        return accepted
+    }
+
     /** Asks the live session for a full scan; false when there is none, or it cannot scan now (see [VehicleSession.startScan]). */
     fun startFullScan(): Boolean {
         val session = synchronized(lock) { current }?.session ?: return false
@@ -407,8 +422,18 @@ class SessionController(
                     run.modeStamped = true
                     driveMode?.let { run.mark?.invoke(ExternalSamples.modeLine(it.tag)) }
                 }
+                // The capture mode is the session's to change (also by itself: a silent bus, a lost link), so its changes are written as they show.
+                val capture = session.captureMode.value
+                // A new link starts active, and a recording without a line is read as active: only a change is written.
+                if ((run.captureStamped ?: CaptureMode.ACTIVE) != capture) {
+                    run.mark?.let { mark ->
+                        mark(ExternalSamples.captureLine(capture == CaptureMode.PASSIVE))
+                        run.captureStamped = capture
+                    }
+                }
             } else {
                 run.modeStamped = false
+                run.captureStamped = null
             }
             if (state is SessionState.Polling && state.report !== summarised) {
                 summarised = state.report
@@ -424,6 +449,7 @@ class SessionController(
                 session.scan.value.toStatus(),
                 run.tyres?.invoke(),
                 driveSummary(session.fuelFills.value, driveMode),
+                session.captureMode.value,
             )
         }
     }

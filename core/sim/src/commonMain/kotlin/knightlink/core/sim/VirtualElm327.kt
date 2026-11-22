@@ -10,6 +10,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.time.Duration
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /**
  * A simulated ELM327 adapter plugged into a [VirtualVehicle]. It speaks the adapter's text protocol
@@ -38,6 +40,10 @@ public class VirtualElm327(
          * it listens until its timeout. A request with a count returns as soon as the replies are in.
          */
         val listenWithoutCount: Duration = Duration.ZERO,
+        /** The clock that times `ATMA`: the frames printed are those the vehicle's broadcasts produced while monitoring lasted. */
+        val timeSource: TimeSource = TimeSource.Monotonic,
+        /** `ATMA` prints `BUFFER FULL` once and drops the rest after this many frames in one monitoring; null for no limit. */
+        val monitorBufferFrames: Int? = null,
     )
 
     private val channel = Channel<ByteArray>(Channel.UNLIMITED)
@@ -66,6 +72,13 @@ public class VirtualElm327(
 
     private var resetBeforeNextCommand = false
 
+    // `ATMA` is running since this mark: frames are printed, all at once, when any character ends it.
+    private var monitoringSince: TimeMark? = null
+
+    /** How many times a character ended `ATMA`. For assertions in tests. */
+    public var monitorStops: Int = 0
+        private set
+
     /** Every command received, in order. For assertions in tests. */
     public val received: List<String> get() = log
     private val log = ArrayList<String>()
@@ -90,6 +103,11 @@ public class VirtualElm327(
         ensureLinked()
         for (byte in bytes) {
             val c = (byte.toInt() and 0xFF).toChar()
+            if (monitoringSince != null) {
+                // Any character ends the monitoring, as on a real adapter; it is not a command.
+                stopMonitoring()
+                continue
+            }
             if (c != '\r') {
                 input.append(c)
                 continue
@@ -103,6 +121,10 @@ public class VirtualElm327(
             }
             delay(config.responseDelay)
             val compact = command.filterNot { it.isWhitespace() }
+            if (compact.uppercase() == "ATMA") {
+                monitoringSince = config.timeSource.markNow()
+                continue
+            }
             if (config.listenWithoutCount.isPositive() && compact.length % 2 == 0 && compact.all { it.isHexDigit() }) delay(config.listenWithoutCount)
             // The link may have dropped while the adapter was "thinking": the answer is then lost, as on a real link.
             ensureLinked()
@@ -134,6 +156,38 @@ public class VirtualElm327(
 
     private fun ensureLinked() {
         if (linkEnded) throw TransportException("The simulated adapter is disconnected")
+    }
+
+    /** Prints the frames the vehicle's broadcasts sent since `ATMA` and passing the receive filter, then `STOPPED` and the prompt. */
+    private fun stopMonitoring() {
+        val elapsedMs = monitoringSince!!.elapsedNow().inWholeMilliseconds
+        monitoringSince = null
+        monitorStops++
+        val frames = ArrayList<Pair<Long, Pair<Int, ByteArray>>>()
+        if (vehicle.awake) {
+            for (broadcast in vehicle.broadcasts) {
+                if ((broadcast.id xor receiveFilter) and receiveMask != 0) continue
+                var n = 0
+                while ((n + 1).toLong() * broadcast.periodMs <= elapsedMs) {
+                    frames += (n + 1).toLong() * broadcast.periodMs to (broadcast.id to broadcast.data(n))
+                    n++
+                }
+            }
+        }
+        frames.sortBy { it.first }
+        val separator = if (spaces) " " else ""
+        val lines = ArrayList<String>()
+        val limit = config.monitorBufferFrames
+        for ((index, frame) in frames.withIndex()) {
+            if (limit != null && index == limit) {
+                lines += "BUFFER FULL"
+                break
+            }
+            val (id, data) = frame.second
+            lines += id.toString(16).uppercase().padStart(3, '0') + separator + data.joinToString(separator) { byteArrayOf(it).toHex() }
+        }
+        lines += "STOPPED"
+        send(command = "", echoed = false, lines = lines)
     }
 
     private fun send(command: String, echoed: Boolean, lines: List<String>) {
@@ -292,6 +346,6 @@ public class VirtualElm327(
         const val DEFAULT_RECEIVE_MASK = 0x7F8
 
         /** Settings the simulator accepts without modelling their effect. */
-        val ACCEPTED_PREFIXES = listOf("SP", "TP", "AT", "ST", "CAF", "CFC", "AL", "M", "WS")
+        val ACCEPTED_PREFIXES = listOf("SP", "TP", "AT", "ST", "CAF", "CFC", "AL", "M", "WS", "CSM")
     }
 }

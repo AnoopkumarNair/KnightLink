@@ -68,6 +68,7 @@ import knightlink.app.voice.MediaButtonGesture
 import knightlink.app.voice.PushToTalkState
 import knightlink.app.voice.RecognitionError
 import knightlink.app.voice.VoiceSettings
+import knightlink.core.runtime.CaptureMode
 import kotlin.math.roundToInt
 
 /** Wide enough for the cards and the live values side by side: any phone in landscape. */
@@ -90,6 +91,8 @@ class ConnectionActions(
     val onAllowBackground: () -> Unit = {},
     /** The driver says the car is now in this drive mode; it is stamped into the recording. */
     val onDriveMode: (DriveMode) -> Unit = {},
+    /** True switches the session to passive capture (it only listens to the car's broadcast), false back to active polling. */
+    val onPassiveCapture: (Boolean) -> Unit = {},
 )
 
 /**
@@ -164,13 +167,13 @@ fun HomeScreen(
                     summaryItems(state, recordings, lastAdapter, actions, driveData, voice, talk, onShareLatest, onShareLog)
                 }
                 LazyColumn(Modifier.weight(1f), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
-                    liveItems(groups)
+                    liveItems(groups, state.captureMode == CaptureMode.PASSIVE)
                 }
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = padding, verticalArrangement = Arrangement.spacedBy(ITEM_SPACING)) {
                 summaryItems(state, recordings, lastAdapter, actions, driveData, voice, talk, onShareLatest, onShareLog)
-                liveItems(groups)
+                liveItems(groups, state.captureMode == CaptureMode.PASSIVE)
             }
         }
     }
@@ -191,14 +194,22 @@ private fun LazyListScope.summaryItems(
     item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
     item(key = "voice", contentType = "card") { VoiceCard(voice) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
-    if (state.vehicle != null) item(key = "drive", contentType = "card") { DriveCard(state.drive, actions.onDriveMode) }
+    if (state.vehicle != null) {
+        item(key = "drive", contentType = "card") { DriveCard(state.drive, state.captureMode, state.connection, actions.onDriveMode, actions.onPassiveCapture) }
+    }
     item(key = "drive-data", contentType = "card") { DriveDataCard(driveData, state.tyres) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
 }
 
 /** The drive mode buttons (tap when the car's mode changes, so the recording says which mode each stretch was driven in) and the last refuel. */
 @Composable
-private fun DriveCard(drive: DriveSummary?, onMode: (DriveMode) -> Unit) {
+private fun DriveCard(
+    drive: DriveSummary?,
+    captureMode: CaptureMode,
+    connection: ConnectionStatus,
+    onMode: (DriveMode) -> Unit,
+    onPassiveCapture: (Boolean) -> Unit,
+) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.drive_title), style = MaterialTheme.typography.titleMedium)
@@ -213,6 +224,16 @@ private fun DriveCard(drive: DriveSummary?, onMode: (DriveMode) -> Unit) {
                     )
                 }
             }
+            val passive = captureMode == CaptureMode.PASSIVE
+            // Only while the car is being polled (to switch on) or while capturing (to switch off): not while connecting or recovering.
+            OutlinedButton(
+                onClick = { onPassiveCapture(!passive) },
+                enabled = passive || connection == ConnectionStatus.Live,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(if (passive) R.string.capture_back_to_active else R.string.capture_passive))
+            }
+            Text(stringResource(R.string.capture_hint), style = MaterialTheme.typography.bodySmall)
             val fill = drive?.lastFill
             Text(
                 if (fill == null) {
@@ -629,9 +650,19 @@ private fun RecordingsCard(recordings: RecordingsSummary, onShareLatest: () -> U
     }
 }
 
-private fun LazyListScope.liveItems(groups: List<ValueGroup>) {
+private fun LazyListScope.liveItems(groups: List<ValueGroup>, paused: Boolean) {
     item(key = "live-title", contentType = "title") {
         Text(stringResource(R.string.live_title), style = MaterialTheme.typography.titleMedium)
+    }
+    if (paused) {
+        item(key = "live-paused", contentType = "title") {
+            Text(
+                stringResource(R.string.capture_live_paused),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        }
     }
     if (groups.isEmpty()) {
         item(key = "live-empty", contentType = "title") {

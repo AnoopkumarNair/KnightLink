@@ -182,6 +182,22 @@ class FullScanControllerTest {
     }
 
     @Test
+    fun everyChangeOfTheCaptureModeIsWrittenIntoTheRecordingAndANewLinkStartsActiveWithoutALine() = runTest {
+        val rig = rig()
+        rig.controller.connect(demo)
+        awaitLive(rig.controller)
+        advanceTimeBy(1.seconds)
+        assertTrue(rig.controller.setCaptureMode(passive = true))
+        advanceTimeBy(1.seconds)
+        assertTrue(rig.controller.setCaptureMode(passive = false))
+        advanceTimeBy(3.seconds)
+
+        val external = rig.sinks.sinks.single().toRecording().events.filter { it.kind == EventKind.EXTERNAL }.map { it.payload }
+        assertEquals(listOf("capture passive", "capture active"), external.filter { it.startsWith("capture ") })
+        rig.controller.disconnect()
+    }
+
+    @Test
     fun aSessionWithoutSensorsIsAnOrdinarySchema2Recording() = runTest {
         val sinks = MemorySinks()
         val controller = SessionController(backgroundScope, { config }, store, DemoTransportFactory(store::simulation), sinks, testTimeSource)

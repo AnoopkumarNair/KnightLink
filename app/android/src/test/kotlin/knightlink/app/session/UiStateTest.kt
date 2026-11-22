@@ -1,5 +1,6 @@
 package knightlink.app.session
 
+import knightlink.core.runtime.CaptureMode
 import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
 import knightlink.core.signals.SignalValue
@@ -212,5 +213,13 @@ class UiStateTest {
         assertEquals(DriveMode.SPORT, summary.mode)
         assertEquals(1, summary.fillCount)
         assertEquals(FuelFillSummary(1L, 23, 100, 39), summary.lastFill)
+    }
+
+    @Test
+    fun aStateIsActiveByDefaultAndCarriesPassiveCaptureWhenTheSessionListensOnly() {
+        assertEquals(CaptureMode.ACTIVE, UiState.IDLE.captureMode)
+        val passive = UiState.IDLE.copy(captureMode = CaptureMode.PASSIVE)
+        assertEquals(CaptureMode.PASSIVE, passive.captureMode)
+        assertEquals(UiState.IDLE.liveValues, passive.liveValues)
     }
 }

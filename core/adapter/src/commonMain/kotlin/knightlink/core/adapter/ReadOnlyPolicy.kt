@@ -21,8 +21,34 @@ package knightlink.core.adapter
  * `ATWM`/`ATSW` (make the adapter send wake-up messages on the bus by itself), `ATBI` (skips the bus initialisation checks),
  * `ATMA`/`ATMR`/`ATMT` (monitor mode floods the link), `ATSI`/`ATFI` (K-line slow/fast init), and a bare carriage return
  * (repeats the previous command, which on a fresh link another app chose).
+ *
+ * Passive capture ([passiveViolation]) is a second, narrower gate for the one path that listens to the bus broadcast without asking
+ * anything. It adds `ATMA` and `ATCSM1`, which this gate still refuses, and allows nothing else but the receive-side settings it lists.
+ * `ATMA` (monitor all) together with silent monitoring (`ATCSM1`) is receive-only: the adapter's CAN controller listens, does not
+ * acknowledge frames and does not send error frames, so nothing goes onto the bus until a character from the phone stops the
+ * monitoring. That character is [MONITOR_STOP]; it is not a command and only [Elm327Driver.monitor] writes it.
  */
 public object ReadOnlyPolicy {
+    /** The single character that ends `ATMA`. Any character does; a space is used because a carriage return at a prompt repeats the last command. */
+    public const val MONITOR_STOP: String = " "
+
+    /** The only adapter commands (without `AT`, upper case) the passive capture path may send, besides `CF`/`CM` with a three-digit identifier. */
+    private val passiveExact = setOf("CSM1", "CAF0", "CAF1", "H1", "S0", "MA", "AR")
+
+    /**
+     * Why [command] may not be sent on the passive capture path, or null when it may. Much narrower than [violation]: only adapter
+     * commands that set how the adapter listens (`ATCSM1`, `ATCAF0`, `ATCAF1`, `ATH1`, `ATS0`, `ATAR`, `ATCF hhh`, `ATCM hhh`) and
+     * `ATMA`. No diagnostic request, no other adapter command.
+     */
+    public fun passiveViolation(command: String): String? {
+        val compact = command.filterNot { it.isWhitespace() }.uppercase()
+        if (!compact.startsWith("AT")) return "only adapter commands are allowed while capturing passively: $compact"
+        val rest = compact.removePrefix("AT")
+        if (rest in passiveExact) return null
+        if ((rest.startsWith("CF") || rest.startsWith("CM")) && rest.length == 5 && rest.drop(2).all { it in '0'..'9' || it in 'A'..'F' }) return null
+        return "adapter command $compact is not allowed while capturing passively"
+    }
+
     private val readServices = setOf(0x01, 0x02, 0x03, 0x06, 0x07, 0x09, 0x0A, 0x22)
     private const val UDS_READ_DTC_INFORMATION = 0x19
 

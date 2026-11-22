@@ -1,5 +1,6 @@
 package knightlink.app.session
 
+import knightlink.core.runtime.CaptureMode
 import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
 import knightlink.core.scan.ScanOutcome
@@ -36,6 +37,8 @@ data class UiState(
     val tyres: TyreSensors? = null,
     /** The refuels found and the drive mode the driver last said; null before a session has any. */
     val drive: DriveSummary? = null,
+    /** Whether the session polls the car or only listens to its broadcast (passive capture); live values are paused while it is PASSIVE. */
+    val captureMode: CaptureMode = CaptureMode.ACTIVE,
 ) {
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle

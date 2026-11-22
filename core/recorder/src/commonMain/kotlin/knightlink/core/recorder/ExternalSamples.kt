@@ -60,6 +60,8 @@ public data class TpmsSample(
  * - `gps <lat> <lon> <speed km/h> <bearing deg> <accuracy m>`: one fix; `-` for a value that is not known. Latitude and longitude have
  *   5 decimals on the device and are rounded to [SHARED_DECIMALS] decimals (about a kilometre) in a copy that is shared.
  * - `mode <name>`: the driver said the car is now in drive mode `ECO`, `CITY` or `SPORT` (a button in the app), so the mode can be read off the recording.
+ * - `capture <passive|active>`: the app switched the session to passive capture (the adapter only listens to the bus broadcast, no request goes to
+ *   the car) or back to active polling, so a reader knows which stretches of the raw traffic are broadcast only.
  * - `tpms <where> <payload> <rssi>`: one advertisement of a tyre sensor (see [TpmsSample]), at the event's time. Where is the company id as
  *   four hex digits for manufacturer data, or `s:` and the 16-bit service UUID for service data (e.g. `s:FEAA`), the payload is hex (`-` when empty, at most [MAX_TPMS_PAYLOAD_BYTES] bytes), the RSSI is in dBm (`-` when not known). There is
  *   no device address in the line, and a shared copy keeps only what parses as these three fields.
@@ -69,6 +71,13 @@ public object ExternalSamples {
     public const val GPS: String = "gps"
     public const val TPMS: String = "tpms"
     public const val MODE: String = "mode"
+    public const val CAPTURE: String = "capture"
+
+    private const val PASSIVE_WORD = "passive"
+    private const val ACTIVE_WORD = "active"
+
+    /** The line for a change of capture mode: `capture passive` or `capture active`. */
+    public fun captureLine(passive: Boolean): String = "$CAPTURE " + if (passive) PASSIVE_WORD else ACTIVE_WORD
 
     /** The drive modes a `mode` line may name. */
     public val DRIVE_MODES: Set<String> = setOf("ECO", "CITY", "SPORT")
@@ -167,6 +176,8 @@ public object ExternalSamples {
             return parseTpms(0, payload)?.let(::tpmsLine) ?: "$TPMS $MISSING $MISSING $MISSING"
         }
         if (payload.startsWith("$MODE ") || payload == MODE) return modeLine(payload.removePrefix(MODE).trim())
+        // Only the two words survive; anything else (which should not exist) becomes `capture active`, the harmless reading.
+        if (payload.startsWith("$CAPTURE ") || payload == CAPTURE) return captureLine(payload.removePrefix(CAPTURE).trim() == PASSIVE_WORD)
         if (!payload.startsWith("$GPS ") && payload != GPS) return payload
         val fix = parseGps(0, payload) ?: return "$GPS $MISSING $MISSING $MISSING $MISSING $MISSING"
         return listOf(

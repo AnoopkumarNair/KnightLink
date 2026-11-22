@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -170,6 +171,8 @@ public class VehicleSession(
          * [candidateCheckItems]). Their answers show in the recording; nothing else is done with them.
          */
         val candidateChecks: CandidateChecks? = null,
+        /** How passive capture listens: slice length, identifier groups, limits (see [setCaptureMode]). */
+        val capture: PassiveCapture.Config = PassiveCapture.Config(),
         /** The scan's own settings: pace, how often the speed is read, and so on. */
         val scan: FullScan.Config = FullScan.Config(),
         /** While a scan waits for a car that moves, the session polls normally for this long between two readings of the speed. */
@@ -229,6 +232,7 @@ public class VehicleSession(
     private var busFaultSinceAnswer: ElmStatus? = null
 
     private val _rates = MutableStateFlow(PollRates.EMPTY)
+    private val _captureMode = MutableStateFlow(CaptureMode.ACTIVE)
     private val _scan = MutableStateFlow<ScanState>(if (config.scanPlan == null) ScanState.Unavailable else ScanState.Idle)
 
     // A request for a scan reaches the polling loop through this channel; CONFLATED, so asking twice is asking once.
@@ -309,6 +313,12 @@ public class VehicleSession(
      */
     public val telemetry: StateFlow<TelemetrySnapshot> = _telemetry.asStateFlow()
 
+    /**
+     * Whether the session asks the car (ACTIVE, polling) or only listens to its broadcast (PASSIVE, see [setCaptureMode]). Always ACTIVE
+     * after a reconnect or a recovery: the mode lives as long as the link does.
+     */
+    public val captureMode: StateFlow<CaptureMode> = _captureMode.asStateFlow()
+
     /** Where the full scan is. See [startScan]. */
     public val scan: StateFlow<ScanState> = _scan.asStateFlow()
 
@@ -336,6 +346,23 @@ public class VehicleSession(
     }
 
     /**
+     * Switches between polling the car (ACTIVE) and passive capture (PASSIVE): polling pauses, the adapter only listens to the bus
+     * broadcast and sends nothing to the car, and each slice of what it heard is noted ([PassiveCapture]). Going back resumes polling on the
+     * same link, with what the session has learned, and without a new probe. The switch happens within about a second.
+     *
+     * @return false, and does nothing, when PASSIVE is asked for while the session is not polling the car or a scan is under way. ACTIVE is always accepted.
+     */
+    public fun setCaptureMode(mode: CaptureMode): Boolean {
+        if (mode == CaptureMode.PASSIVE) {
+            if (_state.value !is SessionState.Polling) return false
+            val current = _scan.value
+            if (current is ScanState.Starting || current is ScanState.Running) return false
+        }
+        _captureMode.value = mode
+        return true
+    }
+
+    /**
      * Asks for a full scan: a one-shot, parked, read-only sweep of everything the car answers (see [FullScan]). Polling stops while it runs, and
      * restarts afterwards with the data identifiers the scan found added as raw items (see [discoveryPollItems]). Progress is in [scan].
      *
@@ -344,6 +371,7 @@ public class VehicleSession(
     public fun startScan(): Boolean {
         if (config.scanPlan == null) return false
         if (_state.value !is SessionState.Polling) return false
+        if (_captureMode.value == CaptureMode.PASSIVE) return false
         val current = _scan.value
         if (current is ScanState.Starting || current is ScanState.Running) return false
         _scan.value = ScanState.Starting
@@ -493,6 +521,10 @@ public class VehicleSession(
     private suspend fun drive(stream: ByteStream, driverScope: CoroutineScope, onPolling: () -> Unit) {
         // A scan asked for on an earlier connection is not started on this one, possibly much later and with the car on the road.
         scanRequests.tryReceive()
+        if (_captureMode.value == CaptureMode.PASSIVE) {
+            _captureMode.value = CaptureMode.ACTIVE
+            note(SessionEvents.CAPTURE_MODE, "back to active polling: a new connection always starts active")
+        }
         if (_scan.value is ScanState.Starting) _scan.value = ScanState.Failed("The connection was lost before the scan could start")
         setState(SessionState.Initialising)
         // The rate ceiling runs on the session's clock, so it measures the same time as everything else here.
@@ -752,6 +784,11 @@ public class VehicleSession(
                 lastAnswer = timeSource.markNow()
                 continue
             }
+            if (end is PollEnd.PassiveRequested) {
+                runPassive(driver)
+                lastAnswer = timeSource.markNow()
+                continue
+            }
             if (end is PollEnd.Asleep) {
                 waitForWake(driver, known)
                 lastAnswer = timeSource.markNow()
@@ -765,6 +802,65 @@ public class VehicleSession(
             lastAnswer = timeSource.markNow()
             setState(SessionState.Polling(known.report, known.coverage))
         }
+    }
+
+    // Passive capture ----------------------------------------------------------------------------------------
+
+    /**
+     * Passive capture, as [setCaptureMode] asked for it: the adapter belongs to [PassiveCapture] until the mode goes back to ACTIVE, the bus has
+     * been silent for too long, or the adapter cannot monitor; then it is put back and polling resumes (the caller's loop), with the scheduler and
+     * everything learned kept and no probe. A lost link ends the connection as it always does, and the mode is ACTIVE again by then.
+     */
+    private suspend fun runPassive(driver: Elm327Driver) {
+        note(SessionEvents.CAPTURE_MODE, "passive capture on: polling paused, the adapter only listens and sends nothing to the car")
+        _rates.value = PollRates.EMPTY
+        val capture = PassiveCapture(driver, config.capture, events, timeSource)
+        val ended = CompletableDeferred<Unit>()
+        val reason = try {
+            coroutineScope {
+                val watcher = launch {
+                    _captureMode.first { it == CaptureMode.ACTIVE }
+                    ended.complete(Unit)
+                }
+                try {
+                    capture.run(ended)
+                } finally {
+                    watcher.cancel()
+                }
+            }
+        } catch (e: CancellationException) {
+            _captureMode.value = CaptureMode.ACTIVE
+            withContext(NonCancellable) {
+                // A lost link cancels the connection's coroutines; so does stop().
+                val why = if (stopping) "the session was stopped" else "the link was lost; the next connection starts with active polling"
+                note(SessionEvents.CAPTURE_MODE, "passive capture ended: $why")
+            }
+            throw e
+        } catch (e: AdapterDisconnectedException) {
+            _captureMode.value = CaptureMode.ACTIVE
+            note(SessionEvents.CAPTURE_MODE, "passive capture ended: the link was lost; the next connection starts with active polling")
+            throw e
+        } catch (e: TransportException) {
+            _captureMode.value = CaptureMode.ACTIVE
+            note(SessionEvents.CAPTURE_MODE, "passive capture ended: the link was lost; the next connection starts with active polling")
+            throw e
+        } catch (e: AdapterException) {
+            // The adapter stopped answering while listening (it did not come back to its prompt, say): initialise it again, and poll.
+            _captureMode.value = CaptureMode.ACTIVE
+            note(SessionEvents.CAPTURE_MODE, "passive capture ended: ${describe(e)}; initialising the adapter again and polling")
+            driver.reinitialize("after a failed passive capture")
+            return
+        }
+        _captureMode.value = CaptureMode.ACTIVE
+        note(
+            SessionEvents.CAPTURE_MODE,
+            when (reason) {
+                PassiveCapture.Ended.REQUESTED -> "back to active polling"
+                PassiveCapture.Ended.BUS_SILENT -> "back to active polling: the bus was silent for ${config.capture.silenceLimit}"
+                PassiveCapture.Ended.UNSUPPORTED -> "back to active polling: the adapter cannot monitor the bus"
+            },
+        )
+        capture.restore()
     }
 
     // The full scan -------------------------------------------------------------------------------------------
@@ -930,6 +1026,9 @@ public class VehicleSession(
         /** A scan was asked for. */
         data object ScanRequested : PollEnd
 
+        /** Passive capture was asked for ([setCaptureMode]). */
+        data object PassiveRequested : PollEnd
+
         /** The time limit that the caller gave passed. */
         data object TimeUp : PollEnd
 
@@ -1008,6 +1107,14 @@ public class VehicleSession(
                 trouble.complete(PollEnd.ScanRequested)
             }
         }
+        val captureWatcher = if (!listenForScan) {
+            null
+        } else {
+            launch {
+                _captureMode.first { it == CaptureMode.PASSIVE }
+                trouble.complete(PollEnd.PassiveRequested)
+            }
+        }
         val timer = if (limit == null) {
             null
         } else {
@@ -1020,6 +1127,7 @@ public class VehicleSession(
         collector.cancelAndJoin()
         watchdog.cancelAndJoin()
         scanWatcher?.cancelAndJoin()
+        captureWatcher?.cancelAndJoin()
         timer?.cancelAndJoin()
         reason
     }
