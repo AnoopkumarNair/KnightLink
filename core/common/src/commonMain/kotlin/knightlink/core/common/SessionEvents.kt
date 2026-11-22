@@ -38,6 +38,9 @@ public object SessionEvents {
     /** The probe missed the primary ECU or came with warnings; it is asked again. The detail says which attempt. */
     public const val PROBE_INCOMPLETE: String = "probe-incomplete"
 
+    /** A refuel was found in the fuel level. The detail has the levels before and after. */
+    public const val FUEL_FILL: String = "fuel-fill"
+
     /** The state of the session changed. */
     public const val STATE: String = "state"
 

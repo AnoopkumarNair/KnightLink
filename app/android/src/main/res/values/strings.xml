@@ -29,6 +29,14 @@
     <string name="action_choose_another">Choose another adapter</string>
 
     <!-- Full scan -->
+    <string name="drive_title">Drive</string>
+    <string name="drive_mode_hint">Tap the mode you switch the car to, so the recording knows how each stretch was driven.</string>
+    <string name="drive_mode_eco">Eco</string>
+    <string name="drive_mode_city">City</string>
+    <string name="drive_mode_sport">Sport</string>
+    <string name="drive_no_refuel">No refuel seen yet. One is noticed when the fuel level jumps up, also after the car was switched off to fill it.</string>
+    <string name="drive_last_refuel">Last refuel: about %1$d L (level %2$d%% to %3$d%%) %4$s</string>
+    <string name="drive_refuel_count">Refuels found in all: %1$d</string>
     <string name="action_full_scan">Full scan (parked)</string>
     <string name="action_resume_scan">Resume scan</string>
     <string name="action_run_again">Run again</string>

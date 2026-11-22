@@ -52,6 +52,8 @@ import knightlink.app.R
 import knightlink.app.ble.LastAdapter
 import knightlink.app.fraction
 import knightlink.app.session.ConnectionStatus
+import knightlink.app.session.DriveMode
+import knightlink.app.session.DriveSummary
 import knightlink.app.session.LiveValue
 import knightlink.app.session.RecordingsSummary
 import knightlink.app.session.ScanStatus
@@ -86,6 +88,8 @@ class ConnectionActions(
     /** False while Android may stop the app in the background (battery optimisation applies); the card then asks the user to allow it. */
     val backgroundAllowed: Boolean = true,
     val onAllowBackground: () -> Unit = {},
+    /** The driver says the car is now in this drive mode; it is stamped into the recording. */
+    val onDriveMode: (DriveMode) -> Unit = {},
 )
 
 /**
@@ -187,9 +191,59 @@ private fun LazyListScope.summaryItems(
     item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
     item(key = "voice", contentType = "card") { VoiceCard(voice) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
+    if (state.vehicle != null) item(key = "drive", contentType = "card") { DriveCard(state.drive, actions.onDriveMode) }
     item(key = "drive-data", contentType = "card") { DriveDataCard(driveData, state.tyres) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
 }
+
+/** The drive mode buttons (tap when the car's mode changes, so the recording says which mode each stretch was driven in) and the last refuel. */
+@Composable
+private fun DriveCard(drive: DriveSummary?, onMode: (DriveMode) -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.drive_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.drive_mode_hint), style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DriveMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = drive?.mode == mode,
+                        onClick = { onMode(mode) },
+                        label = { Text(stringResource(mode.labelRes()), modifier = Modifier.padding(vertical = 8.dp)) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            val fill = drive?.lastFill
+            Text(
+                if (fill == null) {
+                    stringResource(R.string.drive_no_refuel)
+                } else {
+                    stringResource(R.string.drive_last_refuel, fill.litres, fill.fromPercent, fill.toPercent, formatWhen(fill.atMs))
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (drive != null &&
+                drive.fillCount > 1
+            ) {
+                Text(stringResource(R.string.drive_refuel_count, drive.fillCount), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+private fun DriveMode.labelRes(): Int = when (this) {
+    DriveMode.ECO -> R.string.drive_mode_eco
+    DriveMode.CITY -> R.string.drive_mode_city
+    DriveMode.SPORT -> R.string.drive_mode_sport
+}
+
+/** A refuel's time in the phone's own style, or an empty text when the session had no clock. */
+private fun formatWhen(atMs: Long): String =
+    if (atMs <= 0L) {
+        ""
+    } else {
+        java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(atMs))
+    }
 
 /** Push to talk: the big button, what was heard and answered, where recognition happens, and the steering-wheel button setting. */
 @Composable

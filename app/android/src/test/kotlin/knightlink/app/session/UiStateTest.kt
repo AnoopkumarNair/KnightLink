@@ -203,4 +203,14 @@ class UiStateTest {
         val done = ScanState.Finished(knightlink.core.scan.ScanResult(outcome = knightlink.core.scan.ScanOutcome.COMPLETED)).toStatus() as ScanStatus.Finished
         assertEquals(false, done.resumable)
     }
+
+    @Test
+    fun aRefuelIsShownInLitresOfTheTankAndNothingShowsWithoutRefuelOrMode() {
+        assertNull(driveSummary(emptyList(), null))
+        val fill = knightlink.core.runtime.FuelFill(atMs = 1L, fromPercent = 22.7, toPercent = 100.0)
+        val summary = driveSummary(listOf(fill), DriveMode.SPORT)!!
+        assertEquals(DriveMode.SPORT, summary.mode)
+        assertEquals(1, summary.fillCount)
+        assertEquals(FuelFillSummary(1L, 23, 100, 39), summary.lastFill)
+    }
 }

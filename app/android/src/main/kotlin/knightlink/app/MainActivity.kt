@@ -211,6 +211,7 @@ class MainActivity : ComponentActivity() {
                 onChooseAdapter = { begin(PendingStart.ChooseAdapter) },
                 onDisconnect = { startService(SessionService.disconnectIntent(this)) },
                 onStartScan = { controller?.startFullScan() },
+                onDriveMode = { controller?.markDriveMode(it) },
                 onResumeScan = { controller?.resumeFullScan() },
                 onCancelScan = { controller?.cancelFullScan() },
                 onDismissScan = { controller?.dismissFullScan() },

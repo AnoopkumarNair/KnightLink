@@ -34,6 +34,8 @@ data class UiState(
     val scan: ScanStatus = ScanStatus.Unavailable,
     /** Tyre sensor capture; null when this session does not capture (no definition configured, or no source). */
     val tyres: TyreSensors? = null,
+    /** The refuels found and the drive mode the driver last said; null before a session has any. */
+    val drive: DriveSummary? = null,
 ) {
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle
@@ -41,6 +43,38 @@ data class UiState(
     companion object {
         val IDLE = UiState(ConnectionStatus.Idle, vehicle = null, liveValues = emptyList())
     }
+}
+
+/** The drive modes of the car; [tag] is what goes into the recording (see ExternalSamples.modeLine). */
+enum class DriveMode(val tag: String) {
+    ECO("ECO"),
+    CITY("CITY"),
+    SPORT("SPORT"),
+}
+
+/**
+ * The refuels found (newest last) and the drive mode the driver last said.
+ * @property tankLitres the tank's size, to turn a rise in percent into litres
+ */
+data class DriveSummary(
+    val mode: DriveMode?,
+    val lastFill: FuelFillSummary?,
+    val fillCount: Int,
+)
+
+/** One refuel in the screen's terms: [litres] is the rise in percent of the tank times the tank's size, [atMs] the phone's clock (0 when unknown). */
+data class FuelFillSummary(val atMs: Long, val fromPercent: Int, val toPercent: Int, val litres: Int)
+
+/** The size of the Harrier's tank (`tankCapacityL` of its vehicle definition), for litres from a rise in the fuel level. */
+const val TANK_LITRES = 50.0
+
+/** The refuels and the mode as the screen shows them; null when there is nothing to show yet. */
+fun driveSummary(fills: List<knightlink.core.runtime.FuelFill>, mode: DriveMode?, tankLitres: Double = TANK_LITRES): DriveSummary? {
+    if (fills.isEmpty() && mode == null) return null
+    val last = fills.lastOrNull()?.let {
+        FuelFillSummary(it.atMs, round(it.fromPercent).toInt(), round(it.toPercent).toInt(), round(it.litres(tankLitres)).toInt())
+    }
+    return DriveSummary(mode, last, fills.size)
 }
 
 /** The full scan in the app's terms. Texts are in string resources, so this carries only the facts. */

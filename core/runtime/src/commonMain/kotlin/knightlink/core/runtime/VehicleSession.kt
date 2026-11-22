@@ -123,6 +123,14 @@ public class VehicleSession(
         /** The wait grows by [backoffFactor] per failed attempt, up to this. */
         val maxBackoff: Duration = 30.seconds,
         val backoffFactor: Double = 2.0,
+        /**
+         * A connection that reached polling counts as a new outage, not a continuation of the failed attempts, only if it lasted this long.
+         * On 2026-11-22 the car was switched off with the adapter still plugged in: the adapter's link came up, polled for a few seconds and
+         * dropped again, fifteen times in ten minutes, because every such short connection reset the wait to one second.
+         */
+        val stableLinkAfter: Duration = 30.seconds,
+        /** The phone's clock in milliseconds since 1970, to date the refuels found; 0 when there is none. */
+        val wallClockMs: () -> Long = { 0L },
         /** Give up (state [SessionState.Failed]) after this many failed attempts in a row. Null retries forever. */
         val maxConnectAttempts: Int? = null,
         /** Probe again after every reconnect instead of reusing the report of the first connection. */
@@ -269,6 +277,11 @@ public class VehicleSession(
     private var lastScan: knightlink.core.scan.ScanResult? = null
     private val history = LinkedHashMap<String, DidHistory>()
     private var gear = GearEstimator()
+    private var fuel = FuelTracker()
+    private val _fuelFills = MutableStateFlow<List<FuelFill>>(emptyList())
+
+    /** The refuels found so far, oldest first: those of earlier sessions (remembered) and of this one. */
+    public val fuelFills: StateFlow<List<FuelFill>> = _fuelFills.asStateFlow()
     private var gearRevisionSaved = 0
 
     @Volatile
@@ -401,8 +414,9 @@ public class VehicleSession(
         while (true) {
             setState(SessionState.Connecting(attempt))
             note(SessionEvents.CONNECT_ATTEMPT, "attempt $attempt")
+            val connectedAt = timeSource.markNow()
             val ended = runConnection()
-            if (ended.reachedPolling) {
+            if (ended.reachedPolling && connectedAt.elapsedNow() >= config.stableLinkAfter) {
                 // The link worked for a while, so this is a new outage, not a continuation of the failed attempts.
                 attempt = 0
                 wait = config.initialBackoff
@@ -549,6 +563,8 @@ public class VehicleSession(
         history.putAll(stored.discovery)
         gear = GearEstimator(stored.gear)
         gearRevisionSaved = gear.revision
+        fuel = FuelTracker(stored.fuel)
+        _fuelFills.value = stored.fuel.fills
         rebuildDiscovery()
         val partial = stored.scan?.takeIf { it.resumable }
         if (partial != null && _scan.value == ScanState.Idle) _scan.value = ScanState.Finished(partial, restored = true)
@@ -567,6 +583,8 @@ public class VehicleSession(
                 lastScan = null
                 history.clear()
                 gear = GearEstimator()
+                fuel = FuelTracker()
+                _fuelFills.value = emptyList()
                 gearRevisionSaved = 0
                 rebuildDiscovery()
             }
@@ -639,7 +657,7 @@ public class VehicleSession(
         val probe = memoryProbe ?: return
         if (!memoryDirty) return
         try {
-            store.save(VehicleMemory(key = key, probe = probe, scan = lastScan, discovery = history.toMap(), gear = gear.model))
+            store.save(VehicleMemory(key = key, probe = probe, scan = lastScan, discovery = history.toMap(), gear = gear.model, fuel = fuel.model))
             memoryDirty = false
         } catch (_: Exception) {
             // Remembering is a convenience.
@@ -1041,6 +1059,7 @@ public class VehicleSession(
             readings.forEach { meter.reading(it.signal.id, at) }
             _telemetry.update { it.with(readings, at) }
             if (config.gearCalc && readings.any { it.signal.id == SIGNAL_RPM || it.signal.id == SIGNAL_SPEED }) publishGear(at)
+            readings.firstOrNull { it.signal.id == SIGNAL_FUEL_LEVEL }?.let { watchFuel(it.signal.value) }
         }
     }
 
@@ -1053,6 +1072,21 @@ public class VehicleSession(
             response.busFault == null &&
             ElmStatus.NO_DATA in response.statuses
     }
+
+    /** Feeds a fuel level reading to the refuel finder; a refuel is noted in the log and kept in the memory. */
+    private suspend fun watchFuel(percent: Double) {
+        val fill = fuel.update(percent, config.wallClockMs())
+        if (fill != null) {
+            _fuelFills.value = fuel.model.fills
+            note(SessionEvents.FUEL_FILL, "fuel level rose from ${fill.fromPercent.roundTenths()} % to ${fill.toPercent.roundTenths()} %")
+        }
+        if (fill != null || fuel.takeDirty()) {
+            memoryDirty = true
+            saveMemory()
+        }
+    }
+
+    private fun Double.roundTenths(): Double = kotlin.math.round(this * 10.0) / 10.0
 
     /** The calculated gear from the latest engine speed and vehicle speed, when both are fresh; otherwise unknown. */
     private fun publishGear(at: Duration) {
@@ -1147,6 +1181,7 @@ public class VehicleSession(
         const val SERVICE_LIVE_DATA: Byte = 0x01
         const val SERVICE_READ_DATA = 0x22
         const val SIGNAL_RPM = "engine.rpm"
+        const val SIGNAL_FUEL_LEVEL = "fuel.level_pct"
         const val SIGNAL_SPEED = "vehicle.speed"
         const val MAX_SAMPLES = 1_000_000
 

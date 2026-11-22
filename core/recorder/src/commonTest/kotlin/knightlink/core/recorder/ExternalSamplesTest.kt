@@ -208,4 +208,12 @@ class ExternalSamplesTest {
         replay.write("ATZ\r".encodeToByteArray())
         assertNull(replay.firstMismatch)
     }
+
+    @Test
+    fun aDriveModeLineNamesOnlyAKnownModeAndSurvivesScrubbing() {
+        assertEquals("mode SPORT", ExternalSamples.modeLine("sport"))
+        assertEquals("mode -", ExternalSamples.modeLine("anything the driver typed"))
+        assertEquals("mode ECO", ExternalSamples.scrub("mode ECO"))
+        assertEquals("mode -", ExternalSamples.scrub("mode my street 12"))
+    }
 }

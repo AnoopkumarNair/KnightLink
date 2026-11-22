@@ -7,6 +7,7 @@ import knightlink.core.common.SessionEventSink
 import knightlink.core.common.SessionEvents
 import knightlink.core.common.emit
 import knightlink.core.common.plus
+import knightlink.core.recorder.ExternalSamples
 import knightlink.core.recorder.RecordingHeader
 import knightlink.core.recorder.RecordingTransport
 import knightlink.core.runtime.ScanState
@@ -95,6 +96,10 @@ class SessionController(
         @Volatile
         var stopSamples: (() -> Unit)? = null
 
+        /** Writes a line into the recording of this run; set when the recording exists. */
+        @Volatile
+        var mark: (suspend (String) -> Unit)? = null
+
         /** What the tyre sensor capture shows now; set while it runs. */
         @Volatile
         var tyres: (() -> TyreSensors)? = null
@@ -114,6 +119,10 @@ class SessionController(
     private var current: Run? = null
     private val _uiState = MutableStateFlow(UiState.IDLE)
 
+    /** The drive mode the driver last said in this run; forgotten when a run starts. */
+    @Volatile
+    private var driveMode: DriveMode? = null
+
     /** What to show. Idle until [connect], and again after [disconnect] has finished. */
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
@@ -131,6 +140,7 @@ class SessionController(
                 Run(CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))).also { current = it }
             }
         } ?: return false
+        driveMode = null
         connectionLog?.app("connect requested: ${target.describe()}")
         _uiState.value = UiState(ConnectionStatus.Connecting(1), vehicle = null, liveValues = emptyList())
         run.scope.launch { start(run, target) }
@@ -194,6 +204,7 @@ class SessionController(
             val setup = prepare(target)
             catalog = setup.catalog
             recorded = setup.transport
+            run.mark = { line -> setup.transport.external(line) }
             tyres = setup.tyres
             VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events)
         } catch (e: CancellationException) {
@@ -256,6 +267,19 @@ class SessionController(
             radio?.stop()
             lines.close()
         }
+    }
+
+    /**
+     * The driver says the car is now in [mode]: it goes into the recording at this moment (and the connection log), so the data can be read
+     * with the mode it was driven in. False when no run is recording.
+     */
+    fun markDriveMode(mode: DriveMode): Boolean {
+        val run = synchronized(lock) { current } ?: return false
+        val mark = run.mark ?: return false
+        driveMode = mode
+        connectionLog?.app("drive mode: ${mode.tag}")
+        run.scope.launch { mark(ExternalSamples.modeLine(mode.tag)) }
+        return true
     }
 
     /** Asks the live session for a full scan; false when there is none, or it cannot scan now (see [VehicleSession.startScan]). */
@@ -352,6 +376,7 @@ class SessionController(
             scanPlan = plan,
             seedScan = seed,
             candidateChecks = candidates,
+            wallClockMs = { System.currentTimeMillis() },
         )
         // The recording gets every event (it is the replayable record); the text log gets the same ones, except the scan's result, which is
         // a long line of JSON that belongs in the recording and its sidecar, not in a log that is meant to be read on a phone.
@@ -386,6 +411,7 @@ class SessionController(
                 rate,
                 session.scan.value.toStatus(),
                 run.tyres?.invoke(),
+                driveSummary(session.fuelFills.value, driveMode),
             )
         }
     }

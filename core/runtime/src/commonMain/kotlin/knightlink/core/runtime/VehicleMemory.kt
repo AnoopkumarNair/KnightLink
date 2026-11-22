@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
  * @property scan the last full scan (finished or part-way), whose discovery identifiers are polled again without scanning again
  * @property discovery for each discovery item (by poll item id), what polling has shown of its value: it decides how often it is asked
  * @property gear what the calculated gear learned (see [GearModel])
+ * @property fuel the last fuel level and the refuels found (see [FuelTracker])
  */
 @Serializable
 public data class VehicleMemory(
@@ -24,6 +25,7 @@ public data class VehicleMemory(
     val scan: ScanResult? = null,
     val discovery: Map<String, DidHistory> = emptyMap(),
     val gear: GearModel = GearModel(),
+    val fuel: FuelMemory = FuelMemory(),
 ) {
     public fun toJson(): String = writer.encodeToString(serializer(), this)
 

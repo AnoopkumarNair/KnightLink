@@ -349,7 +349,7 @@ class VehicleSessionSimulationTest {
     fun unpluggingTheAdapterMidPollingIsNoticedWithinOneRoundTripAndTheSessionReconnectsWithoutProbing() = runTest {
         val rig = rig()
         rig.session.start()
-        run(10.seconds)
+        run(40.seconds)
         val polling = assertIs<SessionState.Polling>(rig.session.state.value)
         val before = rig.simulated.current!!
         assertEquals(1, before.requests().count { it == "0902" }, "only the engine ECU lists a VIN, so the first probe reads it once")
@@ -362,7 +362,7 @@ class VehicleSessionSimulationTest {
         val lost = rig.states.first { it.state is SessionState.Reconnecting }
         assertTrue(lost.atMs - unplugged <= roundTrip.inWholeMilliseconds, "noticed after ${lost.atMs - unplugged} ms")
         val reconnecting = lost.state as SessionState.Reconnecting
-        // A connection that had been polling starts a fresh outage: the next attempt is number 1 again, after the shortest wait.
+        // A connection that had been polling for a while starts a fresh outage: the next attempt is number 1 again, after the shortest wait.
         assertEquals(1, reconnecting.attempt)
         assertEquals(1.seconds, reconnecting.retryIn)
         assertTrue(reconnecting.cause.contains("closed"), reconnecting.cause)
@@ -565,17 +565,32 @@ class VehicleSessionSimulationTest {
     }
 
     @Test
-    fun theBackoffStartsAgainAtOneSecondAfterEveryConnectionThatReachedPolling() = runTest {
+    fun theBackoffStartsAgainAtOneSecondAfterEveryConnectionThatPolledForAWhile() = runTest {
         val rig = rig()
         rig.session.start()
-        run(10.seconds)
+        run(40.seconds)
         repeat(2) {
             rig.simulated.current!!.disconnect()
-            run(20.seconds)
+            run(40.seconds)
         }
         val waits = rig.kinds.filterIsInstance<SessionState.Reconnecting>().map { it.retryIn }
         assertEquals(listOf(1.seconds, 1.seconds), waits)
         assertEquals(3, rig.simulated.opens)
+    }
+
+    @Test
+    fun aLinkThatKeepsDroppingAfterAFewSecondsOfPollingIsRetriedSlowerEachTime() = runTest {
+        // 2026-11-22: the car was switched off at the pump with the adapter plugged in; its link came up, polled for seconds and dropped,
+        // fifteen times in ten minutes, because every such connection reset the wait to one second.
+        val rig = rig()
+        rig.session.start()
+        run(10.seconds)
+        repeat(3) {
+            rig.simulated.current!!.disconnect()
+            run(20.seconds)
+        }
+        val waits = rig.kinds.filterIsInstance<SessionState.Reconnecting>().map { it.retryIn }
+        assertEquals(listOf(1.seconds, 2.seconds, 4.seconds), waits)
     }
 
     @Test

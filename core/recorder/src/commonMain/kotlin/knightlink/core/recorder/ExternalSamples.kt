@@ -59,6 +59,7 @@ public data class TpmsSample(
  * - `sensors <what the phone has>`: written once when sampling starts, e.g. `sensors accel=linear gyro=yes gps=on`; for a person.
  * - `gps <lat> <lon> <speed km/h> <bearing deg> <accuracy m>`: one fix; `-` for a value that is not known. Latitude and longitude have
  *   5 decimals on the device and are rounded to [SHARED_DECIMALS] decimals (about a kilometre) in a copy that is shared.
+ * - `mode <name>`: the driver said the car is now in drive mode `ECO`, `CITY` or `SPORT` (a button in the app), so the mode can be read off the recording.
  * - `tpms <where> <payload> <rssi>`: one advertisement of a tyre sensor (see [TpmsSample]), at the event's time. Where is the company id as
  *   four hex digits for manufacturer data, or `s:` and the 16-bit service UUID for service data (e.g. `s:FEAA`), the payload is hex (`-` when empty, at most [MAX_TPMS_PAYLOAD_BYTES] bytes), the RSSI is in dBm (`-` when not known). There is
  *   no device address in the line, and a shared copy keeps only what parses as these three fields.
@@ -67,6 +68,13 @@ public object ExternalSamples {
     public const val MOTION: String = "mot"
     public const val GPS: String = "gps"
     public const val TPMS: String = "tpms"
+    public const val MODE: String = "mode"
+
+    /** The drive modes a `mode` line may name. */
+    public val DRIVE_MODES: Set<String> = setOf("ECO", "CITY", "SPORT")
+
+    /** The line for a drive mode change; a name that is not one of [DRIVE_MODES] is written as `-`. */
+    public fun modeLine(mode: String): String = "$MODE " + (mode.uppercase().takeIf { it in DRIVE_MODES } ?: MISSING)
 
     /** The longest manufacturer payload a `tpms` line holds: an extended advertisement carries at most 251 bytes of data in all. */
     public const val MAX_TPMS_PAYLOAD_BYTES: Int = 251
@@ -158,6 +166,7 @@ public object ExternalSamples {
         if (payload.startsWith("$TPMS ") || payload == TPMS) {
             return parseTpms(0, payload)?.let(::tpmsLine) ?: "$TPMS $MISSING $MISSING $MISSING"
         }
+        if (payload.startsWith("$MODE ") || payload == MODE) return modeLine(payload.removePrefix(MODE).trim())
         if (!payload.startsWith("$GPS ") && payload != GPS) return payload
         val fix = parseGps(0, payload) ?: return "$GPS $MISSING $MISSING $MISSING $MISSING $MISSING"
         return listOf(
