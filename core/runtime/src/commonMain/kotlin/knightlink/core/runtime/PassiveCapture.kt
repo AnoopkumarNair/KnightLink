@@ -6,8 +6,10 @@ import knightlink.core.common.SessionEvents
 import knightlink.core.common.emit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
@@ -136,6 +138,8 @@ public class PassiveCapture(
      * @property idleDelay the pause between two cycles while the bus is silent (ignition off): the cycle then repeats slowly
      * @property silenceLimit the bus that stays silent this long ends the capture ([Ended.BUS_SILENT]), so the session goes back to polling and
      *   finds out whether the car sleeps
+     * @property settleDelay the pause before the first write: a poll that was cancelled may leave the adapter waiting for the car, and the first
+     *   byte sent then interrupts it; one adapter timeout period (`ATST`) lets it finish
      * @property topIds how many identifiers a slice note lists
      */
     public data class Config(
@@ -145,6 +149,7 @@ public class PassiveCapture(
         val idleDelay: Duration = 5.seconds,
         val silenceLimit: Duration = 2.minutes,
         val topIds: Int = DEFAULT_TOP_IDS,
+        val settleDelay: Duration = 300.milliseconds,
     ) {
         init {
             require(sliceDuration > Duration.ZERO) { "sliceDuration must be positive" }
@@ -167,7 +172,7 @@ public class PassiveCapture(
         /** Nothing was heard for [Config.silenceLimit]. */
         BUS_SILENT,
 
-        /** The adapter does not know `ATMA`. */
+        /** The adapter cannot capture safely: it refused a setup command, uses automatic protocol search, or does not know `ATMA`. */
         UNSUPPORTED,
     }
 
@@ -180,8 +185,25 @@ public class PassiveCapture(
      * @throws knightlink.core.adapter.AdapterException when the adapter stops answering; a lost link throws its disconnected exception
      */
     public suspend fun run(until: Deferred<Unit>): Ended {
-        // Settings that make the adapter print raw frames with their identifiers, compactly. Whether it knows each one does not matter much.
-        for (command in listOf("ATCSM1", "ATCAF0", "ATH1", "ATS0")) accepted(command)
+        delay(config.settleDelay)
+        // Under automatic protocol search ATMA makes the adapter send requests of its own: only a fixed protocol is safe.
+        val protocol = driver.passiveCommand("ATDPN").firstOrNull { it.isNotBlank() }?.trim()?.uppercase()
+        if (protocol == null || protocol.length != 1 || protocol[0] !in "123456789BC") {
+            note(
+                "passive: the protocol is not fixed (the adapter said '${protocol.orEmpty().take(
+                    MAX_QUOTED,
+                )}'), so listening could make it send requests; not capturing",
+            )
+            return Ended.UNSUPPORTED
+        }
+        // Silent monitoring first: it must be exactly OK, or the adapter may transmit acknowledgements. The others make it print raw frames compactly.
+        for (command in listOf("ATCSM1", "ATCAF0", "ATH1", "ATS0")) {
+            val reply = driver.passiveCommand(command)
+            if (reply.size != 1 || !reply[0].trim().equals("OK", ignoreCase = true)) {
+                note("passive: the adapter did not accept $command (it said '${reply.joinToString(" ").take(MAX_QUOTED)}'); not capturing")
+                return Ended.UNSUPPORTED
+            }
+        }
         var silentSince: TimeMark? = null
         while (!until.isCompleted) {
             val all = slice(null, until)
@@ -250,5 +272,6 @@ public class PassiveCapture(
 
     private companion object {
         const val MILLIS_PER_SECOND = 1000.0
+        const val MAX_QUOTED = 20
     }
 }

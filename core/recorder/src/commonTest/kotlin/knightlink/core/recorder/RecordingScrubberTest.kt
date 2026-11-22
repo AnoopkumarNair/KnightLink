@@ -364,4 +364,27 @@ class RecordingScrubberTest {
         assertEquals(1, result.warnings.size)
         assertFalse(rxBytes(result.recording).contains(vin.take(10)))
     }
+
+    @Test
+    fun aKnownVinBroadcastAsRawFramesInAPassiveCaptureIsRemovedAndTheOtherFramesStay() {
+        val known = session("09021\r", chunks(response(0x7E8 to vin, spaces = true), listOf(7)), echo = "09021\r")
+        val bytes = vin.encodeToByteArray()
+        fun line(id: String, data: ByteArray) = id + " " + hex(data, true) + "\r"
+        // The VIN in plain ASCII over three frames of one identifier, then an ISO-TP style one, then an ordinary frame.
+        val frames = line("3B0", bytes.copyOfRange(0, 8)) + line("3B0", bytes.copyOfRange(8, 16)) + line("3B0", byteArrayOf(bytes[16], 0, 0, 0)) +
+            line("1A0", byteArrayOf(0x12, 0x34)) + "STOPPED\r\r>"
+        val events = known.events.toMutableList()
+        events.add(events.size - 1, RecordingEvent.tx(500, "ATMA\r".encodeToByteArray()))
+        events.add(events.size - 1, RecordingEvent.rx(900, frames.encodeToByteArray()))
+        val original = Recording(known.header, events)
+
+        val text = rxBytes(RecordingScrubber.scrub(original).recording)
+        val hexVin = hex(bytes.copyOfRange(0, 8), true)
+        assertFalse(text.contains(hexVin), "the VIN is still in the frames")
+        assertFalse(text.contains(hex(bytes.copyOfRange(8, 16), true)))
+        assertTrue(text.contains("1A0 12 34"), "an unrelated frame was changed")
+        // Manufacturer code kept, like everywhere else; sizes unchanged.
+        assertTrue(text.contains("3B0 " + hex(scrubbedVin.encodeToByteArray().copyOfRange(0, 8), true)), text)
+        assertEquals(rxBytes(original).length, text.length)
+    }
 }

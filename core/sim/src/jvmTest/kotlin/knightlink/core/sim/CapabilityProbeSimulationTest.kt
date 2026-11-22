@@ -73,7 +73,7 @@ class CapabilityProbeSimulationTest {
         assertEquals("ELM327 v2.3", report.adapter.banner)
         assertEquals("OBDII to RS232 Interpreter", report.adapter.description)
         assertEquals(14.1, report.adapter.voltage)
-        assertEquals("A6", report.adapter.protocolNumber)
+        assertEquals("6", report.adapter.protocolNumber)
         assertEquals(listOf("SIMHARRIER2020001", null, null), report.ecus.map { it.vin })
     }
 

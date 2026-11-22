@@ -292,10 +292,11 @@ public class Elm327Driver(
 
     /**
      * Sends one adapter command on the passive capture path, which [ReadOnlyPolicy.passiveViolation] gates (much narrower than for
-     * [command]). Used to set up and to restore the adapter around [monitor].
+     * [command]). Used to set up and to restore the adapter around [monitor]. A reply of `STOPPED` (the adapter was still waiting for the
+     * car when the command's first byte interrupted it) earns one resend, as for every command.
      */
     public suspend fun passiveCommand(text: String): List<String> =
-        lock.withLock { exchangeOnce(text, config.commandTimeout, passive = true).lines }
+        lock.withLock { exchange(text, config.commandTimeout, passive = true).lines }
 
     /**
      * Listens to the bus without sending anything: `ATMA`, then, after [listenFor] (or when [until] completes, or when the adapter ends the
@@ -309,7 +310,7 @@ public class Elm327Driver(
      * @throws AdapterDisconnectedException when the link ends
      */
     public suspend fun monitor(listenFor: Duration, stopTimeout: Duration, until: Deferred<*>? = null): List<String> = lock.withLock {
-        checkAllowed(MONITOR_COMMAND, passive = true)
+        ReadOnlyPolicy.monitorViolation(MONITOR_COMMAND)?.let { reason -> throw ReadOnlyViolationException("Refused to send a command: $reason") }
         disconnection?.let { throw it }
         discardStale()
         // The adapter forgets nothing it was told, but the next request must not rely on the header it had before monitoring.
@@ -572,13 +573,13 @@ public class Elm327Driver(
     private class Reply(val lines: List<String>, val echoed: Boolean)
 
     /** One command and its reply, with the one resend that STOPPED earns. */
-    private suspend fun exchange(text: String, timeout: Duration): Reply {
-        val first = exchangeOnce(text, timeout)
+    private suspend fun exchange(text: String, timeout: Duration, passive: Boolean = false): Reply {
+        val first = exchangeOnce(text, timeout, passive)
         if (first.lines.none(::isStopped)) return first
         counters = counters.copy(resends = counters.resends + 1)
         note(SessionEvents.RESEND, "'${text.trim()}' was answered with STOPPED; sending it again")
         delay(config.stoppedRetryDelay)
-        return exchangeOnce(text, timeout)
+        return exchangeOnce(text, timeout, passive)
     }
 
     private fun isStopped(line: String): Boolean = (parser.parse(line) as? ElmLine.Status)?.status == ElmStatus.STOPPED

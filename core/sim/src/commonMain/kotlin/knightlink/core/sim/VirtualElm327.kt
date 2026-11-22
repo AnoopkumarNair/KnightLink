@@ -72,6 +72,20 @@ public class VirtualElm327(
 
     private var resetBeforeNextCommand = false
 
+    // The protocol is chosen by the init script (ATSP6); until then, and after ATSP0, the adapter searches automatically (ATDPN says `A6`).
+    private var automaticProtocol = true
+
+    /** Commands (upper case, no spaces, e.g. `ATCSM1`) the adapter always answers with `?`, as one that does not know them. */
+    public val unsupportedCommands: MutableSet<String> = HashSet()
+
+    /** Commands answered with `?` once, then accepted again. */
+    public val rejectNext: MutableSet<String> = HashSet()
+
+    /** Sends [text] as it is, without anyone having asked, as an adapter that is still saying something from an earlier command. */
+    public fun sayUnasked(text: String) {
+        text.encodeToByteArray().asList().chunked(config.chunkSize).forEach { channel.trySend(it.toByteArray()) }
+    }
+
     // `ATMA` is running since this mark: frames are printed, all at once, when any character ends it.
     private var monitoringSince: TimeMark? = null
 
@@ -130,7 +144,8 @@ public class VirtualElm327(
             ensureLinked()
             // Characters are echoed as they arrive, so the echo setting in force before the command applies.
             val echoed = echo
-            send(command, echoed, execute(command.filterNot { it.isWhitespace() }.uppercase()))
+            val key = command.filterNot { it.isWhitespace() }.uppercase()
+            send(command, echoed, if (key in unsupportedCommands || rejectNext.remove(key)) listOf("?") else execute(key))
         }
     }
 
@@ -220,7 +235,7 @@ public class VirtualElm327(
             "I" -> return listOf(config.banner)
             "@1" -> return listOf("OBDII to RS232 Interpreter")
             "RV" -> return listOf("14.1V")
-            "DPN" -> return listOf("A6")
+            "DPN" -> return listOf(if (automaticProtocol) "A6" else "6")
             "DP" -> return listOf("AUTO, ISO 15765-4 (CAN 11/500)")
             "E0" -> echo = false
             "E1" -> echo = true
@@ -247,6 +262,8 @@ public class VirtualElm327(
                     flowControlData = data
                 } else if (body.startsWith("FCSM")) {
                     flowControlMode = body.substring(4).toIntOrNull()?.takeIf { it in 0..2 } ?: return listOf("?")
+                } else if (body.startsWith("SP") && body.length == 3) {
+                    automaticProtocol = body[2] == '0' || body[2] == 'A'
                 } else if (body.startsWith("SH")) {
                     val id = body.substring(2)
                     if (id.length != 3 || !id.all { it.isHexDigit() }) return listOf("?")
@@ -333,6 +350,7 @@ public class VirtualElm327(
         flowControlMode = 0
         flowControlHeader = null
         flowControlData = null
+        automaticProtocol = true
     }
 
     /** An 11-bit identifier of exactly three hex digits, or null. */

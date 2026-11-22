@@ -104,9 +104,6 @@ class SessionController(
         /** Whether the drive mode has been written into the recording of the link that is polling now (every link opens a new recording). */
         var modeStamped = false
 
-        /** The capture mode last written into the recording of this link; null until the link's first line. */
-        var captureStamped: CaptureMode? = null
-
         /** What the tyre sensor capture shows now; set while it runs. */
         @Volatile
         var tyres: (() -> TyreSensors)? = null
@@ -395,6 +392,9 @@ class SessionController(
             seedScan = seed,
             candidateChecks = candidates,
             wallClockMs = { System.currentTimeMillis() },
+            // Written by the session at the moment the mode changes, so it sits exactly between the requests it separates. A new link starts
+            // active and a recording without a line reads as active, so nothing is written for that.
+            captureStamp = { passive -> transport.external(ExternalSamples.captureLine(passive)) },
         )
         // The recording gets every event (it is the replayable record); the text log gets the same ones, except the scan's result, which is
         // a long line of JSON that belongs in the recording and its sidecar, not in a log that is meant to be read on a phone.
@@ -422,18 +422,8 @@ class SessionController(
                     run.modeStamped = true
                     driveMode?.let { run.mark?.invoke(ExternalSamples.modeLine(it.tag)) }
                 }
-                // The capture mode is the session's to change (also by itself: a silent bus, a lost link), so its changes are written as they show.
-                val capture = session.captureMode.value
-                // A new link starts active, and a recording without a line is read as active: only a change is written.
-                if ((run.captureStamped ?: CaptureMode.ACTIVE) != capture) {
-                    run.mark?.let { mark ->
-                        mark(ExternalSamples.captureLine(capture == CaptureMode.PASSIVE))
-                        run.captureStamped = capture
-                    }
-                }
             } else {
                 run.modeStamped = false
-                run.captureStamped = null
             }
             if (state is SessionState.Polling && state.report !== summarised) {
                 summarised = state.report

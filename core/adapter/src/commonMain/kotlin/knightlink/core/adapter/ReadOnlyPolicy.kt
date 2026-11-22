@@ -33,13 +33,20 @@ public object ReadOnlyPolicy {
     public const val MONITOR_STOP: String = " "
 
     /** The only adapter commands (without `AT`, upper case) the passive capture path may send, besides `CF`/`CM` with a three-digit identifier. */
-    private val passiveExact = setOf("CSM1", "CAF0", "CAF1", "H1", "S0", "MA", "AR")
+    private val passiveExact = setOf("CSM1", "CAF0", "CAF1", "H1", "S0", "AR", "DPN")
 
     /**
      * Why [command] may not be sent on the passive capture path, or null when it may. Much narrower than [violation]: only adapter
      * commands that set how the adapter listens (`ATCSM1`, `ATCAF0`, `ATCAF1`, `ATH1`, `ATS0`, `ATAR`, `ATCF hhh`, `ATCM hhh`) and
-     * `ATMA`. No diagnostic request, no other adapter command.
+     * `ATDPN`, which asks which protocol is in use (monitoring is only started when it is fixed, because under automatic protocol search
+     * `ATMA` makes the adapter send requests of its own). No diagnostic request, no other adapter command, and not `ATMA` itself: that
+     * one is gated by [monitorViolation] and only [Elm327Driver.monitor] sends it.
      */
+    public fun monitorViolation(command: String): String? {
+        val compact = command.filterNot { it.isWhitespace() }.uppercase()
+        return if (compact == "ATMA") null else "only ATMA is a monitor command: $compact"
+    }
+
     public fun passiveViolation(command: String): String? {
         val compact = command.filterNot { it.isWhitespace() }.uppercase()
         if (!compact.startsWith("AT")) return "only adapter commands are allowed while capturing passively: $compact"

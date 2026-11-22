@@ -91,7 +91,12 @@ class PassiveCaptureSimulationTest {
         silenceLimit = 60.seconds,
     )
 
-    private fun TestScope.rig(capture: PassiveCapture.Config = shortCapture, bufferFrames: Int? = null): Rig {
+    private fun TestScope.rig(
+        capture: PassiveCapture.Config = shortCapture,
+        bufferFrames: Int? = null,
+        initScript: List<String> = adapterDefinition.initScript,
+        stamps: MutableList<Boolean>? = null,
+    ): Rig {
         val vehicle = simulation.buildVehicle()
         // What the car says by itself: four identifiers at different rates.
         vehicle.broadcast(0x1A0, 100) { n -> byteArrayOf(n.toByte(), 0x34) }
@@ -110,9 +115,10 @@ class PassiveCaptureSimulationTest {
             pollPeriod = { 500.milliseconds },
             asleepAfter = Duration.INFINITE,
             capture = capture,
+            captureStamp = { passive -> stamps?.add(passive) },
         )
         val events = Collected()
-        val session = VehicleSession(transport, adapterDefinition.initScript, catalog, backgroundScope, testTimeSource, config, events)
+        val session = VehicleSession(transport, initScript, catalog, backgroundScope, testTimeSource, config, events)
         return Rig(vehicle, simulated, transport, session, events)
     }
 
@@ -246,5 +252,66 @@ class PassiveCaptureSimulationTest {
         run(2.seconds)
         assertEquals("passive: all ids 1.0 s, 8 frames, 3 ids (1A0:5 1B4:2 0C9:1), buffer-full 1", rig.events.of(SessionEvents.PASSIVE_SLICE).first())
         assertNotNull(rig.session.telemetry.value.rpmAt())
+    }
+
+    @Test
+    fun anAdapterThatDoesNotTakeSilentMonitoringNeverGetsAMonitorCommand() = runTest {
+        val rig = rig()
+        rig.session.start()
+        run(10.seconds)
+        rig.adapter.unsupportedCommands += "ATCSM1"
+        rig.session.setCaptureMode(CaptureMode.PASSIVE)
+        run(5.seconds)
+        assertTrue(rig.adapter.received.none { it == "ATMA" }, "ATMA was sent")
+        assertEquals(CaptureMode.ACTIVE, rig.session.captureMode.value)
+        val notes = rig.events.of(SessionEvents.PASSIVE_SLICE)
+        assertTrue(notes.any { it.contains("did not accept ATCSM1") }, notes.toString())
+        assertTrue(rig.events.of(SessionEvents.CAPTURE_MODE).any { it.contains("cannot monitor") })
+        // The adapter is back as polling needs it, and polling goes on.
+        assertTrue(rig.adapter.received.contains("ATCAF1"))
+        assertIs<SessionState.Polling>(rig.session.state.value)
+        assertEquals(1, rig.transport.streams.size)
+    }
+
+    @Test
+    fun anAdapterThatSearchesTheProtocolAutomaticallyIsNeverPutInMonitorMode() = runTest {
+        val rig = rig(initScript = adapterDefinition.initScript.map { if (it == "ATSP6") "ATSP0" else it })
+        rig.session.start()
+        run(10.seconds)
+        rig.session.setCaptureMode(CaptureMode.PASSIVE)
+        run(3.seconds)
+        assertTrue(rig.adapter.received.none { it == "ATMA" || it == "ATCSM1" }, rig.adapter.received.toString())
+        assertEquals(CaptureMode.ACTIVE, rig.session.captureMode.value)
+        assertTrue(rig.events.of(SessionEvents.PASSIVE_SLICE).any { it.contains("protocol is not fixed") })
+    }
+
+    @Test
+    fun aRestoreThatFailsInitialisesTheAdapterAgainAndKeepsTheLink() = runTest {
+        val rig = rig()
+        rig.session.start()
+        run(10.seconds)
+        rig.session.setCaptureMode(CaptureMode.PASSIVE)
+        run(3.seconds)
+        // The restore command and then the first initialisation step are refused once; the second try of the recovery works.
+        rig.adapter.rejectNext += setOf("ATCAF1", "ATH1")
+        rig.session.setCaptureMode(CaptureMode.ACTIVE)
+        run(10.seconds)
+        assertEquals(1, rig.transport.streams.size, "the link was reopened")
+        assertIs<SessionState.Polling>(rig.session.state.value)
+        assertEquals(CaptureMode.ACTIVE, rig.session.captureMode.value)
+        assertTrue(rig.adapter.received.count { it == "ATZ" } >= 2, "the adapter was not initialised again")
+    }
+
+    @Test
+    fun theSessionReportsTheCaptureModeToTheAppAtTheMomentItChanges() = runTest {
+        val stamps = ArrayList<Boolean>()
+        val rig = rig(initScript = adapterDefinition.initScript, stamps = stamps)
+        rig.session.start()
+        run(10.seconds)
+        rig.session.setCaptureMode(CaptureMode.PASSIVE)
+        run(2.seconds)
+        rig.session.setCaptureMode(CaptureMode.ACTIVE)
+        run(2.seconds)
+        assertEquals(listOf(true, false), stamps)
     }
 }

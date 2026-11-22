@@ -36,7 +36,14 @@ public data class ScrubResult(val recording: Recording, val warnings: List<Strin
  *   contains it), in rx bytes (an echo, even when it is split over chunks), in error messages and in the header. The
  *   replacement has the same length, so chunk sizes do not change.
  *
+ * - A known VIN is also removed where it appears as hex data in raw frames, as passive capture (`ATMA`) records them: for every CAN identifier
+ *   the data bytes of its frames are joined (once as they are, once without the ISO-TP PCI bytes) and the VIN's ASCII bytes are looked for in
+ *   that. The rest of the frames is untouched, so a shared copy still holds the broadcast.
+ *
  * What it does not promise:
+ * - A VIN in a broadcast that is split or encoded in some other way than plain ASCII (or ISO-TP) bytes of one identifier is not found, and
+ *   neither is a VIN that no recognised `0902`/`22F190` exchange of the recording revealed. Raw passive-capture frames are shared as they are
+ *   otherwise: look at a recording before it leaves the device.
  * - Nothing else is looked for. A VIN delivered another way (for example a read of another data identifier, or
  *   headers-off output on an exchange that was not recognised as a VIN read) is not found, and a VIN that was never
  *   in a recognised `0902` response is not known to the scrubber, so its text copies are not found either.
@@ -88,6 +95,7 @@ public object RecordingScrubber {
 
         sweepBytes(events, EventKind.TX, vins)
         sweepBytes(events, EventKind.RX, vins)
+        sweepFrameHex(events, vins)
         val header = RecordingHeader(recording.header.adapter?.let { it.scrubText(vins) }, recording.header.note?.let { it.scrubText(vins) })
         val scrubbed = events.filterNotNull().map {
             when (it.kind) {
@@ -98,6 +106,73 @@ public object RecordingScrubber {
             }
         }
         return ScrubResult(Recording(header, scrubbed, recording.truncated), warnings)
+    }
+
+    private class Track {
+        val digits = StringBuilder()
+        val positions = ArrayList<Int>()
+    }
+
+    /**
+     * Replaces, in place, the hex form of every known VIN in raw frame lines of the rx bytes (see the class comment). The line shape is
+     * three hex digits of identifier and two per data byte, up to eight bytes, spaces optional.
+     */
+    private fun sweepFrameHex(events: MutableList<RecordingEvent?>, vins: Set<String>) {
+        if (vins.isEmpty()) return
+        val indices = events.indices.filter { events[it]?.kind == EventKind.RX }
+        if (indices.isEmpty()) return
+        val parts = indices.map { events[it]!!.bytes }
+        val stream = parts.concat()
+        val whole = HashMap<String, Track>()
+        val withoutPci = HashMap<String, Track>()
+        for (line in splitLines(stream)) {
+            val digits = StringBuilder()
+            val positions = ArrayList<Int>()
+            line.text.forEachIndexed { i, c ->
+                if (!c.isWhitespace()) {
+                    digits.append(c.uppercaseChar())
+                    positions += line.positions[i]
+                }
+            }
+            val n = digits.length
+            if (n < ID_DIGITS + 2 || n > ID_DIGITS + 16 || (n - ID_DIGITS) % 2 != 0 || !digits.all { it in '0'..'9' || it in 'A'..'F' }) continue
+            val id = digits.substring(0, ID_DIGITS)
+            val data = ID_DIGITS
+            // A first frame has two PCI bytes, any other frame one.
+            val skip = if (digits[data] == '1') 4 else 2
+            val a = whole.getOrPut(id) { Track() }
+            val b = withoutPci.getOrPut(id) { Track() }
+            for (k in data until n) {
+                a.digits.append(digits[k])
+                a.positions += positions[k]
+                if (k - data >= skip) {
+                    b.digits.append(digits[k])
+                    b.positions += positions[k]
+                }
+            }
+        }
+        var changed = false
+        for (vin in vins) {
+            val hex = vin.uppercase().map { it.code.toString(16).uppercase().padStart(2, '0') }.joinToString("")
+            val replacement = vin.placeholder().map { it.code.toString(16).uppercase().padStart(2, '0') }.joinToString("")
+            for (track in whole.values + withoutPci.values) {
+                var at = track.digits.indexOf(hex)
+                while (at >= 0) {
+                    if (at % 2 == 0) {
+                        for (k in hex.indices) stream[track.positions[at + k]] = replacement[k].code.toByte()
+                        changed = true
+                    }
+                    at = track.digits.indexOf(hex, at + 1)
+                }
+            }
+        }
+        if (!changed) return
+        var offset = 0
+        indices.forEachIndexed { i, eventIndex ->
+            val old = events[eventIndex]!!
+            events[eventIndex] = RecordingEvent(old.timeMs, EventKind.RX, stream.copyOfRange(offset, offset + parts[i].size).toHex())
+            offset += parts[i].size
+        }
     }
 
     // The scrubbed form of a VIN: manufacturer code kept, the rest zeros, same length.

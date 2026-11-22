@@ -173,6 +173,12 @@ public class VehicleSession(
         val candidateChecks: CandidateChecks? = null,
         /** How passive capture listens: slice length, identifier groups, limits (see [setCaptureMode]). */
         val capture: PassiveCapture.Config = PassiveCapture.Config(),
+        /**
+         * Called at the exact moment passive capture starts (true, before the adapter is told to listen) and when polling is back (false, after
+         * the adapter is restored), so the app can write it into the recording. Not called when the link is lost (a new link starts active).
+         * Errors it throws are ignored.
+         */
+        val captureStamp: suspend (passive: Boolean) -> Unit = {},
         /** The scan's own settings: pace, how often the speed is read, and so on. */
         val scan: FullScan.Config = FullScan.Config(),
         /** While a scan waits for a car that moves, the session polls normally for this long between two readings of the speed. */
@@ -785,11 +791,16 @@ public class VehicleSession(
                 continue
             }
             if (end is PollEnd.PassiveRequested) {
-                runPassive(driver)
+                runPassive(driver, known)
                 lastAnswer = timeSource.markNow()
                 continue
             }
             if (end is PollEnd.Asleep) {
+                // Waking up asks the car (01 00): not while the mode says the adapter only listens.
+                if (_captureMode.value == CaptureMode.PASSIVE) {
+                    _captureMode.value = CaptureMode.ACTIVE
+                    note(SessionEvents.CAPTURE_MODE, "back to active polling: the car went to sleep before passive capture could start")
+                }
                 waitForWake(driver, known)
                 lastAnswer = timeSource.markNow()
                 setState(SessionState.Polling(known.report, known.coverage))
@@ -811,8 +822,9 @@ public class VehicleSession(
      * been silent for too long, or the adapter cannot monitor; then it is put back and polling resumes (the caller's loop), with the scheduler and
      * everything learned kept and no probe. A lost link ends the connection as it always does, and the mode is ACTIVE again by then.
      */
-    private suspend fun runPassive(driver: Elm327Driver) {
+    private suspend fun runPassive(driver: Elm327Driver, known: Knowledge) {
         note(SessionEvents.CAPTURE_MODE, "passive capture on: polling paused, the adapter only listens and sends nothing to the car")
+        stamp(passive = true)
         _rates.value = PollRates.EMPTY
         val capture = PassiveCapture(driver, config.capture, events, timeSource)
         val ended = CompletableDeferred<Unit>()
@@ -848,7 +860,8 @@ public class VehicleSession(
             // The adapter stopped answering while listening (it did not come back to its prompt, say): initialise it again, and poll.
             _captureMode.value = CaptureMode.ACTIVE
             note(SessionEvents.CAPTURE_MODE, "passive capture ended: ${describe(e)}; initialising the adapter again and polling")
-            driver.reinitialize("after a failed passive capture")
+            recoverAfterPassive(driver, known, "after a failed passive capture: ${describe(e)}")
+            stamp(passive = false)
             return
         }
         _captureMode.value = CaptureMode.ACTIVE
@@ -860,7 +873,31 @@ public class VehicleSession(
                 PassiveCapture.Ended.UNSUPPORTED -> "back to active polling: the adapter cannot monitor the bus"
             },
         )
-        capture.restore()
+        try {
+            capture.restore()
+        } catch (e: AdapterDisconnectedException) {
+            throw e
+        } catch (e: AdapterException) {
+            // The restore itself failed (and so did the fall-back initialisation it makes): the ordinary recovery decides whether the link is kept.
+            recoverAfterPassive(driver, known, "restoring the adapter after passive capture failed: ${describe(e)}")
+        }
+        stamp(passive = false)
+    }
+
+    /** The adapter would not come back from passive capture: initialise it again, as often as [Config.maxReinits] allows, then polling resumes. */
+    private suspend fun recoverAfterPassive(driver: Elm327Driver, known: Knowledge, trouble: String) {
+        reinitialiseOrGiveUp(driver, trouble, 0)
+        setState(SessionState.Polling(known.report, known.coverage))
+    }
+
+    private suspend fun stamp(passive: Boolean) {
+        try {
+            config.captureStamp(passive)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // The recording is a convenience for the reader; losing a line must not end the session.
+        }
     }
 
     // The full scan -------------------------------------------------------------------------------------------
