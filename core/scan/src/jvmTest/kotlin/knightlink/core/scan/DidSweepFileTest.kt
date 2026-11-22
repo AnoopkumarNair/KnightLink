@@ -87,6 +87,15 @@ class DidSweepFileTest {
     }
 
     @Test
+    fun theHarrierCandidateFileIsValidAndAsksTheClusterAndBodyController() {
+        val file = File(System.getProperty("knightlink.repoRoot"), "definitions/discovery/candidates/tata/harrier-2020-kryotec-at.json")
+        val checks = CandidateChecks.parse(file.readText())
+        val cluster = checks.checks.single { it.requestId == "700" }.identifiers()
+        assertTrue(0xF190 in cluster && 0x0100 in cluster && 0x01FF in cluster)
+        assertTrue(checks.checks.single { it.requestId == "701" }.identifiers().isNotEmpty())
+    }
+
+    @Test
     fun aCandidateFileThatAsksForTooMuchOrIsMalformedIsRefused() {
         val big = """{"schemaVersion":1,"id":"x","checks":[{"requestId":"7E1","label":"g","ranges":[{"from":"0000","to":"0FFF"}]}]}"""
         assertTrue(runCatching { CandidateChecks.parse(big) }.isFailure)

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "discovery/candidates/tata/harrier-2020-kryotec-at",
+  "notes": "One-time read-only service 22 tries on the body ECUs that answered 19 02 in Car Scanner's log (700 instrument cluster, 701 body controller). Looking for odometer, distance to empty and the cluster's own fuel value; the engine ECU's identifiers are already polled. Standard identification identifiers F180-F1A0 name the unit, 0100-01FF is a guessed block of cluster data. Answers appear in the recording as 22 xxxx requests to 700/701 and their 62 replies; refusals are expected for most. Delete this file once the answer is known.",
+  "checks": [
+    { "requestId": "700", "label": "instrument cluster", "ranges": [ { "from": "F180", "to": "F1A0" }, { "from": "0100", "to": "01FF" } ] },
+    { "requestId": "701", "label": "body controller", "ranges": [ { "from": "F180", "to": "F1A0" } ] }
+  ]
+}
