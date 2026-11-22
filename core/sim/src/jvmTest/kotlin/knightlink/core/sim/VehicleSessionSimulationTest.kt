@@ -349,7 +349,7 @@ class VehicleSessionSimulationTest {
     fun unpluggingTheAdapterMidPollingIsNoticedWithinOneRoundTripAndTheSessionReconnectsWithoutProbing() = runTest {
         val rig = rig()
         rig.session.start()
-        run(40.seconds)
+        run(70.seconds)
         val polling = assertIs<SessionState.Polling>(rig.session.state.value)
         val before = rig.simulated.current!!
         assertEquals(1, before.requests().count { it == "0902" }, "only the engine ECU lists a VIN, so the first probe reads it once")
@@ -568,10 +568,10 @@ class VehicleSessionSimulationTest {
     fun theBackoffStartsAgainAtOneSecondAfterEveryConnectionThatPolledForAWhile() = runTest {
         val rig = rig()
         rig.session.start()
-        run(40.seconds)
+        run(70.seconds)
         repeat(2) {
             rig.simulated.current!!.disconnect()
-            run(40.seconds)
+            run(70.seconds)
         }
         val waits = rig.kinds.filterIsInstance<SessionState.Reconnecting>().map { it.retryIn }
         assertEquals(listOf(1.seconds, 1.seconds), waits)

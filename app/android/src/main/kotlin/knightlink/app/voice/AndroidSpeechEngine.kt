@@ -164,9 +164,11 @@ class AndroidSpeechEngine(
      */
     private fun chooseDeepVoice(locale: Locale) {
         try {
-            val candidates = tts.voices.orEmpty().filter {
+            val installed = tts.voices.orEmpty().filter {
                 it.locale.language == locale.language && !it.isNetworkConnectionRequired && "notInstalled" !in it.features.orEmpty()
             }
+            // The accent of the language just set (en-IN) before any other of the same language.
+            val candidates = installed.filter { it.locale.country == locale.country }.ifEmpty { installed }
             val male = candidates.firstOrNull { it.name.contains("male", ignoreCase = true) && !it.name.contains("female", ignoreCase = true) }
                 ?: candidates.firstOrNull { voice -> MALE_VOICE_CODES.any { "-x-$it-" in voice.name } }
             if (male != null) {

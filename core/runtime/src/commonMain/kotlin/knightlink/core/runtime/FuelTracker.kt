@@ -33,6 +33,7 @@ public class FuelTracker(
     private var baseline: Double? = memory.lastPercent
     private val fills = ArrayList(memory.fills)
     private val rising = ArrayList<Double>()
+    private val lows = ArrayList<Double>()
     private var savedBaseline: Double? = memory.lastPercent
 
     /** What to remember now. */
@@ -49,7 +50,8 @@ public class FuelTracker(
 
     /** @return the refuel this reading completes, or null */
     public fun update(percent: Double, atMs: Long): FuelFill? {
-        if (percent.isNaN() || percent < 0.0 || percent > 100.0) return null
+        // 0 % is what a sender reports while it starts up, not an empty tank that the car is driving on.
+        if (percent.isNaN() || percent <= 0.0 || percent > 100.0) return null
         val base = baseline
         if (base == null) {
             baseline = percent
@@ -69,8 +71,18 @@ public class FuelTracker(
             return null
         }
         rising.clear()
-        // The level falls as fuel is used: follow it down at once, and up only slowly (slosh).
-        baseline = if (percent < base) percent else base + (percent - base) * UP_FOLLOW
+        // The level falls as fuel is used, but a dip of a moment (braking, a corner) is not the level: it is followed down only after [confirm]
+        // readings in a row below it, to the highest of them; up only slowly (slosh).
+        if (percent < base) {
+            lows += percent
+            if (lows.size >= confirm) {
+                baseline = lows.takeLast(confirm).max()
+                lows.clear()
+            }
+        } else {
+            lows.clear()
+            baseline = base + (percent - base) * UP_FOLLOW
+        }
         return null
     }
 

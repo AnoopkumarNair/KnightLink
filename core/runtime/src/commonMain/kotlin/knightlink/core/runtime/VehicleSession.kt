@@ -128,7 +128,9 @@ public class VehicleSession(
          * On 2026-11-22 the car was switched off with the adapter still plugged in: the adapter's link came up, polled for a few seconds and
          * dropped again, fifteen times in ten minutes, because every such short connection reset the wait to one second.
          */
-        val stableLinkAfter: Duration = 30.seconds,
+        val stableLinkAfter: Duration = 60.seconds,
+        /** ... and only if it also got this many answers from the car: an adapter that links up but hears a sleeping car has not recovered. */
+        val stableAnswers: Int = 50,
         /** The phone's clock in milliseconds since 1970, to date the refuels found; 0 when there is none. */
         val wallClockMs: () -> Long = { 0L },
         /** Give up (state [SessionState.Failed]) after this many failed attempts in a row. Null retries forever. */
@@ -415,8 +417,9 @@ public class VehicleSession(
             setState(SessionState.Connecting(attempt))
             note(SessionEvents.CONNECT_ATTEMPT, "attempt $attempt")
             val connectedAt = timeSource.markNow()
+            val answersBefore = answers
             val ended = runConnection()
-            if (ended.reachedPolling && connectedAt.elapsedNow() >= config.stableLinkAfter) {
+            if (ended.reachedPolling && connectedAt.elapsedNow() >= config.stableLinkAfter && answers - answersBefore >= config.stableAnswers) {
                 // The link worked for a while, so this is a new outage, not a continuation of the failed attempts.
                 attempt = 0
                 wait = config.initialBackoff
@@ -498,6 +501,7 @@ public class VehicleSession(
         val pollingScript = initScript + config.pollScript
         driver.initialize(if (cached == null) initScript + config.probeScript else pollingScript)
 
+        restoreFuelEarly()
         val known = cached ?: restoreStored(driver) ?: probeUntilVehicleAnswers(driver).also {
             // The probe's timing is done with; polling runs with the definition's own, and a re-init must restore that, not the probe's.
             if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty()) driver.applyScript(pollingScript, send = config.pollScript)
@@ -681,10 +685,6 @@ public class VehicleSession(
         }
         history[id] = updated
         memoryDirty = true
-        if (old != null && old.constant && updated.changed) {
-            rebuildDiscovery()
-            activeScheduler?.replaceExtras(extras())
-        }
     }
 
     /**
@@ -841,8 +841,7 @@ public class VehicleSession(
             scheduler.replaceExtras(extras())
             note(
                 SessionEvents.SCAN,
-                "polling ${discoveryItems.size} identifiers that the scan found, raw, about every ${discoveryPeriod(discoveryItems.size)} " +
-                    "(${constantIds().count { it in discoveryIds }} of them only once: their value never changed)",
+                "polling ${discoveryItems.size} identifiers that the scan found, raw, about every ${discoveryPeriod(discoveryItems.size)}",
             )
         }
         saveMemory()
@@ -1071,6 +1070,22 @@ public class VehicleSession(
             response.respondingIds.isEmpty() &&
             response.busFault == null &&
             ElmStatus.NO_DATA in response.statuses
+    }
+
+    /**
+     * Takes the last fuel level (and the refuels) of the vehicle remembered last before the probe, so that a refuel is found even when the car
+     * is slow to wake and the probe is incomplete (no vehicle key yet). The memory of the vehicle the probe identifies replaces it later.
+     */
+    private fun restoreFuelEarly() {
+        if (vehicleKey != null) return
+        try {
+            val store = config.memory ?: return
+            val stored = store.lastKey()?.let { store.load(it) } ?: return
+            fuel = FuelTracker(stored.fuel)
+            _fuelFills.value = stored.fuel.fills
+        } catch (e: Exception) {
+            // Remembering is a convenience.
+        }
     }
 
     /** Feeds a fuel level reading to the refuel finder; a refuel is noted in the log and kept in the memory. */

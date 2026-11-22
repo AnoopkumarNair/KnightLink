@@ -36,9 +36,10 @@ class FuelTrackerTest {
     @Test
     fun theLevelFallingWhileDrivingMovesTheBaselineDownSoALaterRefuelIsMeasuredFromTheLowerLevel() {
         val tracker = FuelTracker(FuelMemory(lastPercent = 46.0))
-        feed(tracker, 45.0, 40.0, 35.0, 30.0, 25.0)
+        // A slow fall, as in a real drive: one point every few readings.
+        feed(tracker, 45.0, 45.0, 44.0, 44.0, 43.0, 43.0, 42.0, 42.0, 41.0, 41.0, 40.0, 40.0, 39.0, 39.0, 38.0)
         val fill = feed(tracker, 80.0, 80.5, 79.5).single()
-        assertEquals(25.0, fill.fromPercent, 0.001)
+        assertEquals(38.0, fill.fromPercent, 1.5)
     }
 
     @Test
@@ -47,6 +48,15 @@ class FuelTrackerTest {
         assertEquals(1, feed(tracker, 20.0, 60.0, 60.0, 60.0, 59.5, 59.0).size)
         assertEquals(59.0, tracker.model.lastPercent!!, 5.0)
         assertEquals(1, tracker.model.fills.size)
+    }
+
+    @Test
+    fun oneLowReadingOrAShortDipIsNotFollowedSoTheNormalLevelAfterwardsIsNotARefuel() {
+        // Review 2026-11-22: a 0 % while the sender started, or a dip of five points when braking, used to pull the baseline down.
+        val tracker = FuelTracker(FuelMemory(lastPercent = 40.0))
+        val fills = feed(tracker, 0.0, 40.0, 40.0, 40.0, 33.0, 40.0, 40.0, 33.5, 33.0, 40.0, 40.0, 40.0)
+        assertTrue(fills.isEmpty(), "found $fills")
+        assertEquals(40.0, tracker.model.lastPercent!!, 1.0)
     }
 
     @Test
@@ -59,7 +69,7 @@ class FuelTrackerTest {
     @Test
     fun readingsOutsideZeroToOneHundredAreIgnored() {
         val tracker = FuelTracker(FuelMemory(lastPercent = 40.0))
-        assertTrue(feed(tracker, 255.0, -3.0, Double.NaN).isEmpty())
+        assertTrue(feed(tracker, 255.0, -3.0, 0.0, Double.NaN).isEmpty())
         assertEquals(40.0, tracker.model.lastPercent)
     }
 }

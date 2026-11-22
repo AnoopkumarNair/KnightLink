@@ -4,11 +4,12 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -16,6 +17,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -52,12 +54,19 @@ fun KittVoiceBox(
         animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium),
         label = "kittLevel",
     )
-    val sized = when (displayMode) {
-        VoiceBoxDisplayMode.LANDSCAPE_COCKPIT -> modifier.height(120.dp).aspectRatio(ASPECT, matchHeightConstraintsFirst = true)
-        else -> modifier.fillMaxWidth().aspectRatio(ASPECT)
+    // The drawing keeps its proportions and is as large as the width, the height on offer and a cap allow: a box that insists on a width and a
+    // proportion fits neither a short landscape screen nor a long spoken line under it.
+    BoxWithConstraints(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        val cap = if (displayMode == VoiceBoxDisplayMode.LANDSCAPE_COCKPIT) LANDSCAPE_MAX_HEIGHT else PORTRAIT_MAX_HEIGHT
+        val byWidth = maxWidth / ASPECT
+        val byHeight = if (constraints.hasBoundedHeight) maxHeight else Dp.Infinity
+        val height = minOf(cap, byWidth, byHeight)
+        Canvas(Modifier.size(height * ASPECT, height)) { drawKitt(smoothLevel, primaryColor, ambientGlowColor) }
     }
-    Canvas(sized) { drawKitt(smoothLevel, primaryColor, ambientGlowColor) }
 }
+
+private val PORTRAIT_MAX_HEIGHT = 360.dp
+private val LANDSCAPE_MAX_HEIGHT = 120.dp
 
 /** Width over height of the whole drawing. */
 private const val ASPECT = 0.8f

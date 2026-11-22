@@ -100,6 +100,9 @@ class SessionController(
         @Volatile
         var mark: (suspend (String) -> Unit)? = null
 
+        /** Whether the drive mode has been written into the recording of the link that is polling now (every link opens a new recording). */
+        var modeStamped = false
+
         /** What the tyre sensor capture shows now; set while it runs. */
         @Volatile
         var tyres: (() -> TyreSensors)? = null
@@ -398,6 +401,15 @@ class SessionController(
             }
         }
         combine(session.state, ticks) { state, _ -> state }.collect { state ->
+            // A reconnect starts a new recording: the mode the driver said before it is written into that one too.
+            if (state is SessionState.Polling) {
+                if (!run.modeStamped) {
+                    run.modeStamped = true
+                    driveMode?.let { run.mark?.invoke(ExternalSamples.modeLine(it.tag)) }
+                }
+            } else {
+                run.modeStamped = false
+            }
             if (state is SessionState.Polling && state.report !== summarised) {
                 summarised = state.report
                 vehicle = vehicleSummary(state.report, state.coverage)
