@@ -17,7 +17,7 @@ public const val MAX_DISCOVERY_ITEMS: Int = 60
 private const val DISCOVERY_REQUESTS_PER_SECOND = 8.0
 
 /** Discovery items are asked slowly: what changes there is worked out afterwards, and the vehicle's own signals have the budget. */
-private val FASTEST: Duration = 5.seconds
+private val FASTEST: Duration = 6.seconds
 private val SLOWEST: Duration = 8.seconds
 
 /** The poll item id of data identifier [did] (four hex digits) of the control unit asked at [requestId]. */
@@ -29,7 +29,7 @@ private val MODE01_MIRROR = 0xF400..0xF4FF
 private const val SINGLE_FRAME_DATA_BYTES = 4
 
 /**
- * How often each discovery item that changes is asked: every five seconds when there are few, and slower as they become many, so that all of
+ * How often each discovery item that changes is asked: every six seconds when there are few, and slower as they become many, so that all of
  * them together take at most about [DISCOVERY_REQUESTS_PER_SECOND] requests a second of the adapter's budget (between five and eight seconds each).
  */
 public fun discoveryPeriod(count: Int): Duration = (count / DISCOVERY_REQUESTS_PER_SECOND * 1000).milliseconds.coerceIn(FASTEST, SLOWEST)

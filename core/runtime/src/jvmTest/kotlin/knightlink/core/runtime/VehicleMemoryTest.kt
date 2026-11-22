@@ -86,7 +86,7 @@ class VehicleMemoryTest {
         val constant = discoveryPollItems(result, plan, constantItems = setOf("7E0:22E001"))
         assertEquals(Duration.INFINITE, constant.first { it.id == "7E0:22E001" }.period)
         assertTrue(constant.first { it.id == "7E0:22E011" }.period.isFinite())
-        assertEquals(5.seconds, discoveryPeriod(3))
+        assertEquals(6.seconds, discoveryPeriod(3))
         assertEquals(7500.milliseconds, discoveryPeriod(60))
     }
 

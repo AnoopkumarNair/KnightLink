@@ -618,7 +618,12 @@ public class VehicleSession(
         )
     }
 
-    private fun constantIds(): Set<String> = history.filterValues { it.constant }.keys
+    /**
+     * Identifiers to ask only once per session. Always none: on 2026-11-22 two drives of 67 and 105 minutes asked every raw identifier once,
+     * because an earlier parked run had left them marked as constant (unchanged over ten answers while the engine idled), and a constant one
+     * is never asked again. Whether a value changes can only be told from a drive, which is what the identifiers are polled for.
+     */
+    private fun constantIds(): Set<String> = emptySet()
 
     private fun rebuildDiscovery() {
         val plan = config.scanPlan
