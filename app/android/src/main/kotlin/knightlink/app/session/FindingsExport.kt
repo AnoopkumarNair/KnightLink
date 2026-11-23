@@ -1,6 +1,9 @@
 package knightlink.app.session
 
+import knightlink.core.recorder.EventKind
+import knightlink.core.recorder.ExternalSamples
 import knightlink.core.recorder.Recording
+import knightlink.core.recorder.RecordingEvent
 import knightlink.core.recorder.RecordingScrubber
 import knightlink.core.scan.ScanSummary
 import knightlink.core.vehicle.CapabilityReport
@@ -128,20 +131,53 @@ object FindingsExport {
 
     private fun stringArray(values: List<String>): JsonArray = JsonArray(values.map { JsonPrimitive(it) })
 
-    /** The scrubbed copy for the findings: the usual scrub (VIN removed) and every GPS line dropped. Times in a recording are milliseconds since it started. */
-    fun scrubbedRecording(recording: Recording): Recording = RecordingScrubber.scrub(recording, dropGps = true).recording
+    /**
+     * The scrubbed copy for the findings: the usual scrub (VIN removed), every GPS line dropped, and what the driver typed from the dashboard
+     * (odometer and range lines and events) and the tyre sensors' advertisements left out, because the consent text does not list them.
+     * Times in a recording are milliseconds since it started.
+     */
+    fun scrubbedRecording(recording: Recording): Recording {
+        val scrubbed = RecordingScrubber.scrub(recording, dropGps = true).recording
+        return scrubbed.copy(events = scrubbed.events.filterNot { it.leavesOutOfFindings() })
+    }
+
+    private fun RecordingEvent.leavesOutOfFindings(): Boolean = when (kind) {
+        EventKind.EXTERNAL -> listOf(ExternalSamples.TPMS, ExternalSamples.ODOMETER, ExternalSamples.RANGE).any { payload == it || payload.startsWith("$it ") }
+        EventKind.EVENT -> payload.startsWith(DASHBOARD_EVENT)
+        else -> false
+    }
 
     /** What the README inside the file says, for whoever opens it. */
     fun readme(): String =
         """
         KnightLink findings for one car.
 
-        Included: the protocol, the manufacturer code and model year of the VIN, the make and model, the control units that answered with the
-        data they support, calibration ids, fault codes and emission readiness, app and adapter versions, and the recording of the car's
-        conversation with the adapter (with the VIN scrubbed and with no location).
+        Included: the protocol, the make, model and model year, the manufacturer code (the first three characters of the VIN), the control
+        units that answered with the data they support and their calibration ids, fault codes and emission readiness, app and adapter versions,
+        a random id of this file, the recording of the car's conversation with the adapter (with the VIN scrubbed) together with the phone's
+        motion readings and the drive mode buttons that were pressed, and the result of the full scan when one was run.
 
-        Not included: the VIN, any location, the driver's name, and any clock time (times in the recording are seconds since it started).
+        Not included: the VIN, any location (no GPS at all), the driver's name, the odometer and range typed from the dashboard, tyre sensor
+        readings, and any clock time (times in the recording count from its start).
         """.trimIndent()
+
+    /**
+     * Makes the findings file in one step: the capabilities, the scrubbed [recording] and [scanJson]. Refuses (throws) when the full VIN, or the
+     * part of it after the manufacturer code, is found in anything that would go into the file, whatever the scrubber did.
+     *
+     * @throws IllegalStateException when a VIN of the report is in the file's text
+     */
+    fun write(out: File, input: FindingsInput, recording: Recording?, scanJson: String?) {
+        val capabilities = capabilities(input)
+        val recordingText = recording?.let { scrubbedRecording(it).toText() }
+        val vins = input.report?.ecus?.mapNotNull { it.vin }?.filter { it.length > WMI_LENGTH }.orEmpty()
+        for (text in listOfNotNull(capabilities, recordingText, scanJson, readme())) {
+            for (vin in vins) {
+                check(!text.contains(vin) && !text.contains(vin.drop(WMI_LENGTH))) { "the VIN is in the findings file" }
+            }
+        }
+        writeZip(out, capabilities, recordingText, scanJson)
+    }
 
     /**
      * Writes the findings zip to [out] (replacing it): the capabilities, the README, and when given the scrubbed recording and the scan result.
@@ -162,5 +198,9 @@ object FindingsExport {
     }
 
     private const val WMI_LENGTH = 3
+
+    /** How the session's note of what the driver typed from the dashboard starts in a recording's event lines. */
+    private const val DASHBOARD_EVENT = "app: dashboard "
+
     private const val FORMAT_VERSION = 1
 }

@@ -263,6 +263,9 @@ public class VehicleSession(
 
     @Volatile
     private var ladderSkip = false
+
+    @Volatile
+    private var bodySkip = false
     private val ladderRequests = Channel<Unit>(Channel.CONFLATED)
     private var scanPlan: DidSweepPlan? = config.scanPlan
     private var candidateChecks: CandidateChecks? = config.candidateChecks
@@ -817,6 +820,7 @@ public class VehicleSession(
     private suspend fun runBodyStage(driver: Elm327Driver) {
         bodyPaced = false
         bodyReader = null
+        bodySkip = false
         if (_bodyScan.value is BodyScanState.Running) _bodyScan.value = BodyScanState.Idle
         if (candidateChecks == null || !allows(LadderLevel.L3) || bodyGaveUp) return
         val pending = pendingBodyUnits()
@@ -846,7 +850,7 @@ public class VehicleSession(
         val stageStart = timeSource.markNow()
         publishBodyRunning(pending.first().label, stageStart)
         val outcome = try {
-            reader.run(pending, bodyProgress, BodyUnitReader.Limits(maxTime = config.bodyStageCap, watchSpeed = true)) { label, _, _ ->
+            reader.run(pending, bodyProgress, BodyUnitReader.Limits(maxTime = config.bodyStageCap, watchSpeed = true, skip = { bodySkip })) { label, _, _ ->
                 memoryDirty = true
                 publishBodyRunning(label, stageStart)
             }
@@ -1226,6 +1230,14 @@ public class VehicleSession(
     /** Ends the learning ladder that runs now, cleanly: the adapter is put back and polling goes on. Does nothing when none runs. */
     public fun skipLadder() {
         ladderSkip = true
+    }
+
+    /**
+     * Ends the parked stage of the body-unit check now ("skip"): the adapter is put back and the rest of the units is asked in the background,
+     * a few requests at a time, as when the time cap passes. Does nothing when the stage does not run.
+     */
+    public fun skipBodyScan() {
+        if (_bodyScan.value is BodyScanState.Running) bodySkip = true
     }
 
     /**

@@ -88,6 +88,12 @@ class CarProfileTest {
         assertEquals(96.7, FuelPriceStore.parse("96.7"))
         assertNull(FuelPriceStore.parse("-3"))
         assertNull(FuelPriceStore.parse("NaN"))
+        for (bad in listOf("5f", "5d", "1e2", "0x10", "1.2.3", "0", "0.0", "-0.5", "+5", "1000.01", ".", ",", "Infinity", "1 000", "9".repeat(400))) {
+            assertNull(FuelPriceStore.parse(bad), "'$bad' is not a price")
+        }
+        assertEquals(104.5, FuelPriceStore.parse("104,5"))
+        assertEquals(0.5, FuelPriceStore.parse(".5"))
+        assertEquals(1000.0, FuelPriceStore.parse("1000"))
         assertNull(FuelPriceStore.parse(null))
     }
 }

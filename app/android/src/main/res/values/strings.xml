@@ -409,9 +409,9 @@
     <string name="findings_title">Share this car\'s findings</string>
     <string name="findings_intro">This makes one file. You choose where to send it; the app uploads nothing.</string>
     <string name="findings_included_title">Included</string>
-    <string name="findings_included">• The protocol, and the car\'s make, model and model year\n• The manufacturer code from the VIN (its first three characters)\n• The control units that answered, the data they support and their calibration ids\n• Fault codes and emission readiness\n• App and adapter versions\n• A recording of the car\'s conversation with the adapter</string>
+    <string name="findings_included">• The protocol, and the car\'s make, model and model year\n• The manufacturer code from the VIN (its first three characters)\n• The control units that answered, the data they support and their calibration ids\n• Fault codes and emission readiness\n• App and adapter versions, and a random id of this file\n• A recording of the car\'s conversation with the adapter, with your phone\'s motion readings and the drive mode buttons you pressed\n• The result of the full scan, if you ran one</string>
     <string name="findings_excluded_title">Not included</string>
-    <string name="findings_excluded">• The VIN\n• Your location: no GPS at all\n• Your name\n• Clock times: times in the recording count from its start</string>
+    <string name="findings_excluded">• The VIN\n• Your location: no GPS at all\n• Your name\n• The odometer and range you typed, and tyre sensor readings\n• Clock times: times in the recording count from its start</string>
     <string name="findings_create">Create and share</string>
     <string name="findings_none">Connect to your car first, then try again.</string>
     <string name="findings_failed">Couldn\'t prepare the file: %1$s</string>
@@ -452,6 +452,8 @@
     <string name="live_method_stale">No update for %1$d s</string>
 
     <!-- Drive Truth card -->
+    <string name="dt_spoken_cost">Drive finished. %1$s kilometres, about %2$s rupees.</string>
+    <string name="dt_spoken_km">Drive finished. %1$s kilometres.</string>
     <string name="dt_title">Your drive</string>
     <string name="dt_cost_full">%1$s for %2$s km (%3$s/km)</string>
     <string name="dt_cost_km">%1$s for %2$s km</string>

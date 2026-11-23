@@ -339,6 +339,7 @@ class SessionService : Service() {
         )
         scope.launch { announcer.collect(controller.uiState.map { it.connection }.distinctUntilChanged()) }
         scope.launch { announceBodyScan() }
+        scope.launch { announceDrive() }
     }
 
     /**
@@ -359,6 +360,21 @@ class SessionService : Service() {
             connectionLog.app("body scan: $text")
             if (!closed) notifications.postScanDone(text)
             if (voiceSettings.settings.value.spokenStatus) speaker.speak(statusUtterance(text))
+        }
+    }
+
+    /** One spoken line when a drive of this connection ends (spoken status on); the card restored from an earlier drive is not announced. */
+    private suspend fun announceDrive() {
+        controller.uiState.map { if (it.driveStage == DriveStage.ENDED) it.driveTruth else null }.distinctUntilChanged().collect { report ->
+            val summary = report?.let(::spokenDriveSummary) ?: return@collect
+            if (!voiceSettings.settings.value.spokenStatus) return@collect
+            val resources = applicationContext
+            val text = if (summary.rupees != null) {
+                resources.getString(R.string.dt_spoken_cost, summary.km, summary.rupees)
+            } else {
+                resources.getString(R.string.dt_spoken_km, summary.km)
+            }
+            speaker.speak(statusUtterance(text))
         }
     }
 

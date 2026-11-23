@@ -20,6 +20,7 @@ import java.io.File
 import java.util.zip.ZipFile
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -123,6 +124,119 @@ class FindingsExportTest {
             ZipFile(file).use { zip -> assertEquals(2, zip.size()) }
         } finally {
             file.delete()
+        }
+    }
+
+    // The VIN never leaves --------------------------------------------------------------------------------------------
+
+    /** The adapter's text for the multi-frame answer to 09 02 (spaces on, one unit at 7E8), cut into the three frames of a real reply. */
+    private fun vinReply(vin: String): String {
+        val payload = byteArrayOf(0x49, 0x02, 0x01) + vin.encodeToByteArray()
+        fun hex(bytes: ByteArray) = bytes.joinToString(" ") { (it.toInt() and 0xFF).toString(16).uppercase().padStart(2, '0') }
+        val lines = ArrayList<String>()
+        lines += "7E8 " + hex(byteArrayOf(0x10, payload.size.toByte()) + payload.copyOfRange(0, 6))
+        var offset = 6
+        var sequence = 1
+        while (offset < payload.size) {
+            val end = minOf(payload.size, offset + 7)
+            lines += "7E8 " + hex(byteArrayOf((0x20 or sequence).toByte()) + payload.copyOfRange(offset, end))
+            offset = end
+            sequence++
+        }
+        return lines.joinToString("\r", postfix = "\r\r>")
+    }
+
+    private fun sessionRecording(): Recording = Recording(
+        RecordingHeader("adapter", "app, bluetooth"),
+        listOf(
+            RecordingEvent.open(0),
+            RecordingEvent.tx(100, "0902\r".encodeToByteArray()),
+            RecordingEvent.rx(140, vinReply(fullVin).encodeToByteArray()),
+            RecordingEvent.event(150, "probe: vehicle identification $fullVin read"),
+            RecordingEvent.external(500, "gps 12.97162 77.59463 41.0 90 5"),
+            RecordingEvent.external(600, "odo 48210 start"),
+            RecordingEvent.external(610, "dte 310 start"),
+            RecordingEvent.external(620, "tpms 004C 0215AABBCCDD -60"),
+            RecordingEvent.external(700, "mode CITY"),
+            RecordingEvent.external(800, "mot 20 0.10 0.20 9.80 0.001 0.002 0.003"),
+            RecordingEvent.event(900, "app: dashboard start: odometer 48210 km, range 310 km"),
+            RecordingEvent.close(1500),
+        ),
+    )
+
+    private fun zipTexts(file: File): Map<String, String> = ZipFile(file).use { zip ->
+        zip.entries().asSequence().associate { it.name to zip.getInputStream(it).readBytes().decodeToString() }
+    }
+
+    @Test
+    fun theVinIsNowhereInTheZipNotEvenAsBytesAndNoPositionOrDashboardEntryIs() {
+        val file = File.createTempFile("findings", ".zip")
+        try {
+            val scan = "{\"ecus\":[{\"vin\":\"MAT**************\"}]}"
+            FindingsExport.write(file, input(), sessionRecording(), scan)
+            val texts = zipTexts(file)
+            assertEquals(
+                setOf(FindingsExport.README_FILE, FindingsExport.CAPABILITIES_FILE, FindingsExport.RECORDING_FILE, FindingsExport.SCAN_FILE),
+                texts.keys,
+            )
+            val vinTail = fullVin.drop(3)
+            val asHex = vinTail.encodeToByteArray().joinToString("") { (it.toInt() and 0xFF).toString(16).uppercase().padStart(2, '0') }
+            val spaced = vinTail.encodeToByteArray().joinToString(" ") { (it.toInt() and 0xFF).toString(16).uppercase().padStart(2, '0') }
+            for ((name, text) in texts) {
+                assertFalse(text.contains(fullVin), "$name holds the VIN")
+                assertFalse(text.contains(vinTail), "$name holds the VIN after its manufacturer code")
+                assertFalse(text.contains(asHex) || text.contains(spaced), "$name holds the VIN as hex bytes")
+                for (word in listOf("12.97", "77.59", "gps", "48210", "310 km", "odo ", "dte ", "tpms", "AABBCCDD")) {
+                    assertFalse(text.contains(word), "$name holds '$word'")
+                }
+            }
+            val recording = texts.getValue(FindingsExport.RECORDING_FILE)
+            assertTrue(recording.contains("mode CITY") && recording.contains("mot 20"), "the motion and the drive mode stay, the consent says so")
+            assertTrue(texts.getValue(FindingsExport.CAPABILITIES_FILE).contains("\"wmi\": \"MAT\""))
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun aVinThatSlipsIntoAnyPartOfTheFileStopsTheExportAndNothingIsWritten() {
+        val file = File.createTempFile("findings", ".zip")
+        file.delete()
+        assertFailsWith<IllegalStateException> { FindingsExport.write(file, input(), sessionRecording(), "{\"vin\":\"$fullVin\"}") }
+        assertFalse(file.exists(), "no file is left behind")
+        // The same for a recording in which the scrubber could not know the VIN (no 09 02 exchange in it): the report's VIN is still looked for.
+        val text = Recording(RecordingHeader("a", "b"), listOf(RecordingEvent.open(0), RecordingEvent.event(5, "x $fullVin y"), RecordingEvent.close(9)))
+        assertFailsWith<IllegalStateException> { FindingsExport.write(file, input(), text, null) }
+        assertFalse(file.exists())
+    }
+
+    @Test
+    fun theConsentTextListsWhatTheZipHoldsAndLeavesOutWhatItDoesNot() {
+        val strings = File("src/main/res/values/strings.xml").readText()
+        fun string(name: String) = Regex("""<string name="$name">(.*?)</string>""", RegexOption.DOT_MATCHES_ALL).find(strings)!!.groupValues[1]
+        val included = string("findings_included")
+        val excluded = string("findings_excluded")
+        val includedItems = listOf(
+            "make, model and model year",
+            "first three characters",
+            "control units",
+            "calibration ids",
+            "Fault codes",
+            "adapter versions",
+            "random id",
+            "motion readings",
+            "full scan",
+        )
+        for (item in includedItems) {
+            assertTrue(included.contains(item), "the consent does not say '$item' is included")
+        }
+        for (item in listOf("The VIN", "no GPS", "name", "odometer", "tyre sensor", "Clock times")) {
+            assertTrue(excluded.contains(item), "the consent does not say '$item' is left out")
+        }
+        // The README inside the file says the same things.
+        val readme = FindingsExport.readme()
+        for (item in listOf("manufacturer code", "calibration ids", "random id", "motion readings", "full scan", "odometer", "tyre sensor", "no GPS")) {
+            assertTrue(readme.contains(item), "the README does not mention '$item'")
         }
     }
 }

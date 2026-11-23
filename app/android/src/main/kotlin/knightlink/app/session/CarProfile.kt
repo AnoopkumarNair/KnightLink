@@ -126,8 +126,13 @@ class FuelPriceStore(private val store: StringStore) {
         private const val KEY = "fuel_price_per_litre"
         private const val MAX_PRICE = 1000.0
 
+        /** Plain digits with at most one decimal point or comma: no sign, no exponent, no `NaN`, no `5f` (which Kotlin's own parser would take). */
+        private val PLAIN_NUMBER = Regex("""(\d+([.,]\d*)?|[.,]\d+)""")
+
         /** A price above zero and at most [MAX_PRICE]; a comma works as the decimal point. Null for anything else. */
-        fun parse(text: String?): Double? =
-            text?.trim()?.replace(',', '.')?.toDoubleOrNull()?.takeIf { it > 0.0 && it <= MAX_PRICE && it.isFinite() }
+        fun parse(text: String?): Double? {
+            val plain = text?.trim()?.takeIf { PLAIN_NUMBER.matches(it) } ?: return null
+            return plain.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0.0 && it <= MAX_PRICE && it.isFinite() }
+        }
     }
 }

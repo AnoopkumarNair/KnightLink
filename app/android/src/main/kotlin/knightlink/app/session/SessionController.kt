@@ -24,7 +24,9 @@ import knightlink.core.runtime.SessionFacts
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleResolver
 import knightlink.core.runtime.VehicleSession
+import knightlink.core.runtime.drivetruth.DriveTruthConfig
 import knightlink.core.runtime.drivetruth.DriveTruthReport
+import knightlink.core.runtime.drivetruth.GpsFix
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.FaultCodeDictionary
 import knightlink.core.scan.ScanSummary
@@ -127,8 +129,11 @@ class SessionController(
     /** What the drive that just ended can say; fed by [publishDriveTruth]. Forgotten when a connection starts. */
     private val driveTruth = MutableStateFlow<DriveTruthReport?>(null)
 
+    /** The last drive of each car, kept so that its card is still there after a restart. */
+    private val driveTruthStore: DriveTruthStore? = settings?.let(::DriveTruthStore)
+
     /** One connection request, from [connect] to the end of [disconnect]. */
-    private class Run(val scope: CoroutineScope) {
+    private class Run(val scope: CoroutineScope, fuelPrice: () -> Double?) {
         @Volatile
         var session: VehicleSession? = null
 
@@ -181,6 +186,24 @@ class SessionController(
 
         /** Tells the drive start and end from the speed and rpm the screen state is built from. */
         val driveTracker = DriveStageTracker()
+
+        /** Turns the readings, the phone's position and the session's events into the Drive Truth report of each drive of this run. */
+        val driveFeed = DriveTruthFeed { DriveTruthConfig(DriveTruthFeed.reducerFuel(carFuel), fuelPrice(), tankLitres) }
+
+        /** What the driver says the car runs on, and the tank when it is known: read when a drive starts. */
+        @Volatile
+        var carFuel: FuelType? = null
+
+        @Volatile
+        var tankLitres: Double? = null
+
+        /** The garage key of the car in the socket, once it is told apart; what a finished drive is kept under. */
+        @Volatile
+        var carKey: String? = null
+
+        /** The last drive kept for [lastDriveKey], read once per car. */
+        var lastDriveKey: String? = null
+        var lastDrive: DriveTruthReport? = null
     }
 
     /** The manufacturer codes, the model picker lists of a run. */
@@ -215,7 +238,7 @@ class SessionController(
             if (current != null) {
                 null
             } else {
-                Run(CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))).also { current = it }
+                Run(CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job])), { fuelPrice.value }).also { current = it }
             }
         } ?: return false
         driveMode = null
@@ -233,6 +256,7 @@ class SessionController(
     suspend fun disconnect() {
         val run = synchronized(lock) { current } ?: return
         withContext(NonCancellable) {
+            keepUnfinishedDrive(run)
             run.stopSamples?.invoke()
             // The session first: it waits for its own teardown, so the stream is closed when this returns.
             run.session?.stop()
@@ -303,8 +327,22 @@ class SessionController(
         run.session = session
         run.scope.launch { publish(session, started, signalPeriods(checkNotNull(catalog)), run) }
         run.scope.launch { keepScanResults(run, session) }
+        run.scope.launch { feedReadings(run, session, started) }
         startSamples(run, checkNotNull(recorded), started, tyres)
         session.start()
+    }
+
+    /** Every new snapshot of the readings goes to the Drive Truth feed at once (not at the screen's pace), so each reading is a sample at its own time. */
+    private suspend fun feedReadings(run: Run, session: VehicleSession, started: TimeMark) {
+        session.telemetry.collect { snapshot ->
+            try {
+                run.driveFeed.accept(snapshot, started.elapsedNow().inWholeMilliseconds)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                connectionLog?.app("drive readings failed: ${e.message ?: e::class.simpleName}")
+            }
+        }
     }
 
     /** The scan's result goes beside the recording of the link it ran on (VIN masked), where it can be pulled from the phone. */
@@ -326,7 +364,10 @@ class SessionController(
         if (phone == null && radio == null) return
         val lines = Channel<String>(SAMPLE_BUFFER, BufferOverflow.DROP_OLDEST)
         run.scope.launch { for (line in lines) transport.external(line) }
-        phone?.start { line -> lines.trySend(line) }
+        phone?.start { line ->
+            lines.trySend(line)
+            if (line.startsWith("${ExternalSamples.GPS} ")) feedGps(run, started, line)
+        }
         if (radio != null) {
             val capture = TyreSensorCapture(tyres)
             val listening = radio.start(capture.matches) { serviceData, key, data, rssi ->
@@ -349,6 +390,22 @@ class SessionController(
             radio?.stop()
             lines.close()
         }
+    }
+
+    /** A position line of the phone goes to the Drive Truth feed too, on the session's clock; a line that does not parse is ignored. */
+    private fun feedGps(run: Run, started: TimeMark, line: String) {
+        val fix = ExternalSamples.parseGps(0, line) ?: return
+        run.driveFeed.addGps(
+            started.elapsedNow().inWholeMilliseconds,
+            GpsFix(
+                fix.latitude,
+                fix.longitude,
+                fix.speedKmh?.let {
+                    it / KMH_PER_MS
+                },
+                fix.accuracyM,
+            ),
+        )
     }
 
     /**
@@ -442,6 +499,14 @@ class SessionController(
     fun skipLadder() {
         synchronized(lock) { current }?.session?.skipLadder()
         connectionLog?.app("learning ladder skipped by the user")
+    }
+
+    /** The Skip button: ends whichever parked work runs now, the learning ladder or the body scan (its rest is then asked in the background). */
+    fun skipParkedWork() {
+        val session = synchronized(lock) { current }?.session ?: return
+        session.skipLadder()
+        session.skipBodyScan()
+        connectionLog?.app("parked work skipped by the user")
     }
 
     /** "Scan again": runs the learning ladder once more on this car (it is otherwise run once per car and set of units). False when it cannot now. */
@@ -698,6 +763,12 @@ class SessionController(
             )
             val key = garage?.keyFor(identity)
             val profile = key?.let { garage?.load(it) }
+            run.carKey = key
+            run.carFuel = profile?.fuelType
+            // The tank is only known for the car the app has a definition for.
+            run.tankLitres = if (facts.known) TANK_LITRES else null
+            val faultSummary = session.faults.value.toSummary()
+            feedDriveTruth(run, session, started, state, faultSummary, key)
             _uiState.value = UiState(
                 // What the car is asked for while the ladder runs is said in the status, so the notification does not say "Probing".
                 (ladder as? LadderProgress.Running)?.let { ConnectionStatus.Learning(it.level) } ?: state.toStatus(),
@@ -712,7 +783,7 @@ class SessionController(
                 dashboard.value,
                 identity,
                 facts.known,
-                session.faults.value.toSummary(),
+                faultSummary,
                 make?.let { data?.models?.modelsFor(it) }.orEmpty(),
                 ladder,
                 deepScan.value,
@@ -723,11 +794,62 @@ class SessionController(
                 },
                 fuelPrice = fuelPrice.value,
                 driveStage = stage,
-                driveTruth = driveTruth.value,
+                driveTruth = driveTruth.value ?: lastDriveToShow(run, key, stage),
                 ladderResult = run.ladderResult,
                 bodyResult = run.bodyResult,
             )
         }
+    }
+
+    /** One tick of the Drive Truth feed. A failure here costs the report, never the screen. */
+    private fun feedDriveTruth(
+        run: Run,
+        session: VehicleSession,
+        started: TimeMark,
+        state: SessionState,
+        faults: FaultSummary,
+        key: String?,
+    ) {
+        try {
+            val report = run.driveFeed.update(
+                DriveFeedInput(
+                    nowMs = started.elapsedNow().inWholeMilliseconds,
+                    asleep = state is SessionState.VehicleAsleep,
+                    fillCount = session.fuelFills.value.size,
+                    faultCodes = if (faults.status == FaultsStatus.READY) faults.items.map { it.code }.toSet() else null,
+                ),
+            )
+            if (report != null) {
+                connectionLog?.app("drive ended: report made")
+                publishDriveTruth(report)
+                keepDrive(key, report)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            connectionLog?.app("drive report failed: ${e.message ?: e::class.simpleName}")
+        }
+    }
+
+    private fun keepDrive(key: String?, report: DriveTruthReport) {
+        if (key == null) return
+        driveTruthStore?.save(key, report)
+    }
+
+    /** A drive under way when the connection ends is kept as it stands (it says it had not ended), when it was long enough to mean something. */
+    private fun keepUnfinishedDrive(run: Run) {
+        val report = run.driveFeed.unfinished()?.takeIf { it.movingMinutes >= MIN_KEPT_DRIVE_MINUTES } ?: return
+        keepDrive(run.carKey, report)
+    }
+
+    /** Before the next drive starts, the car's last one is shown (read once per car); the moment a drive is under way it goes. */
+    private fun lastDriveToShow(run: Run, key: String?, stage: DriveStage): DriveTruthReport? {
+        if (key == null || stage != DriveStage.NOT_STARTED || run.driveFeed.inProgress) return null
+        if (run.lastDriveKey != key) {
+            run.lastDriveKey = key
+            run.lastDrive = driveTruthStore?.load(key)
+        }
+        return run.lastDrive
     }
 
     /** The ladder as the screen shows it: an outcome stays for [BODY_OUTCOME_HOLD] and then the banner goes; a flag stays. */
@@ -765,6 +887,8 @@ class SessionController(
         /** Sensor lines held for the recording at most; at 2 motion lines a second this is minutes of a recorder that is stuck. */
         private const val SAMPLE_BUFFER = 512
         private const val STANDARD_DEFINITION = "standard/sae-j1979-mode01"
+        private const val KMH_PER_MS = 3.6
+        private const val MIN_KEPT_DRIVE_MINUTES = 1.0
         private const val VIN_TAIL = 4
         private const val VIN_MIN_FOR_TAIL = 17
         const val SCAN_RESULT_SUFFIX = ".scan.json"

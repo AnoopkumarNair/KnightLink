@@ -64,6 +64,9 @@ public enum class BodyOutcome {
 
     /** The speed could not be read, so nothing says the car is parked. */
     SPEED_UNKNOWN,
+
+    /** The user chose to skip the rest of the parked stage. */
+    SKIPPED,
 }
 
 /**
@@ -118,11 +121,13 @@ public class BodyUnitReader(
      * @property maxRequests most requests (data identifiers and the two service requests) this run sends; null for no limit
      * @property maxTime longest this run takes; null for no limit
      * @property watchSpeed read the speed first and while running, and stop when it is not 0
+     * @property skip asked before every request; true ends the run there ([BodyOutcome.SKIPPED]), which is the user's "skip"
      */
     public class Limits(
         public val maxRequests: Int? = null,
         public val maxTime: Duration? = null,
         public val watchSpeed: Boolean = false,
+        public val skip: () -> Boolean = { false },
     )
 
     private class Interrupted(val outcome: BodyOutcome) : Exception()
@@ -451,6 +456,7 @@ public class BodyUnitReader(
 
     /** Before every request: the limits, and the speed when it is time. */
     private suspend fun gate() {
+        if (limits.skip()) throw Interrupted(BodyOutcome.SKIPPED)
         limits.maxRequests?.let { if (requests >= it) throw Interrupted(BodyOutcome.BUDGET) }
         limits.maxTime?.let { cap -> if (started!!.elapsedNow() >= cap) throw Interrupted(BodyOutcome.TIME_CAP) }
         if (limits.watchSpeed &&

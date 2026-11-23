@@ -29,6 +29,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -263,6 +264,30 @@ class BodyUnitSimulationTest {
         run(40.seconds)
         assertIs<BodyScanState.Partial>(rig.session.bodyScan.value)
         assertIs<SessionState.Polling>(rig.session.state.value)
+    }
+
+    @Test
+    fun skippingEndsTheParkedStageAtOnceAndTheRestIsAskedInTheBackground() = runTest {
+        val long = checks("""[{"requestId":"700","label":"instrument cluster","unprobed":true,"ranges":[{"from":"F000","to":"F7FF"}]}]""")
+        val rig = rig(candidates = long, configure = { it.copy(bodyStageCap = 5.minutes) })
+        rig.session.start()
+        run(10.seconds)
+        assertIs<BodyScanState.Running>(rig.session.bodyScan.value, "the stage is still running before the skip")
+        rig.session.skipBodyScan()
+        run(5.seconds)
+        assertIs<BodyScanState.Partial>(rig.session.bodyScan.value)
+        assertIs<SessionState.Polling>(rig.session.state.value)
+        assertTrue(rig.adapter.received.contains("ATCF7E8"), "the ordinary receive filter is back")
+        assertTrue(rig.events.of(SessionEvents.BODY_SCAN).any { it.contains("skipped") }, "the stage says it was skipped")
+    }
+
+    @Test
+    fun skippingWhenNothingRunsDoesNothingAndDoesNotSkipTheNextStage() = runTest {
+        val rig = rig()
+        rig.session.skipBodyScan()
+        rig.session.start()
+        run(40.seconds)
+        assertEquals(BodyScanState.Complete(answered = 2), rig.session.bodyScan.value)
     }
 
     // (d) a silent unit is absent, never trouble -------------------------------------------------------------------------

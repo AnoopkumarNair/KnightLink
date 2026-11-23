@@ -73,7 +73,7 @@ data class StepDetail(val sentence: StepSentence, val arg: String? = null, val f
 
 /**
  * One row of the guided flow. [canRetry] is set on a failed step (the controller's retry applies), [canSkip] on a health check whose learning
- * ladder can be ended early.
+ * ladder or parked body scan can be ended early.
  */
 data class GuidedStepItem(
     val step: GuidedStep,
@@ -160,7 +160,7 @@ fun guidedFlow(state: UiState): GuidedFlow {
         ladder is LadderProgress.Running ->
             row(GuidedStep.HEALTH_CHECK, StepState.ACTIVE, StepSentence.HEALTH_LEARNING, arg = ladder.label, fraction = ladder.fraction, canSkip = true)
         body is BodyScanProgress.Running ->
-            row(GuidedStep.HEALTH_CHECK, StepState.ACTIVE, StepSentence.HEALTH_RUNNING, arg = body.label, fraction = body.fraction)
+            row(GuidedStep.HEALTH_CHECK, StepState.ACTIVE, StepSentence.HEALTH_RUNNING, arg = body.label, fraction = body.fraction, canSkip = true)
         state.faults.status == FaultsStatus.READING -> row(GuidedStep.HEALTH_CHECK, StepState.ACTIVE, StepSentence.HEALTH_RUNNING)
         ladder is LadderProgress.Flagged -> row(GuidedStep.HEALTH_CHECK, StepState.DONE, StepSentence.HEALTH_FLAGGED, arg = ladder.reason)
         ladder is LadderProgress.Stopped -> row(GuidedStep.HEALTH_CHECK, StepState.DONE, StepSentence.HEALTH_STOPPED, arg = ladder.level)

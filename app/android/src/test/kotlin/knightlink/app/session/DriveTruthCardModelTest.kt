@@ -92,4 +92,16 @@ class DriveTruthCardModelTest {
         assertEquals("1 h 5 min", formatMinutes(65.0))
         assertEquals("0 min", formatMinutes(-3.0))
     }
+
+    @Test
+    fun theSpokenLineHasKilometresAndRupeesOnlyWhenTheyAreKnownAndTheDriveEnded() {
+        assertEquals(SpokenDriveSummary("24.8", "142"), spokenDriveSummary(empty.copy(carDistanceKm = 24.8, gpsDistanceKm = 24.0, costRupees = 141.6)))
+        assertEquals(SpokenDriveSummary("24.0", null), spokenDriveSummary(empty.copy(gpsDistanceKm = 24.0)), "the GPS distance stands in")
+        assertEquals(null, spokenDriveSummary(empty), "nothing to say without a distance")
+        assertEquals(
+            null,
+            spokenDriveSummary(empty.copy(carDistanceKm = 5.0, notes = listOf(DriveTruthNote.DRIVE_NOT_ENDED))),
+            "a drive that had not ended is not announced",
+        )
+    }
 }

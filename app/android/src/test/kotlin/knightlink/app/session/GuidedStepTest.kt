@@ -112,7 +112,7 @@ class GuidedStepTest {
         assertEquals(StepSentence.HEALTH_RUNNING, health.detail.sentence)
         assertEquals("Cluster", health.detail.arg)
         assertEquals(0.4f, health.detail.fraction)
-        assertFalse(health.canSkip, "only the learning ladder can be ended early")
+        assertTrue(health.canSkip, "the parked body scan can be skipped too")
     }
 
     @Test

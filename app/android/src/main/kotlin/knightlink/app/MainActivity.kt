@@ -244,7 +244,7 @@ class MainActivity : ComponentActivity() {
                 onRetry = { controller?.retry() },
                 onRefreshFaults = { controller?.refreshFaults() },
                 onDeepScan = { controller?.setDeepScan(it) },
-                onSkipLadder = { controller?.skipLadder() },
+                onSkipLadder = { controller?.skipParkedWork() },
                 onRescan = { controller?.rerunLadder() },
                 onCancelScan = { controller?.cancelFullScan() },
                 onDismissScan = { controller?.dismissFullScan() },
@@ -582,13 +582,13 @@ class MainActivity : ComponentActivity() {
             val outcome = withContext(Dispatchers.IO) {
                 try {
                     val newest = viewModel.recordings.newest()
-                    val recording = newest?.let { FindingsExport.scrubbedRecording(Recording.parse(RecordingStore.readText(it))).toText() }
+                    val recording = newest?.let { Recording.parse(RecordingStore.readText(it)) }
                     val scan = newest
                         ?.let { File(it.parentFile, RecordingStore.baseName(it) + SessionController.SCAN_RESULT_SUFFIX) }
                         ?.takeIf { it.isFile }
                         ?.readText(Charsets.UTF_8)
                     File(File(cacheDir, SHARE_DIRECTORY), FINDINGS_FILE).also {
-                        FindingsExport.writeZip(it, FindingsExport.capabilities(input), recording, scan)
+                        FindingsExport.write(it, input, recording, scan)
                     }
                 } catch (e: CancellationException) {
                     throw e

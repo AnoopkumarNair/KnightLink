@@ -47,6 +47,16 @@ fun driveTruthCard(report: DriveTruthReport): DriveTruthCardModel {
     return DriveTruthCardModel(lines, report.notes.distinct())
 }
 
+/** The figures of the one spoken line after a drive: kilometres, and whole rupees when a cost is known. */
+data class SpokenDriveSummary(val km: String, val rupees: String?)
+
+/** What the voice says when a drive ends (only when spoken status is on), or null when the report has no distance to speak of or the drive had not ended. */
+fun spokenDriveSummary(report: DriveTruthReport): SpokenDriveSummary? {
+    if (DriveTruthNote.DRIVE_NOT_ENDED in report.notes) return null
+    val km = report.carDistanceKm ?: report.gpsDistanceKm ?: return null
+    return SpokenDriveSummary(formatKm(km), report.costRupees?.roundToInt()?.toString())
+}
+
 /** Whole rupees from 100 up, one decimal below: `₹142`, `₹5.7`. */
 fun formatRupees(value: Double): String =
     "₹" + if (abs(value) >= RUPEES_WHOLE_FROM) value.roundToInt().toString() else String.format(Locale.ROOT, "%.1f", value)
