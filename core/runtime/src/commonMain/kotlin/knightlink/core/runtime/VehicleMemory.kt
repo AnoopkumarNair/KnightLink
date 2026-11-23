@@ -17,6 +17,7 @@ import kotlinx.serialization.json.Json
  * @property gear what the calculated gear learned (see [GearModel])
  * @property fuel the last fuel level and the refuels found (see [FuelTracker])
  * @property body how far the one-time body-unit check got on this vehicle (see [BodyUnitReader]): done once per vehicle per installation
+ * @property model the model name the user picked for this vehicle (the car does not always say); null until set
  */
 @Serializable
 public data class VehicleMemory(
@@ -28,6 +29,7 @@ public data class VehicleMemory(
     val gear: GearModel = GearModel(),
     val fuel: FuelMemory = FuelMemory(),
     val body: BodyCheckMemory = BodyCheckMemory(),
+    val model: String? = null,
 ) {
     public fun toJson(): String = writer.encodeToString(serializer(), this)
 

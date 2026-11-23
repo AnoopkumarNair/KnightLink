@@ -1,0 +1,116 @@
+{
+ "schemaVersion": 1,
+ "makes": [
+  {
+   "make": "Mahindra",
+   "models": [
+    "Thar",
+    "Thar Roxx",
+    "Scorpio-N",
+    "Scorpio Classic",
+    "XUV700",
+    "XUV3XO",
+    "XUV300",
+    "Bolero"
+   ]
+  },
+  {
+   "make": "Tata",
+   "models": [
+    "Harrier",
+    "Safari",
+    "Nexon",
+    "Punch",
+    "Tiago",
+    "Tigor",
+    "Altroz",
+    "Curvv"
+   ]
+  },
+  {
+   "make": "Kia",
+   "models": [
+    "Seltos",
+    "Sonet",
+    "Carens",
+    "Carnival"
+   ]
+  },
+  {
+   "make": "Hyundai",
+   "models": [
+    "Creta",
+    "Venue",
+    "Verna",
+    "Alcazar",
+    "i20",
+    "Exter",
+    "Grand i10 Nios"
+   ]
+  },
+  {
+   "make": "Maruti Suzuki",
+   "models": [
+    "Swift",
+    "Baleno",
+    "Brezza",
+    "Dzire",
+    "Ertiga",
+    "Grand Vitara",
+    "Fronx",
+    "WagonR",
+    "Alto"
+   ]
+  },
+  {
+   "make": "Toyota",
+   "models": [
+    "Fortuner",
+    "Innova Crysta",
+    "Innova Hycross",
+    "Urban Cruiser Hyryder",
+    "Glanza"
+   ]
+  },
+  {
+   "make": "Honda",
+   "models": [
+    "City",
+    "Elevate",
+    "Amaze"
+   ]
+  },
+  {
+   "make": "Renault",
+   "models": [
+    "Kwid",
+    "Triber",
+    "Kiger"
+   ]
+  },
+  {
+   "make": "MG",
+   "models": [
+    "Hector",
+    "Astor",
+    "Windsor"
+   ]
+  },
+  {
+   "make": "Skoda/Volkswagen",
+   "models": [
+    "Kushaq",
+    "Slavia",
+    "Taigun",
+    "Virtus"
+   ]
+  },
+  {
+   "make": "Nissan",
+   "models": [
+    "Magnite"
+   ]
+  }
+ ],
+ "notes": "Common models sold in India, for the picker. Not a catalogue; the user can also leave the model empty."
+}

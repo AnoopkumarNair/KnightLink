@@ -3,6 +3,7 @@ package knightlink.app
 import android.content.res.Resources
 import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.ScanStatus
+import knightlink.core.runtime.CannotReadReason
 import knightlink.core.scan.ScanOutcome
 import knightlink.core.scan.ScanStage
 import knightlink.core.vehicle.FuelMethod
@@ -14,6 +15,12 @@ fun ConnectionStatus.text(resources: Resources): String = when (this) {
     is ConnectionStatus.Connecting -> resources.getString(R.string.status_connecting, attempt)
     ConnectionStatus.Initialising -> resources.getString(R.string.status_initialising)
     is ConnectionStatus.Probing -> resources.getString(R.string.status_probing, resources.getString(stage.textRes()))
+    is ConnectionStatus.Negotiating -> resources.getString(R.string.status_negotiating)
+    is ConnectionStatus.CannotRead -> when (val why = reason) {
+        CannotReadReason.NoResponse -> resources.getString(R.string.status_cannot_read_no_response)
+        is CannotReadReason.UnsupportedProtocol -> resources.getString(R.string.status_cannot_read_protocol, why.protocolName)
+        CannotReadReason.GatewayBlocked -> resources.getString(R.string.status_cannot_read_gateway)
+    }
     is ConnectionStatus.WaitingForIgnition ->
         resources.getString(if (busFault) R.string.status_bus_not_reachable else R.string.status_waiting_for_ignition, probes)
     is ConnectionStatus.VehicleAsleep -> resources.getString(R.string.status_vehicle_asleep, checks)

@@ -1,5 +1,6 @@
 package knightlink.app.session
 
+import knightlink.app.ble.StringStore
 import knightlink.app.data.AppConfig
 import knightlink.app.data.DashboardReadings
 import knightlink.app.data.DashboardStore
@@ -13,13 +14,28 @@ import knightlink.core.recorder.ExternalSamples
 import knightlink.core.recorder.RecordingHeader
 import knightlink.core.recorder.RecordingTransport
 import knightlink.core.runtime.CaptureMode
+import knightlink.core.runtime.LadderConfig
+import knightlink.core.runtime.ProtocolMemoryStore
+import knightlink.core.runtime.ProtocolNegotiator
+import knightlink.core.runtime.ReadLimits
+import knightlink.core.runtime.ResolvedVehicle
 import knightlink.core.runtime.ScanState
+import knightlink.core.runtime.SessionFacts
 import knightlink.core.runtime.SessionState
+import knightlink.core.runtime.VehicleResolver
 import knightlink.core.runtime.VehicleSession
+import knightlink.core.scan.DidSweepPlan
+import knightlink.core.scan.FaultCodeDictionary
 import knightlink.core.signals.SignalCatalog
 import knightlink.core.telemetry.TelemetrySnapshot
 import knightlink.core.tpms.TpmsDecoder
 import knightlink.core.vehicle.CapabilityReport
+import knightlink.core.vehicle.ModelList
+import knightlink.core.vehicle.ModelYear
+import knightlink.core.vehicle.SupportTier
+import knightlink.core.vehicle.UNKNOWN_MAKE
+import knightlink.core.vehicle.VehicleIdentity
+import knightlink.core.vehicle.WmiTable
 import knightlink.voice.intents.AnswerContext
 import knightlink.voice.intents.LinkStatus
 import knightlink.voice.intents.ReadingAges
@@ -91,7 +107,16 @@ class SessionController(
     private val tyreSensors: AdvertisementSource? = null,
     /** Where the odometer and range the driver typed are kept; null for none (they are then only kept for this run). */
     private val dashboardStore: DashboardStore? = null,
+    /** Where the protocol found for an adapter is remembered; null remembers nothing. */
+    private val protocolMemory: ProtocolMemoryStore? = null,
+    /** The calendar year, to read the model year out of a VIN. */
+    private val currentYear: () -> Int = { java.time.Year.now().value },
+    /** Where the deep scan switch is kept between runs; null keeps it for this run only. */
+    private val settings: StringStore? = null,
 ) {
+    /** The deep scan switch (levels L3 and L4 of the learning ladder on an unknown car): on unless the user turned it off. */
+    private val deepScan = MutableStateFlow(settings?.get(DEEP_SCAN_KEY) != "off")
+
     /** One connection request, from [connect] to the end of [disconnect]. */
     private class Run(val scope: CoroutineScope) {
         @Volatile
@@ -122,10 +147,20 @@ class SessionController(
         /** When the scan of the other units last ended in an outcome the screen shows for a while; null while it has none. */
         var bodyOutcomeSince: TimeMark? = null
 
+        /** When the ladder's outcome first showed; as [bodyOutcomeSince]. */
+        var ladderOutcomeSince: TimeMark? = null
+
         /** What a spoken answer needs besides the live data; set together with [session], before it is. */
         @Volatile
         var voice: VoiceFacts? = null
+
+        /** The data files that turn the probe into who the car is; set when the run is prepared. */
+        @Volatile
+        var identityData: IdentityData? = null
     }
+
+    /** The manufacturer codes, the model picker lists of a run. */
+    private class IdentityData(val wmi: WmiTable?, val models: ModelList?)
 
     /**
      * The per-run facts of [answerContext]: [started] is the zero of every reading's `at` (the mark taken right before the session
@@ -225,6 +260,7 @@ class SessionController(
             recorded = setup.transport
             run.mark = { line -> setup.transport.external(line) }
             run.events = setup.events
+            run.identityData = IdentityData(setup.wmi, setup.models)
             tyres = setup.tyres
             VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events)
         } catch (e: CancellationException) {
@@ -360,6 +396,38 @@ class SessionController(
         return accepted
     }
 
+    /** After "can't read this car": negotiates and probes again on the same link. False when the session is not in that state. */
+    fun retry(): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        val accepted = session.retry()
+        connectionLog?.app("retry requested: ${if (accepted) "accepted" else "not possible now"}")
+        return accepted
+    }
+
+    /** Switches the deep scan on or off (it applies from the next level of the ladder, and from the next connection on); kept on this phone. */
+    fun setDeepScan(enabled: Boolean) {
+        deepScan.value = enabled
+        settings?.put(DEEP_SCAN_KEY, if (enabled) "on" else "off")
+        synchronized(lock) { current }?.session?.setDeepScan(enabled)
+        connectionLog?.app("deep scan ${if (enabled) "on" else "off"}")
+    }
+
+    /** Reads the fault codes and the readiness again (read-only, nothing is cleared). False when the session is not polling. */
+    fun refreshFaults(): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        val accepted = session.refreshFaults()
+        connectionLog?.app("fault codes requested: ${if (accepted) "started" else "not possible now"}")
+        return accepted
+    }
+
+    /** The user says which model the car is (kept for this vehicle on this phone). Null clears it. False when there is no session. */
+    fun setVehicleModel(model: String?): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        session.setVehicleModel(model)
+        connectionLog?.app("vehicle model set by the user")
+        return true
+    }
+
     /** Resumes an interrupted scan from its last completed stage; false when there is none to resume. */
     fun resumeFullScan(): Boolean {
         val session = synchronized(lock) { current }?.session ?: return false
@@ -386,11 +454,16 @@ class SessionController(
         val config: VehicleSession.Config,
         val events: SessionEventSink,
         val tyres: List<TpmsDecoder>,
+        val wmi: WmiTable?,
+        val models: ModelList?,
     )
 
     private fun prepare(target: ConnectionTarget): Setup {
         val config = config()
-        val catalog = store.vehicleCatalog(config.vehicleDefinition)
+        // A real car is identified by its VIN after the probe, and gets the standard signals until then. Only the demo names its definition up
+        // front: its virtual car has no real VIN.
+        val demo = target is ConnectionTarget.Demo
+        val catalog = store.vehicleCatalog(if (demo) config.vehicleDefinition else STANDARD_DEFINITION)
         val adapter = store.adapter(config.adapterDefinition)
         // Like the sweep plan, a broken tyre sensor definition costs only the capture, never the connection.
         val tyres = if (tyreSensors == null) {
@@ -425,27 +498,33 @@ class SessionController(
             connectionLog?.app("no full scan in this session: ${e.message}")
             null
         }
-        // The identifiers an earlier scan of this kind of vehicle found: polled raw without a parked scan. Missing or broken costs only that.
-        val seed = try {
-            store.discoverySeed(config.vehicleDefinition)
-        } catch (e: DefinitionStoreException) {
-            connectionLog?.app("no seeded data identifiers: ${e.message}")
-            null
-        }
-        // Only on a real link: the demo's car is virtual, and asking it about identifiers would only slow its scenario down.
-        val candidates = try {
-            if (target is ConnectionTarget.Ble) store.candidateChecks(config.vehicleDefinition) else null
-        } catch (e: DefinitionStoreException) {
-            connectionLog?.app("no one-time identifier check: ${e.message}")
-            null
+        // Missing or broken data files cost only what they carry: a car without a make name, without descriptions, without a picker.
+        val wmi = optional("manufacturer codes") { store.wmiTable() }
+        val models = optional("model list") { store.modelList() }
+        val dictionary = optional("fault code descriptions") { store.faultCodes() } ?: FaultCodeDictionary.EMPTY
+        val resolver: VehicleResolver = if (demo) {
+            // The demo's virtual car is a known one: its definition, the identifiers an earlier scan found, and no check of units it does not have.
+            val seed = optional("seeded data identifiers") { store.discoverySeed(config.vehicleDefinition) }
+            VehicleResolver { ResolvedVehicle(catalog, known = true, definitionId = config.vehicleDefinition, scanPlan = plan, seedScan = seed) }
+        } else {
+            DefinitionResolver(store, catalog, plan, currentYear() + 1) { connectionLog?.app(it) }
         }
         val sessionSettings = sessionConfig.copy(
             probeScript = adapter.probeScript,
             pollScript = adapter.pollScript,
             driver = adapter.driverConfig(),
             scanPlan = plan,
-            seedScan = seed,
-            candidateChecks = candidates,
+            resolver = resolver,
+            adapterId = adapter.id,
+            // Only a real link needs the protocol found; the demo's virtual adapter has one.
+            negotiation = if (demo) null else ProtocolNegotiator.Config(),
+            protocolMemory = protocolMemory,
+            // A silent car is given up on after the limit; only a car this session has already read, with a definition, is waited for.
+            readLimits = if (demo) null else ReadLimits(),
+            readFaults = true,
+            faultDictionary = dictionary,
+            // The learning ladder is for a real link and a car without a definition; the demo's car is a known one.
+            ladder = if (demo) null else LadderConfig(deepScan = deepScan.value, rangesFor = { id -> ladderRanges(plan, id) }),
             wallClockMs = { System.currentTimeMillis() },
             // Written by the session at the moment the mode changes, so it sits exactly between the requests it separates. A new link starts
             // active and a recording without a line reads as active, so nothing is written for that.
@@ -454,7 +533,33 @@ class SessionController(
         // The recording gets every event (it is the replayable record); the text log gets the same ones, except the scan's result, which is
         // a long line of JSON that belongs in the recording and its sidecar, not in a log that is meant to be read on a phone.
         val events: SessionEventSink = connectionLog?.let { transport + it.withoutScanResult() } ?: transport
-        return Setup(transport, adapter.initScript, catalog, sessionSettings, events, tyres)
+        return Setup(transport, adapter.initScript, catalog, sessionSettings, events, tyres, wmi, models)
+    }
+
+    private fun <T> optional(what: String, load: () -> T?): T? =
+        try {
+            load()
+        } catch (e: DefinitionStoreException) {
+            connectionLog?.app("$what left out: ${e.message}")
+            null
+        }
+
+    /**
+     * Who the car is: the make from the VIN's manufacturer code, the model year from its tenth character, the model the definition or the user
+     * says, the last four VIN characters, and the protocol. Never more of the VIN than that.
+     */
+    internal fun identity(report: CapabilityReport?, facts: SessionFacts, wmi: WmiTable?): VehicleIdentity {
+        val vin = report?.ecus?.firstNotNullOfOrNull { it.vin }
+        val entry = wmi?.lookup(vin)
+        return VehicleIdentity(
+            make = entry?.make ?: UNKNOWN_MAKE,
+            makeVerified = entry?.verified == true,
+            model = facts.model,
+            year = ModelYear.fromVin(vin, currentYear() + 1),
+            vinLast4 = vin?.takeLast(VIN_TAIL)?.takeIf { vin.length >= VIN_MIN_FOR_TAIL },
+            protocol = facts.protocol?.title,
+            tier = if (facts.known) SupportTier.FULL else SupportTier.BASIC,
+        )
     }
 
     /**
@@ -464,6 +569,8 @@ class SessionController(
     private suspend fun publish(session: VehicleSession, started: TimeMark, periods: Map<String, Duration>, run: Run) {
         var vehicle: VehicleSummary? = null
         var summarised: CapabilityReport? = null
+        var summarisedDiesel: Boolean? = null
+        var lastReport: CapabilityReport? = null
         val ticks = flow {
             while (true) {
                 emit(Unit)
@@ -487,10 +594,16 @@ class SessionController(
                 run.modeStamped = false
                 run.dashboardStamped = false
             }
-            if (state is SessionState.Polling && state.report !== summarised) {
+            val facts = session.facts.value
+            if (state is SessionState.Polling) lastReport = state.report
+            if (state is SessionState.Polling && (state.report !== summarised || facts.compressionIgnition != summarisedDiesel)) {
                 summarised = state.report
-                vehicle = vehicleSummary(state.report, state.coverage)
+                summarisedDiesel = facts.compressionIgnition
+                vehicle = vehicleSummary(state.report, state.coverage, facts.compressionIgnition)
             }
+            val data = run.identityData
+            val identity = lastReport?.let { identity(it, facts, data?.wmi) }
+            val make = identity?.make
             // The rate is only meaningful while polling; elsewhere (reconnecting, recovering) the old number would mislead.
             val rate = session.rates.value.takeIf { state is SessionState.Polling && it.window.isPositive() }?.requestsPerSecond
             _uiState.value = UiState(
@@ -500,13 +613,33 @@ class SessionController(
                 rate,
                 session.scan.value.toStatus(),
                 run.tyres?.invoke(),
-                driveSummary(session.fuelFills.value, driveMode),
+                driveSummary(session.fuelFills.value, driveMode, if (facts.known) TANK_LITRES else 0.0),
                 session.captureMode.value,
                 bodyScanProgress(run, session.bodyScan.value.toProgress()),
                 dashboard.value,
+                identity,
+                facts.known,
+                session.faults.value.toSummary(),
+                make?.let { data?.models?.modelsFor(it) }.orEmpty(),
+                ladderProgress(run, session.ladder.value.toProgress()),
+                deepScan.value,
             )
         }
     }
+
+    /** The ladder as the screen shows it: an outcome stays for [BODY_OUTCOME_HOLD] and then the banner goes; a flag stays. */
+    private fun ladderProgress(run: Run, progress: LadderProgress): LadderProgress {
+        if (!progress.isOutcome) {
+            run.ladderOutcomeSince = null
+            return progress
+        }
+        val since = run.ladderOutcomeSince ?: timeSource.markNow().also { run.ladderOutcomeSince = it }
+        return if (since.elapsedNow() > BODY_OUTCOME_HOLD) LadderProgress.Idle else progress
+    }
+
+    /** The data identifier ranges a sweep plan names for the unit at [requestId], or null for the ladder's default. */
+    private fun ladderRanges(plan: DidSweepPlan?, requestId: Int): List<IntRange>? =
+        plan?.targets?.firstOrNull { it.requestCanId == requestId }?.ranges?.map { it.first..it.last }
 
     /** The scan of the other units as the screen shows it: the outcome stays for [BODY_OUTCOME_HOLD] and then the banner goes. */
     private fun bodyScanProgress(run: Run, progress: BodyScanProgress): BodyScanProgress {
@@ -528,7 +661,11 @@ class SessionController(
 
         /** Sensor lines held for the recording at most; at 2 motion lines a second this is minutes of a recorder that is stuck. */
         private const val SAMPLE_BUFFER = 512
+        private const val STANDARD_DEFINITION = "standard/sae-j1979-mode01"
+        private const val VIN_TAIL = 4
+        private const val VIN_MIN_FOR_TAIL = 17
         const val SCAN_RESULT_SUFFIX = ".scan.json"
+        private const val DEEP_SCAN_KEY = "deep_scan"
         val BODY_OUTCOME_HOLD: Duration = 90.seconds
         val DEFAULT_UI_REFRESH: Duration = 250.milliseconds
         val DEFAULT_STALE_AFTER: Duration = 5.seconds

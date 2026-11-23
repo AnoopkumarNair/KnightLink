@@ -12,6 +12,8 @@ import knightlink.core.protocol.ElmStatus
 import knightlink.core.scan.CandidateCheck
 import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidSweepPlan
+import knightlink.core.scan.FaultCodeDictionary
+import knightlink.core.scan.FaultReader
 import knightlink.core.scan.FullScan
 import knightlink.core.scan.ScanRefusedException
 import knightlink.core.scan.ScanResult
@@ -33,6 +35,7 @@ import knightlink.core.transport.TransportException
 import knightlink.core.vehicle.CapabilityProbe
 import knightlink.core.vehicle.CapabilityReport
 import knightlink.core.vehicle.DefinitionCoverage
+import knightlink.core.vehicle.ObdProtocol
 import knightlink.core.vehicle.stillMatches
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -101,7 +104,7 @@ import kotlin.time.TimeSource
 public class VehicleSession(
     private val transport: Transport,
     private val initScript: List<String>,
-    private val catalog: SignalCatalog,
+    catalog: SignalCatalog,
     scope: CoroutineScope,
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val config: Config = Config(),
@@ -201,6 +204,30 @@ public class VehicleSession(
         val asleepProbeInterval: Duration = 10.seconds,
         /** Whether the calculated gear (`transmission.gear_calc`) is worked out and published with the telemetry. */
         val gearCalc: Boolean = true,
+        /** The adapter definition's id: what protocol records are kept under. */
+        val adapterId: String = "",
+        /**
+         * Finds the car's protocol before the probe (see [ProtocolNegotiator]); null leaves the protocol to the init script and does not negotiate,
+         * as the session always did.
+         */
+        val negotiation: ProtocolNegotiator.Config? = null,
+        /** Where the protocol that was found is remembered (per adapter and VIN prefix); null remembers nothing. */
+        val protocolMemory: ProtocolMemoryStore? = null,
+        /** How long a car that does not answer is waited for; null waits for ever (see [ReadLimits]). */
+        val readLimits: ReadLimits? = null,
+        /**
+         * Chooses the vehicle definition once the probe has found the VIN; null means [catalog] is the vehicle's, and every feature is on. With a
+         * resolver, a car it calls unknown gets the standard signals only and none of the sweeps, the body-unit check, `10 01` or passive capture.
+         */
+        val resolver: VehicleResolver? = null,
+        /** Reads the fault codes and the readiness once after the probe, and again on request ([refreshFaults]). */
+        val readFaults: Boolean = false,
+        /** How the fault codes are read. */
+        val faultReader: FaultReader.Config = FaultReader.Config(),
+        /** The generic descriptions of the standard fault codes. */
+        val faultDictionary: FaultCodeDictionary = FaultCodeDictionary.EMPTY,
+        /** The learning ladder for a car without a definition (see [LearningLadder]); null does not run it. */
+        val ladder: LadderConfig? = null,
     ) {
         init {
             require(maxBatch in 1..PollScheduler.MAX_BATCH) { "maxBatch must be 1..${PollScheduler.MAX_BATCH}" }
@@ -226,7 +253,26 @@ public class VehicleSession(
     /** How one connection ended. */
     private class Ended(val cause: String, val reachedPolling: Boolean)
 
-    private val primaryEcu: String? = config.primaryEcu ?: catalog.ecus.firstOrNull()?.id
+    // What the session works with: the catalog it was given, until a resolver (see [Config.resolver]) has identified the car.
+    private var activeCatalog: SignalCatalog = catalog
+    private var primaryEcu: String? = config.primaryEcu ?: catalog.ecus.firstOrNull()?.id
+    private var vehicleKnown = config.resolver == null
+    private var allowedLevel = if (config.resolver == null) LadderLevel.L5 else LadderLevel.L1
+    private var deepScanOn = config.ladder?.deepScan ?: true
+    private var scanPlan: DidSweepPlan? = config.scanPlan
+    private var candidateChecks: CandidateChecks? = config.candidateChecks
+    private var seedScan: ScanResult? = config.seedScan
+    private var resolvedModel: String? = null
+    private var userModel: String? = null
+
+    // The protocol: the init script with the locked protocol in it, once one is locked; what a reconnect and a re-initialisation send.
+    private var lockedInitScript: List<String> = initScript
+    private var connectionProtocol: ObdProtocol? = null
+    private var negotiated: Negotiation.Found? = null
+    private val _facts = MutableStateFlow(SessionFacts())
+    private val _faults = MutableStateFlow<FaultsState>(FaultsState.Idle)
+    private val faultRequests = Channel<Unit>(Channel.CONFLATED)
+    private val retryRequests = Channel<Unit>(Channel.CONFLATED)
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Idle)
     private val _telemetry = MutableStateFlow(TelemetrySnapshot.EMPTY)
@@ -278,6 +324,7 @@ public class VehicleSession(
     private var bodyFailures = 0
     private var bodyGaveUp = false
     private val _bodyScan = MutableStateFlow<BodyScanState>(BodyScanState.Idle)
+    private val _ladder = MutableStateFlow<LadderState>(LadderState.Idle)
 
     /** What polling asks beyond the vehicle's own signals: the discovery identifiers. */
     private fun extras(): List<PollItem> = discoveryItems
@@ -331,8 +378,17 @@ public class VehicleSession(
      */
     public val bodyScan: StateFlow<BodyScanState> = _bodyScan.asStateFlow()
 
+    /** The learning ladder of a car without a definition: which level runs and how far it is, and how it ended (see [LadderState]). */
+    public val ladder: StateFlow<LadderState> = _ladder.asStateFlow()
+
     /** Where the full scan is. See [startScan]. */
     public val scan: StateFlow<ScanState> = _scan.asStateFlow()
+
+    /** What the session knows about the car beyond the probe: the protocol, whether a definition applies, the model. */
+    public val facts: StateFlow<SessionFacts> = _facts.asStateFlow()
+
+    /** The fault codes and the readiness: read once after the probe (see [Config.readFaults]) and again on request ([refreshFaults]). */
+    public val faults: StateFlow<FaultsState> = _faults.asStateFlow()
 
     /** What polling achieved over the last few seconds: requests per second and each signal's update rate. Refreshed about once a second. */
     public val rates: StateFlow<PollRates> = _rates.asStateFlow()
@@ -347,7 +403,7 @@ public class VehicleSession(
     private val main: Job = scope.launch(start = CoroutineStart.LAZY) { run() }
 
     init {
-        require(config.primaryEcu == null || catalog.ecus.any { it.id == config.primaryEcu }) {
+        require(config.primaryEcu == null || activeCatalog.ecus.any { it.id == config.primaryEcu }) {
             "primaryEcu '${config.primaryEcu}' is not an ECU of the catalog"
         }
     }
@@ -366,6 +422,8 @@ public class VehicleSession(
      */
     public fun setCaptureMode(mode: CaptureMode): Boolean {
         if (mode == CaptureMode.PASSIVE) {
+            // Passive capture of the broadcast (L5) is for a car the app knows, or one the user opted in for.
+            if (!allows(LadderLevel.L5)) return false
             if (_state.value !is SessionState.Polling) return false
             val current = _scan.value
             if (current is ScanState.Starting || current is ScanState.Running) return false
@@ -381,7 +439,7 @@ public class VehicleSession(
      * @return false, and does nothing, when the session has no sweep plan, is not polling the car, or a scan is under way already
      */
     public fun startScan(): Boolean {
-        if (config.scanPlan == null) return false
+        if (scanPlan == null || !allows(LadderLevel.L3)) return false
         if (_state.value !is SessionState.Polling) return false
         if (_captureMode.value == CaptureMode.PASSIVE) return false
         val current = _scan.value
@@ -414,7 +472,7 @@ public class VehicleSession(
     /** Clears a finished or failed scan from [scan]. Does nothing while one is under way. */
     public fun dismissScan() {
         val current = _scan.value
-        if (current is ScanState.Finished || current is ScanState.Failed) _scan.value = if (config.scanPlan == null) ScanState.Unavailable else ScanState.Idle
+        if (current is ScanState.Finished || current is ScanState.Failed) _scan.value = if (scanPlan == null) ScanState.Unavailable else ScanState.Idle
     }
 
     /**
@@ -533,6 +591,9 @@ public class VehicleSession(
     private suspend fun drive(stream: ByteStream, driverScope: CoroutineScope, onPolling: () -> Unit) {
         // A scan asked for on an earlier connection is not started on this one, possibly much later and with the car on the road.
         scanRequests.tryReceive()
+        faultRequests.tryReceive()
+        retryRequests.tryReceive()
+        connectionProtocol = null
         if (_captureMode.value == CaptureMode.PASSIVE) {
             _captureMode.value = CaptureMode.ACTIVE
             note(SessionEvents.CAPTURE_MODE, "back to active polling: a new connection always starts active")
@@ -542,15 +603,16 @@ public class VehicleSession(
         // The rate ceiling runs on the session's clock, so it measures the same time as everything else here.
         val driver = Elm327Driver(stream, driverScope, config = config.driver.copy(timeSource = timeSource), events = events)
         val cached = knowledge?.takeIf { !config.reprobeOnReconnect }
-        val pollingScript = initScript + config.pollScript
-        driver.initialize(if (cached == null) initScript + config.probeScript else pollingScript)
+        driver.initialize(if (cached == null) lockedInitScript + config.probeScript else lockedInitScript + config.pollScript)
 
         restoreFuelEarly()
         var probedNow = false
         val known = cached ?: restoreStored(driver) ?: probeUntilVehicleAnswers(driver).also {
             probedNow = true
             // The probe's timing is done with; polling runs with the definition's own, and a re-init must restore that, not the probe's.
-            if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty()) driver.applyScript(pollingScript, send = config.pollScript)
+            if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty() || lockedInitScript != initScript) {
+                driver.applyScript(lockedInitScript + config.pollScript, send = config.pollScript)
+            }
         }
         // The probe has read the voltage already (ATRV); without a probe on this connection it is asked once now.
         val probedVoltage = known.report.adapter.voltageText
@@ -570,15 +632,18 @@ public class VehicleSession(
         } catch (e: Exception) {
             note(SessionEvents.MEMORY, "the one-time identifier check was not used: ${e.message ?: e::class.simpleName}")
         }
+        if (config.readFaults) readFaults(driver, known.report)
+        _ladder.value = LadderState.Idle
+        runLadder(driver, known.report)
         runBodyStage(driver)
-        val items = confirmedPollItems(catalog, known.coverage, primaryEcu, config.pollPeriod)
+        val items = confirmedPollItems(activeCatalog, known.coverage, primaryEcu, config.pollPeriod)
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
         val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(extras()) }
         activeScheduler = scheduler
         // One clock for the whole connection: polling is interrupted now and then (the body check, a scan), and what the scheduler learned about
         // the items' timing must survive that.
         val loop = PollingLoop(requester, scheduler, timeSource, origin = timeSource.markNow())
-        val decoder = TelemetryDecoder(catalog)
+        val decoder = TelemetryDecoder(activeCatalog)
 
         onPolling()
         setState(SessionState.Polling(known.report, known.coverage))
@@ -616,8 +681,9 @@ public class VehicleSession(
             note(SessionEvents.MEMORY, "the remembered probe was not reused: the vehicle did not answer 01 00 as remembered")
             return null
         }
+        resolveVehicle(stored.probe)
         adopt(stored)
-        val reused = Knowledge(stored.probe, DefinitionCoverage.compare(stored.probe, catalog))
+        val reused = Knowledge(stored.probe, DefinitionCoverage.compare(stored.probe, activeCatalog))
         knowledge = reused
         note(SessionEvents.PROBE_RESULT, "reused the remembered probe (01 00 matched on every ECU): ${summarise(stored.probe)}")
         note(SessionEvents.MEMORY, "restored ${discoveryItems.size} discovery identifiers, ${stored.gear.clusters.size} gear ratios")
@@ -629,6 +695,8 @@ public class VehicleSession(
         vehicleKey = stored.key
         memoryProbe = stored.probe
         lastScan = stored.scan
+        userModel = stored.model
+        publishFacts()
         history.clear()
         history.putAll(stored.discovery)
         gear = GearEstimator(stored.gear)
@@ -652,6 +720,7 @@ public class VehicleSession(
             } else {
                 vehicleKey = key
                 lastScan = null
+                userModel = null
                 history.clear()
                 gear = GearEstimator()
                 fuel = FuelTracker()
@@ -663,6 +732,7 @@ public class VehicleSession(
         }
         memoryProbe = report.redacted()
         memoryDirty = true
+        publishFacts()
         saveMemory()
     }
 
@@ -671,8 +741,9 @@ public class VehicleSession(
      * is for one kind of vehicle: it is used only when every control unit it names answered the probe, so a different car gets nothing from it.
      */
     private suspend fun applySeed(report: CapabilityReport) {
-        val seed = config.seedScan ?: return
-        val plan = config.scanPlan ?: return
+        if (!allows(LadderLevel.L4)) return
+        val seed = seedScan ?: return
+        val plan = scanPlan ?: return
         if (discoveryItems.isNotEmpty() || lastScan?.sweeps?.isNotEmpty() == true) return
         // Per control unit: a unit that did not answer the probe (asleep, slow to wake) costs only its own identifiers.
         val answering = report.ecus.map { it.requestId.uppercase() }.toSet()
@@ -689,8 +760,14 @@ public class VehicleSession(
 
     /** Decides, once per app session, which units the one-time body check covers: those that answered the probe and those marked unprobed. */
     private suspend fun applyCandidates(report: CapabilityReport) {
-        val checks = config.candidateChecks ?: return
+        val checks = candidateChecks ?: return
         if (bodyPrepared) return
+        if (!allows(LadderLevel.L4)) {
+            bodyPrepared = true
+            bodyUnits = emptyList()
+            note(SessionEvents.BODY_SCAN, "skipped: the car is not one the app has a definition for")
+            return
+        }
         bodyPrepared = true
         bodyCheckId = checks.id
         val vin = report.ecus.firstNotNullOfOrNull { it.vin }
@@ -733,7 +810,7 @@ public class VehicleSession(
         bodyPaced = false
         bodyReader = null
         if (_bodyScan.value is BodyScanState.Running) _bodyScan.value = BodyScanState.Idle
-        if (config.candidateChecks == null || bodyGaveUp) return
+        if (candidateChecks == null || !allows(LadderLevel.L3) || bodyGaveUp) return
         val pending = pendingBodyUnits()
         if (pending.isEmpty()) {
             note(SessionEvents.BODY_SCAN, "the body units were all checked on an earlier connection or session; nothing to ask")
@@ -836,7 +913,7 @@ public class VehicleSession(
     private fun constantIds(): Set<String> = emptySet()
 
     private fun rebuildDiscovery() {
-        val plan = config.scanPlan
+        val plan = scanPlan
         val scan = lastScan
         discoveryItems = if (plan != null && scan != null && scan.sweeps.isNotEmpty()) discoveryPollItems(scan, plan, constantIds()) else emptyList()
         discoveryIds = discoveryItems.map { it.id }.toSet()
@@ -858,6 +935,7 @@ public class VehicleSession(
                     gear = gear.model,
                     fuel = fuel.model,
                     body = BodyCheckMemory(bodyCheckId, bodyProgress.toMap()),
+                    model = userModel,
                 ),
             )
             memoryDirty = false
@@ -886,30 +964,69 @@ public class VehicleSession(
     }
 
     /**
-     * Runs the capability probe until some ECU answers it. A car that is asleep (ignition off) answers nothing; instead of
-     * giving up the link, this waits and asks again, so the session goes live as soon as the ignition is switched on.
+     * Finds the car's protocol (when [Config.negotiation] is set) and runs the capability probe until some ECU answers it. A car that is asleep
+     * (ignition off) answers nothing; instead of giving up the link, this waits and asks again, so the session goes live as soon as the ignition
+     * is switched on. With [Config.readLimits] the waiting has a limit, after which the session says it cannot read the car
+     * ([SessionState.CannotReadVehicle]) and waits for [retry]; a car that this session has read and that has a definition is waited for
+     * for as long as it takes, as before.
      */
     private suspend fun probeUntilVehicleAnswers(driver: Elm327Driver): Knowledge {
         var probes = 0
         var incomplete = 0
+        var emptyRounds = 0
         var best: CapabilityReport? = null
-        val primaryRequestId = catalog.ecus.firstOrNull { it.id == primaryEcu }?.requestCanId
+        var waitStart = timeSource.markNow()
+        val observer = ProbeObserver(driver)
         while (true) {
             val first = probes == 0
-            val report = CapabilityProbe(driver, timeSource).run { stage ->
+            if (config.negotiation != null && connectionProtocol == null) {
+                setState(SessionState.Negotiating(emptyRounds + 1))
+                when (val result = negotiateProtocol(driver, quick = emptyRounds > 0)) {
+                    is Negotiation.Found -> {
+                        if (!result.readable) {
+                            val name = result.protocol?.title ?: "an unidentified protocol (${result.dpn ?: "ATDPN unanswered"})"
+                            giveUp(CannotReadReason.UnsupportedProtocol(name), name, "the car answers over $name, which the app cannot read yet")
+                            emptyRounds = 0
+                            waitStart = timeSource.markNow()
+                            continue
+                        }
+                    }
+                    is Negotiation.NotFound -> {
+                        emptyRounds++
+                        probes++
+                        if (limitReached(emptyRounds, waitStart)) {
+                            val name = ObdProtocol.fromDpn(result.dpn)?.title
+                            giveUp(CannotReadReason.NoResponse, name, "no protocol answered 0100 (ATDPN ${result.dpn ?: "unanswered"})")
+                            emptyRounds = 0
+                            waitStart = timeSource.markNow()
+                            continue
+                        }
+                        setState(SessionState.WaitingForIgnition(emptyRounds, if (result.busFault) "UNABLE_TO_CONNECT" else null))
+                        delay(config.ignitionProbeInterval)
+                        continue
+                    }
+                }
+            }
+            observer.reset()
+            val probeStarted = timeSource.markNow()
+            val report = CapabilityProbe(observer, timeSource).run { stage ->
                 // Later probes run quietly: a status that flickers between "waiting" and "probing" every few seconds helps nobody.
                 if (first) setState(SessionState.Probing(stage))
             }.let { it.copy(adapter = it.adapter.copy(unsupportedCommands = driver.unsupportedCommands)) }
             probes++
-            note(SessionEvents.PROBE_RESULT, summarise(report))
+            note(SessionEvents.PROBE_RESULT, summarise(report) + ", took ${probeStarted.elapsedNow().inWholeMilliseconds} ms")
             if (report.ecus.isNotEmpty()) {
+                noteBitmaps(report)
                 // A report without the primary ECU, or with warnings, may be incomplete (that ECU asleep, a request timed out on a flaky
                 // link). Ask again a few times and keep the fullest; only a complete report is kept for the next connection.
-                val complete = report.warnings.isEmpty() && (primaryRequestId == null || report.ecus.any { it.requestId.toIntOrNull(16) == primaryRequestId })
+                val primary = primaryRequestId()
+                val complete = report.warnings.isEmpty() && (primary == null || report.ecus.any { it.requestId.toIntOrNull(16) == primary })
                 if (best == null || report.pidCount() >= best.pidCount()) best = report
                 if (complete || incomplete >= config.incompleteProbeRetries) {
                     val chosen = best
-                    return Knowledge(chosen, DefinitionCoverage.compare(chosen, catalog)).also {
+                    resolveVehicle(chosen)
+                    saveProtocolRecord(chosen)
+                    return Knowledge(chosen, DefinitionCoverage.compare(chosen, activeCatalog)).also {
                         if (complete && chosen === report) {
                             knowledge = it
                             rememberFresh(report)
@@ -921,8 +1038,317 @@ public class VehicleSession(
                 delay(config.incompleteProbeInterval)
                 continue
             }
+            emptyRounds++
+            if (observer.refusals > 0) note(SessionEvents.CANNOT_READ, "the probe was refused: ${observer.summary()}")
+            if (limitReached(emptyRounds, waitStart)) {
+                // A gateway is a bus that answers with refusals; a bus that merely carried the negotiation is silence.
+                val refused = observer.refused > 0 || negotiated?.refused == true
+                val reason = if (refused) CannotReadReason.GatewayBlocked else CannotReadReason.NoResponse
+                giveUp(reason, negotiated?.protocol?.title, "no control unit answered the probe" + if (refused) " (a unit refuses)" else "")
+                emptyRounds = 0
+                waitStart = timeSource.markNow()
+                continue
+            }
             setState(SessionState.WaitingForIgnition(probes, report.busFault))
             delay(config.ignitionProbeInterval)
+        }
+    }
+
+    /** The request id of the engine control unit the probe expects to answer: the catalog's primary, or the usual 7E0 when a resolver picks the catalog. */
+    private fun primaryRequestId(): Int? =
+        activeCatalog.ecus.firstOrNull { it.id == primaryEcu }?.requestCanId ?: if (config.resolver != null) DEFAULT_PRIMARY_REQUEST_ID else null
+
+    /** Whether the time to wait for a silent car is up. A car this session has read, with a definition, is waited for without limit. */
+    private fun limitReached(emptyRounds: Int, waitStart: TimeMark): Boolean {
+        val limits = config.readLimits ?: return false
+        // Only the car in front of the adapter counts: one that was read in this session and has a definition may be switched off for as long as it likes.
+        if (knowledge != null && vehicleKnown) return false
+        return emptyRounds >= limits.maxProbes || waitStart.elapsedNow() >= limits.maxWait
+    }
+
+    /**
+     * Ends the waiting: the state says why, the log says it, and the session waits for [retry] (the link stays open; the adapter is idle).
+     * A lost link ends the connection as it always does.
+     */
+    private suspend fun giveUp(reason: CannotReadReason, protocolName: String?, detail: String) {
+        setState(SessionState.CannotReadVehicle(reason, protocolName))
+        note(SessionEvents.CANNOT_READ, "$detail; reason ${reason::class.simpleName}; ATDPN ${lastDpn ?: "unknown"}")
+        retryRequests.tryReceive()
+        retryRequests.receive()
+        note(SessionEvents.CANNOT_READ, "retry requested: negotiating and probing again")
+        connectionProtocol = null
+        negotiated = null
+    }
+
+    /**
+     * Runs the negotiation and, when a readable protocol answers, locks it: the init script (and what a re-initialisation sends) names it from
+     * now on. Records what happened in the log either way.
+     */
+    private suspend fun negotiateProtocol(driver: Elm327Driver, quick: Boolean): Negotiation {
+        val negotiationConfig = checkNotNull(config.negotiation)
+        val remembered = config.protocolMemory?.last(config.adapterId)?.protocol?.firstOrNull()?.let { ObdProtocol.fromCode(it) }
+        val scripted = lockedInitScript.lastOrNull { it.filterNot(Char::isWhitespace).uppercase().startsWith("ATSP") }
+            ?.filterNot(Char::isWhitespace)?.drop(SP_PREFIX_LENGTH)?.firstOrNull()?.let { ObdProtocol.fromCode(it) }
+        val preferred = (remembered ?: scripted)?.takeIf { it != ObdProtocol.J1939 }
+        val result = ProtocolNegotiator(driver, events, timeSource, negotiationConfig, timerRestore = config.probeScript).negotiate(preferred, quick)
+        lastDpn = (result as? Negotiation.Found)?.dpn ?: (result as? Negotiation.NotFound)?.dpn
+        if (result is Negotiation.Found) {
+            negotiated = result
+            val protocol = result.protocol
+            if (protocol != null && protocol.isReadable) {
+                connectionProtocol = protocol
+                lockProtocol(driver, protocol)
+            }
+            _facts.value = _facts.value.copy(protocol = protocol, dpn = result.dpn, negotiationMs = result.elapsedMs)
+        }
+        return result
+    }
+
+    private var lastDpn: String? = null
+
+    /** Names [protocol] in the init script, so that a re-initialisation, the next connection and the poll script all use it. */
+    private suspend fun lockProtocol(driver: Elm327Driver, protocol: ObdProtocol) {
+        val locked = initScript.map { if (it.filterNot(Char::isWhitespace).uppercase().startsWith("ATSP")) protocol.selectCommand else it }
+        if (locked == lockedInitScript) return
+        lockedInitScript = locked
+        // Nothing is sent: the negotiation has selected the protocol already. Only what a re-initialisation runs changes.
+        driver.applyScript(locked + config.probeScript, send = emptyList())
+    }
+
+    /** Remembers the protocol that worked for this adapter and this make (the VIN's manufacturer code), and what finding it took. */
+    private fun saveProtocolRecord(report: CapabilityReport) {
+        val store = config.protocolMemory ?: return
+        val found = negotiated ?: return
+        val protocol = found.protocol ?: return
+        if (!protocol.isReadable) return
+        try {
+            store.save(
+                ProtocolRecord(
+                    adapterId = config.adapterId,
+                    vinPrefix = report.ecus.firstNotNullOfOrNull { it.vin }?.take(VIN_PREFIX_LENGTH),
+                    protocol = protocol.code.toString(),
+                    dpn = found.dpn.orEmpty(),
+                    viaAuto = found.viaAuto,
+                    negotiationMs = found.elapsedMs,
+                    failedAttempts = found.attempts.filterNot { it.outcome == "answered" }.map { "${it.step}: ${it.outcome}" },
+                    seenAtMs = config.wallClockMs(),
+                ),
+            )
+        } catch (_: Exception) {
+            // Remembering is a convenience.
+        }
+    }
+
+    /** The first support bitmap of every control unit, as hex (`7E0 0100 BE3FA813`): what the probe saw, in the recording. */
+    private suspend fun noteBitmaps(report: CapabilityReport) {
+        for (ecu in report.ecus) {
+            val pids = ecu.supportedPids.map { it.toInt(16) }
+            val ranges = (0..LAST_RANGE_START step RANGE_SIZE).filter { base -> base == 0 || pids.any { it in base + 1..base + RANGE_SIZE } }
+            val text = ranges.joinToString(" ") { base ->
+                var bits = 0L
+                for (offset in 1..RANGE_SIZE) {
+                    val pid = base + offset
+                    val supported = if (offset == RANGE_SIZE) pids.any { it > pid } else pid in pids
+                    if (supported) bits = bits or (1L shl (RANGE_SIZE - offset))
+                }
+                "01" + base.toString(16).uppercase().padStart(2, '0') + "=" + bits.toString(16).uppercase().padStart(8, '0')
+            }
+            note(SessionEvents.BITMAPS, "${ecu.requestId} -> ${ecu.responseId}: $text")
+        }
+    }
+
+    /** Identifies the vehicle with [Config.resolver] (when there is one) and switches to its catalog and features. */
+    private suspend fun resolveVehicle(probe: CapabilityReport) {
+        val resolver = config.resolver
+        val report = withRememberedVin(probe)
+        val resolved = try {
+            resolver?.resolve(report)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (resolved == null) {
+            // Fail closed: a resolver that could not decide leaves an unknown car, never the features of a known one.
+            if (resolver != null) {
+                vehicleKnown = false
+                allowedLevel = LadderLevel.L1
+                scanPlan = null
+                candidateChecks = null
+                seedScan = null
+                note(SessionEvents.CANNOT_READ, "the vehicle could not be identified: treated as an unknown car")
+                _facts.value = _facts.value.copy(known = false, definitionId = null)
+            }
+            publishFacts()
+            return
+        }
+        activeCatalog = resolved.catalog
+        primaryEcu = config.primaryEcu?.takeIf { id -> resolved.catalog.ecus.any { it.id == id } } ?: resolved.catalog.ecus.firstOrNull()?.id
+        vehicleKnown = resolved.known
+        allowedLevel = resolved.allowedLevel
+        scanPlan = if (resolved.known) resolved.scanPlan else null
+        candidateChecks = if (resolved.known) resolved.candidateChecks else null
+        seedScan = if (resolved.known) resolved.seedScan else null
+        resolvedModel = resolved.model
+        _facts.value = _facts.value.copy(known = resolved.known, definitionId = resolved.definitionId)
+        val current = _scan.value
+        if (current == ScanState.Unavailable || current == ScanState.Idle) _scan.value = if (scanPlan == null) ScanState.Unavailable else ScanState.Idle
+        publishFacts()
+    }
+
+    /**
+     * How far up the learning ladder this car may go now: a car with a definition all the way; any other as far as the resolver allows, but
+     * without the user's deep-scan switch only to L2, and to L5 (passive capture, `10 01`) only when the user opted in.
+     */
+    private fun effectiveLevel(): LadderLevel {
+        if (vehicleKnown) return LadderLevel.L5
+        var level = allowedLevel
+        if (config.ladder?.passiveOptIn == true && level >= LadderLevel.L4) level = LadderLevel.L5
+        return if (!deepScanOn && level > LadderLevel.L2) LadderLevel.L2 else level
+    }
+
+    private fun allows(level: LadderLevel): Boolean = effectiveLevel() >= level
+
+    /** Switches the deep scan (levels L3 and L4 of the learning ladder) on or off. It applies from the next level the ladder starts, and to the next connection. */
+    public fun setDeepScan(enabled: Boolean) {
+        deepScanOn = enabled
+    }
+
+    /**
+     * A probe whose VIN request (09 02) went unanswered, from a car that looks exactly like the one remembered last (the same units with the
+     * same support bitmaps): the remembered VIN (masked after the manufacturer code) stands in for it. Any other probe is returned as it is.
+     */
+    private suspend fun withRememberedVin(report: CapabilityReport): CapabilityReport {
+        if (report.ecus.isEmpty() || report.ecus.any { it.vin != null }) return report
+        val store = config.memory ?: return report
+        val stored = try {
+            store.lastKey()?.let { store.load(it) }?.probe
+        } catch (_: Exception) {
+            null
+        } ?: return report
+        val remembered = stored.ecus.firstNotNullOfOrNull { it.vin } ?: return report
+        val same = stored.ecus.size == report.ecus.size &&
+            report.ecus.all { live -> stored.ecus.any { it.requestId == live.requestId && it.supportedPids == live.supportedPids } }
+        if (!same) return report
+        note(SessionEvents.MEMORY, "the VIN was not answered; the remembered one (masked) stands in for it, the units and their support bitmaps are the same")
+        val first = report.ecus.first()
+        return report.copy(ecus = listOf(first.copy(vin = remembered)) + report.ecus.drop(1))
+    }
+
+    private fun publishFacts() {
+        _facts.value = _facts.value.copy(model = userModel ?: resolvedModel)
+    }
+
+    /** Sets the model the user says this car is (kept in the vehicle's memory, when the car is remembered). Null or blank clears it. */
+    public fun setVehicleModel(model: String?) {
+        userModel = model?.trim()?.takeIf { it.isNotEmpty() }
+        publishFacts()
+        memoryDirty = true
+        saveMemory()
+    }
+
+    // The fault codes and the readiness ---------------------------------------------------------------------
+
+    /**
+     * Asks for the fault codes and the readiness to be read again: read-only, nothing is cleared. Polling stops for the few seconds it takes.
+     *
+     * @return false, and does nothing, when the session is not polling the car, or a scan or passive capture is under way
+     */
+    public fun refreshFaults(): Boolean {
+        if (!config.readFaults || _state.value !is SessionState.Polling) return false
+        if (_captureMode.value == CaptureMode.PASSIVE) return false
+        val current = _scan.value
+        if (current is ScanState.Starting || current is ScanState.Running) return false
+        return faultRequests.trySend(Unit).isSuccess
+    }
+
+    /**
+     * After [SessionState.CannotReadVehicle]: negotiates and probes again on the same link (switch the ignition on first, when that was the
+     * reason). Does nothing in any other state.
+     *
+     * @return whether the request was accepted
+     */
+    public fun retry(): Boolean {
+        if (_state.value !is SessionState.CannotReadVehicle) return false
+        return retryRequests.trySend(Unit).isSuccess
+    }
+
+    /** Reads the fault codes and the readiness of the units that answered the probe, once. Errors cost only the reading, except a lost link. */
+    private suspend fun readFaults(driver: Elm327Driver, report: CapabilityReport) {
+        _faults.value = FaultsState.Reading
+        note(SessionEvents.FAULTS, "reading the fault codes and the readiness of ${report.ecus.size} units (read-only)")
+        try {
+            val reader = FaultReader(
+                driver,
+                events,
+                timeSource,
+                config.faultReader.copy(isLinkLoss = { it is AdapterDisconnectedException || it is TransportException }),
+            )
+            val result = reader.read(report.ecus).described(config.faultDictionary)
+            _faults.value = FaultsState.Ready(result)
+            result.readiness?.compressionIgnition?.let { _facts.value = _facts.value.copy(compressionIgnition = it) }
+        } catch (e: CancellationException) {
+            _faults.value = FaultsState.Idle
+            throw e
+        } catch (e: AdapterDisconnectedException) {
+            _faults.value = FaultsState.Failed("the link was lost")
+            throw e
+        } catch (e: TransportException) {
+            _faults.value = FaultsState.Failed("the link was lost")
+            throw e
+        } catch (e: Exception) {
+            _faults.value = FaultsState.Failed(describe(e))
+            note(SessionEvents.FAULTS, "the reading failed: ${describe(e)}")
+        }
+    }
+
+    /**
+     * The learning ladder: only for a car without a definition (a known car keeps its own features), only when [Config.ladder] is set, and
+     * only as far as [effectiveLevel] says. Parked, read-only; polling has not started yet. Errors cost the ladder, not the connection, except a
+     * lost link.
+     */
+    private suspend fun runLadder(driver: Elm327Driver, report: CapabilityReport) {
+        val settings = config.ladder ?: return
+        if (vehicleKnown || report.ecus.isEmpty()) return
+        val top = minOf(effectiveLevel(), LadderLevel.L4)
+        if (top < LadderLevel.L1) return
+        val ladder = LearningLadder(
+            link = driver,
+            units = report.ecus,
+            baseline = (_faults.value as? FaultsState.Ready)?.report,
+            maxLevel = top,
+            config = settings,
+            events = events,
+            timeSource = timeSource,
+            deepScan = { deepScanOn },
+            publish = { _ladder.value = it },
+            faultConfig = config.faultReader.copy(isLinkLoss = { it is AdapterDisconnectedException || it is TransportException }),
+        )
+        val result = try {
+            ladder.run()
+        } catch (e: CancellationException) {
+            _ladder.value = LadderState.Idle
+            throw e
+        } catch (e: AdapterDisconnectedException) {
+            _ladder.value = LadderState.Idle
+            throw e
+        } catch (e: TransportException) {
+            _ladder.value = LadderState.Idle
+            throw e
+        } catch (e: Exception) {
+            note(SessionEvents.LADDER, "the ladder failed: ${describe(e)}")
+            _ladder.value = LadderState.Idle
+            return
+        }
+        when (result) {
+            is LadderResult.Complete -> _ladder.value = LadderState.Complete(result.highest, result.answers)
+            is LadderResult.Stopped -> _ladder.value = LadderState.Stopped(result.level, result.reason, result.answers)
+            is LadderResult.Flagged -> {
+                _ladder.value = LadderState.Flagged(result.reason)
+                // What the ladder saw is shown with the other faults.
+                if (config.readFaults) readFaults(driver, report)
+            }
+            is LadderResult.Skipped -> _ladder.value = LadderState.Idle
         }
     }
 
@@ -972,6 +1398,11 @@ public class VehicleSession(
             }
             if (end is PollEnd.PassiveRequested) {
                 runPassive(driver, known)
+                lastAnswer = timeSource.markNow()
+                continue
+            }
+            if (end is PollEnd.FaultsRequested) {
+                readFaults(driver, known.report)
                 lastAnswer = timeSource.markNow()
                 continue
             }
@@ -1088,7 +1519,7 @@ public class VehicleSession(
      * speed again. Afterwards the identifiers the scan found are added to the poll list.
      */
     private suspend fun runScan(driver: Elm327Driver, loop: PollingLoop, scheduler: PollScheduler, decoder: TelemetryDecoder, watchSilence: Boolean) {
-        val plan = config.scanPlan
+        val plan = scanPlan.takeIf { allows(LadderLevel.L3) }
         if (plan == null) {
             _scan.value = ScanState.Failed("This session has no sweep plan")
             return
@@ -1246,6 +1677,9 @@ public class VehicleSession(
         /** Passive capture was asked for ([setCaptureMode]). */
         data object PassiveRequested : PollEnd
 
+        /** The fault codes were asked for again ([refreshFaults]). */
+        data object FaultsRequested : PollEnd
+
         /** The time limit that the caller gave passed. */
         data object TimeUp : PollEnd
 
@@ -1334,6 +1768,14 @@ public class VehicleSession(
                 trouble.complete(PollEnd.PassiveRequested)
             }
         }
+        val faultWatcher = if (!listenForScan) {
+            null
+        } else {
+            launch {
+                faultRequests.receive()
+                trouble.complete(PollEnd.FaultsRequested)
+            }
+        }
         val timer = if (limit == null) {
             null
         } else {
@@ -1347,6 +1789,7 @@ public class VehicleSession(
         watchdog.cancelAndJoin()
         scanWatcher?.cancelAndJoin()
         captureWatcher?.cancelAndJoin()
+        faultWatcher?.cancelAndJoin()
         timer?.cancelAndJoin()
         reason
     }
@@ -1383,7 +1826,7 @@ public class VehicleSession(
             val at = sessionStart.elapsedNow()
             readings.forEach { meter.reading(it.signal.id, at) }
             _telemetry.update { it.with(readings, at) }
-            if (config.gearCalc && readings.any { it.signal.id == SIGNAL_RPM || it.signal.id == SIGNAL_SPEED }) publishGear(at)
+            if (config.gearCalc && vehicleKnown && readings.any { it.signal.id == SIGNAL_RPM || it.signal.id == SIGNAL_SPEED }) publishGear(at)
             readings.firstOrNull { it.signal.id == SIGNAL_FUEL_LEVEL }?.let { watchFuel(it.signal.value) }
         }
     }
@@ -1454,6 +1897,8 @@ public class VehicleSession(
         SessionState.Idle -> "Idle"
         is SessionState.Connecting -> "Connecting, attempt ${state.attempt}"
         SessionState.Initialising -> "Initialising"
+        is SessionState.Negotiating -> "Negotiating the protocol, round ${state.round}"
+        is SessionState.CannotReadVehicle -> "CannotReadVehicle, ${state.reason::class.simpleName}" + (state.detectedProtocol?.let { " ($it)" } ?: "")
         is SessionState.Probing -> "Probing, ${state.stage.name}"
         is SessionState.WaitingForIgnition ->
             "WaitingForIgnition, probe ${state.probes} found no ECU" + (state.busFault?.let { ", the adapter said $it" } ?: "")
@@ -1472,7 +1917,8 @@ public class VehicleSession(
         }
         val ecus = report.ecus.joinToString(", ") { "${it.requestId} (${it.supportedPids.size} PIDs)" }
         val rate = report.timing.estimatedRequestsPerSecond?.let { ", about ${it.toInt()} requests/s" }.orEmpty()
-        return "${report.ecus.size} ECUs: $ecus$rate" + warningsSuffix(report)
+        val protocol = report.adapter.protocolNumber?.let { ", protocol $it" }.orEmpty()
+        return "${report.ecus.size} ECUs: $ecus$rate$protocol" + warningsSuffix(report)
     }
 
     private fun warningsSuffix(report: CapabilityReport): String {
@@ -1526,6 +1972,11 @@ public class VehicleSession(
         const val SIGNAL_SPEED = "vehicle.speed"
         const val MAX_SAMPLES = 1_000_000
         const val MAX_BODY_FAILURES = 3
+        const val DEFAULT_PRIMARY_REQUEST_ID = 0x7E0
+        const val VIN_PREFIX_LENGTH = 3
+        const val SP_PREFIX_LENGTH = 4
+        const val RANGE_SIZE = 0x20
+        const val LAST_RANGE_START = 0xE0
 
         /** The time left of the parked stage is shown a little longer than the pace alone says: refusals and the speed checks cost time too. */
         const val BODY_ESTIMATE_MARGIN = 1.15

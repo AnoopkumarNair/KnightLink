@@ -46,6 +46,16 @@ public class VirtualElm327(
         val monitorBufferFrames: Int? = null,
         /** Commands (upper case, no spaces, e.g. `ATCRA708`) this adapter answers with `?` from the start, as one that does not know them. */
         val unsupported: Set<String> = emptySet(),
+        /**
+         * The OBD protocol the simulated car speaks (the `ATSP` character, `6` for 11-bit 500 kbaud CAN). Null models no protocol at all: every
+         * request reaches the car whatever `ATSP` said, as before. With a protocol, a request reaches the car only when the adapter is searching
+         * by itself (`ATSP0`, which then finds it: `SEARCHING...`, and `ATDPN` says `A` and the digit) or has been told this very protocol;
+         * any other explicit protocol answers `UNABLE TO CONNECT`, as does a car that is asleep. For `7` and `9` the replies carry 29-bit
+         * headers, for `1` to `5` legacy ones.
+         */
+        val carProtocol: Char? = null,
+        /** How long the adapter takes to find a protocol, or to give up on one, when [carProtocol] is modelled. */
+        val searchDelay: Duration = Duration.ZERO,
     )
 
     private val channel = Channel<ByteArray>(Channel.UNLIMITED)
@@ -72,10 +82,17 @@ public class VirtualElm327(
      */
     public var busFault: String? = null
 
+    /** What `ATRV` answers: the battery voltage as the adapter reads it. */
+    public var voltage: String = "14.1V"
+
     private var resetBeforeNextCommand = false
 
     // The protocol is chosen by the init script (ATSP6); until then, and after ATSP0, the adapter searches automatically (ATDPN says `A6`).
     private var automaticProtocol = true
+
+    // With [Config.carProtocol]: the protocol the adapter was told, and the one its search found.
+    private var selectedProtocol: Char? = null
+    private var foundProtocol: Char? = null
 
     /** Commands (upper case, no spaces, e.g. `ATCSM1`) the adapter always answers with `?`, as one that does not know them. */
     public val unsupportedCommands: MutableSet<String> = HashSet(config.unsupported)
@@ -142,6 +159,9 @@ public class VirtualElm327(
                 continue
             }
             if (config.listenWithoutCount.isPositive() && compact.length % 2 == 0 && compact.all { it.isHexDigit() }) delay(config.listenWithoutCount)
+            if (config.carProtocol != null && config.searchDelay.isPositive() && compact.isNotEmpty() && compact.all { it.isHexDigit() } && !reachesCar()) {
+                delay(config.searchDelay)
+            }
             // The link may have dropped while the adapter was "thinking": the answer is then lost, as on a real link.
             ensureLinked()
             // Characters are echoed as they arrive, so the echo setting in force before the command applies.
@@ -236,8 +256,14 @@ public class VirtualElm327(
             }
             "I" -> return listOf(config.banner)
             "@1" -> return listOf("OBDII to RS232 Interpreter")
-            "RV" -> return listOf("14.1V")
-            "DPN" -> return listOf(if (automaticProtocol) "A6" else "6")
+            "RV" -> return listOf(voltage)
+            "DPN" -> return listOf(
+                when {
+                    config.carProtocol == null -> if (automaticProtocol) "A6" else "6"
+                    automaticProtocol -> "A" + (foundProtocol ?: '0')
+                    else -> (selectedProtocol ?: '0').toString()
+                },
+            )
             "DP" -> return listOf("AUTO, ISO 15765-4 (CAN 11/500)")
             "E0" -> echo = false
             "E1" -> echo = true
@@ -274,8 +300,10 @@ public class VirtualElm327(
                     flowControlData = data
                 } else if (body.startsWith("FCSM")) {
                     flowControlMode = body.substring(4).toIntOrNull()?.takeIf { it in 0..2 } ?: return listOf("?")
-                } else if (body.startsWith("SP") && body.length == 3) {
+                } else if ((body.startsWith("SP") || body.startsWith("TP")) && body.length == 3) {
                     automaticProtocol = body[2] == '0' || body[2] == 'A'
+                    selectedProtocol = body[2].takeUnless { automaticProtocol }
+                    if (automaticProtocol) foundProtocol = null
                 } else if (body.startsWith("SH")) {
                     val id = body.substring(2)
                     if (id.length != 3 || !id.all { it.isHexDigit() }) return listOf("?")
@@ -294,25 +322,33 @@ public class VirtualElm327(
         val request = (if (limit != null) command.dropLast(1) else command).hexToBytes()
         if (request.isEmpty()) return listOf("?")
         busFault?.let { return listOf(it) }
+        val search = ArrayList<String>()
+        if (config.carProtocol != null) {
+            if (!reachesCar()) return if (automaticProtocol) listOf("SEARCHING...", "UNABLE TO CONNECT") else listOf("UNABLE TO CONNECT")
+            if (automaticProtocol && foundProtocol == null) {
+                foundProtocol = config.carProtocol
+                search += "SEARCHING..."
+            }
+        }
 
         // An ECU whose reply the adapter is not listening to is as good as silent.
         val replies = vehicle.targets(header)
             .filter { ecu -> (ecu.responseId xor receiveFilter) and receiveMask == 0 }
             .mapNotNull { ecu -> ecu.respond(request)?.let { Triple(ecu.responseId, it, ecu.needsCustomFlowControl) } }
-        if (replies.isEmpty()) return listOf("NO DATA")
+        if (replies.isEmpty()) return search + "NO DATA"
         // A long reply goes on after its first frame only if the ECU gets a flow-control frame it understands: user-defined flow control
         // that is addressed to another identifier than the request leaves the ECU waiting for ever.
         val customWorks = flowControlMode == 1 && flowControlHeader == header && flowControlData?.startsWith("30") == true
         val flowControlWorks = flowControlMode != 1 || customWorks
         if (limit == null) {
-            return replies.flatMap { (id, payload, needsCustom) ->
+            return search + replies.flatMap { (id, payload, needsCustom) ->
                 val works = if (needsCustom) customWorks else flowControlWorks
                 format(id, payload, firstFrameOnly = !works && payload.size > SINGLE_FRAME_MAX)
             }
         }
 
         // The count is in CAN frames: a long reply is cut to its first frame, and the replies after that are not sent at all.
-        val lines = ArrayList<String>()
+        val lines = ArrayList<String>(search)
         var frames = 0
         for ((id, payload, _) in replies) {
             if (frames >= limit) break
@@ -322,10 +358,22 @@ public class VirtualElm327(
         return lines
     }
 
+    /** Whether a diagnostic request gets to the car under the protocol model of [Config.carProtocol] (always, without one). */
+    private fun reachesCar(): Boolean {
+        val protocol = config.carProtocol ?: return true
+        if (!vehicle.awake) return false
+        return automaticProtocol || selectedProtocol == protocol
+    }
+
     private fun format(id: Int, payload: ByteArray, firstFrameOnly: Boolean = false): List<String> {
         val separator = if (spaces) " " else ""
         fun bytes(data: ByteArray) = data.joinToString(separator) { byteArrayOf(it).toHex() }
-        val idText = id.toString(16).uppercase().padStart(3, '0')
+        val low = (id and 0xFF).toString(16).uppercase().padStart(2, '0')
+        val idText = when (config.carProtocol) {
+            '7', '9' -> "18DAF1$low"
+            '1', '2', '3', '4', '5' -> "486B$low"
+            else -> id.toString(16).uppercase().padStart(3, '0')
+        }
 
         if (headers) return segment(payload).let { if (firstFrameOnly) it.take(1) else it }.map { idText + separator + bytes(it) }
         if (payload.size <= SINGLE_FRAME_MAX) return listOf(bytes(payload))
@@ -365,6 +413,8 @@ public class VirtualElm327(
         flowControlHeader = null
         flowControlData = null
         automaticProtocol = true
+        selectedProtocol = null
+        foundProtocol = null
     }
 
     /** An 11-bit identifier of exactly three hex digits, or null. */

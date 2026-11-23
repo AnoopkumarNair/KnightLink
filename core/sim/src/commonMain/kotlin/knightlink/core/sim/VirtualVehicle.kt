@@ -15,6 +15,12 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
     /** False simulates an ECU that does not understand a service 01 request for several PIDs: it stays silent on one, as some older ECUs do. */
     public var multiPid: Boolean = true
 
+    /**
+     * A negative response code every request is refused with (`33`, security access denied, say), as by a gateway that keeps a tool out. Null for
+     * normal behaviour.
+     */
+    public var refusesEverythingWith: Int? = null
+
     /** True simulates an ECU that has stopped answering (it crashed, or lost power): it stays silent on everything. */
     public var silent: Boolean = false
 
@@ -65,6 +71,7 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
     public fun respond(request: ByteArray): ByteArray? {
         if (request.isEmpty() || silent) return null
         val service = request[0].toInt() and 0xFF
+        refusesEverythingWith?.let { return byteArrayOf(NEGATIVE, service.toByte(), it.toByte()) }
         val positive = byteArrayOf((service + POSITIVE_OFFSET).toByte()) + request.copyOfRange(1, request.size)
         if (request.toHex() == "1001" && replies.containsKey("1001")) sessionRequested = true
         if (service == 0x22 && needsDefaultSession && !sessionRequested) return byteArrayOf(NEGATIVE, service.toByte(), NRC_NOT_IN_SESSION)

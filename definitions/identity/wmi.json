@@ -1,0 +1,111 @@
+{
+ "schemaVersion": 1,
+ "entries": [
+  {
+   "wmi": "MA1",
+   "make": "Mahindra",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MA3",
+   "make": "Maruti Suzuki",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MAT",
+   "make": "Tata",
+   "country": "India",
+   "verified": true,
+   "source": "definitions/vehicles/tata/harrier-2020-kryotec-at.json names MAT, and the owner's own Harrier, whose VIN begins with it, has run on that definition; also listed on https://en.wikipedia.org/wiki/Vehicle_identification_number (read 2026-11-23)"
+  },
+  {
+   "wmi": "MAL",
+   "make": "Hyundai",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MZB",
+   "make": "Kia",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MBJ",
+   "make": "Toyota",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MAK",
+   "make": "Honda",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MEE",
+   "make": "Renault",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MZ7",
+   "make": "MG",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MEX",
+   "make": "Skoda/Volkswagen",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MDH",
+   "make": "Nissan",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MAJ",
+   "make": "Ford",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MC1",
+   "make": "Force Motors",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "M3G",
+   "make": "Isuzu",
+   "country": "India",
+   "verified": false,
+   "source": "https://en.wikipedia.org/wiki/Vehicle_identification_number (WMI table, Asia/India rows), read 2026-11-23; single secondary source, not checked against a real VIN"
+  },
+  {
+   "wmi": "MBH",
+   "make": "Maruti Suzuki",
+   "country": "India",
+   "verified": false,
+   "source": "Wikipedia lists MBH as Nissan Pixo built by Maruti Suzuki; another site lists it as Maruti Suzuki; conflicting, not verified"
+  }
+ ],
+ "notes": "Make by the first three VIN characters. Verified = listed in the cited source; none of these was checked against a real car yet. Kia India (MZB) and Mahindra (MA1) should be confirmed against the Seltos and Thar Roxx VINs on the trial runs."
+}

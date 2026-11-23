@@ -90,7 +90,7 @@ public object ReadOnlyPolicy {
     private val atAllowed = listOf(
         "Z", "D", "WS", "I", "@1", "@2", "RV", "DP", "DPN", "IGN",
         "E0", "E1", "L0", "L1", "S0", "S1", "H0", "H1", "M0", "M1", "AL", "NL",
-        "SP", "TP", "AT0", "AT1", "AT2", "ST", "SH", "CRA", "AR", "CAF0", "CAF1", "CFC0", "CFC1", "CEA", "CP", "R0", "R1",
+        "SP", "TP", "AT0", "AT1", "AT2", "ST", "SH", "CRA", "AR", "CAF0", "CAF1", "CFC0", "CFC1", "CEA", "R0", "R1",
         "D0", "D1", "V0", "V1",
         "CF", "CM", "FCSH", "FCSD", "FCSM",
     )
@@ -142,6 +142,8 @@ public object ReadOnlyPolicy {
             "FCSM" -> argument == "0" || argument == "1"
             // One receive address, or none to go back to the automatic one.
             "CRA" -> argument.isEmpty() || argument.length == 3 || argument.length == 8
+            // The request header: the functional address, an engine-bay unit or a body unit, three digits; never a response id or a 29-bit header.
+            "SH" -> argument.length == 3 && argument.toInt(16).let { it == 0x7DF || it in 0x7E0..0x7E7 || isBodyUnit(it) }
             else -> true
         }
         return if (shape) null else "adapter command AT$rest has an argument that is not allowed for $match"

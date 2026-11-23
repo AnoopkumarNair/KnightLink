@@ -4,6 +4,7 @@ import knightlink.core.vehicle.CapabilityReport
 import knightlink.core.vehicle.DefinitionCoverage
 import knightlink.core.vehicle.ProbeStage
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /** Where a [VehicleSession] is in its life: what a notification or a status screen shows. */
 public sealed interface SessionState {
@@ -19,6 +20,22 @@ public sealed interface SessionState {
 
     /** The link is open; the adapter's initialisation script is running. */
     public data object Initialising : SessionState
+
+    /**
+     * The adapter is finding out which protocol the car speaks (see [ProtocolNegotiator]): the first thing that happens on a link, before the
+     * probe. It can take several seconds on a car the adapter has to search.
+     *
+     * @property round 1 for the first negotiation of this connection, counting up while the car does not answer
+     */
+    public data class Negotiating(val round: Int) : SessionState
+
+    /**
+     * The session gave up on reading this car for now: [reason] says why. The link is kept; [VehicleSession.retry] starts the negotiation and
+     * the probe again (switch the ignition on first, when that is the reason).
+     *
+     * @property detectedProtocol the protocol the adapter reported (`ATDPN`), in words, when it named one; for [CannotReadReason.UnsupportedProtocol] it is the reason itself
+     */
+    public data class CannotReadVehicle(val reason: CannotReadReason, val detectedProtocol: String? = null) : SessionState
 
     /** The capability probe is running; [stage] is the step it has just started. Skipped on a reconnect that reuses the last report. */
     public data class Probing(val stage: ProbeStage) : SessionState
@@ -126,4 +143,96 @@ public sealed interface BodyScanState {
 
     /** There was no parked stage (the car [moving], or its speed cannot be read, [reason] in words); the units are asked in the background, a few requests at a time. */
     public data class Skipped(val moving: Boolean, val reason: String) : BodyScanState
+}
+
+/** Why a session cannot read the car in front of it, as a screen shows it. */
+public sealed interface CannotReadReason {
+    /** Nothing answered on any protocol the adapter tried, or no control unit answered the probe: usually the ignition is off, or the adapter is not in the car's diagnostic socket. */
+    public data object NoResponse : CannotReadReason
+
+    /**
+     * The car answers, but over a protocol the app cannot read yet (29-bit CAN, or a legacy bus). The protocol is recorded in the session's log.
+     *
+     * @property protocolName what the adapter reported, in words (for example `ISO 15765-4 CAN (29 bit ID, 500 kbaud)`)
+     */
+    public data class UnsupportedProtocol(val protocolName: String) : CannotReadReason
+
+    /** The bus is up and a unit answers the broadcast, but no engine control unit answers the app (a gateway that refuses with security access denied, or hides the units). */
+    public data object GatewayBlocked : CannotReadReason
+}
+
+/** Where the reading of the fault codes and the readiness is, next to [SessionState]. */
+public sealed interface FaultsState {
+    /** Not read yet in this session. */
+    public data object Idle : FaultsState
+
+    /** The control units are being asked. */
+    public data object Reading : FaultsState
+
+    /** The last reading; [report] is read-only data and holds no VIN. */
+    public data class Ready(val report: knightlink.core.scan.FaultReport) : FaultsState
+
+    /** The reading could not be done (the link failed part-way); [reason] is in words. */
+    public data class Failed(val reason: String) : FaultsState
+}
+
+/**
+ * What the session knows about the car beyond the probe report: which protocol, whether a vehicle definition applies, the model the user said.
+ * Never a full VIN.
+ *
+ * @property protocol the protocol the adapter is locked to; null before it is known
+ * @property dpn what `ATDPN` answered
+ * @property known true when a vehicle definition applies (the full feature set); false for a car the app knows only from the standard services
+ * @property definitionId the definition's id when [known]
+ * @property model the model name, from the definition or what the user picked (kept in the vehicle's memory)
+ * @property negotiationMs how long finding the protocol took; 0 when it was not negotiated
+ * @property compressionIgnition true for a diesel, false for a petrol car, null while unknown (the readiness answer says)
+ */
+public data class SessionFacts(
+    val protocol: knightlink.core.vehicle.ObdProtocol? = null,
+    val dpn: String? = null,
+    val known: Boolean = true,
+    val definitionId: String? = null,
+    val model: String? = null,
+    val negotiationMs: Long = 0,
+    val compressionIgnition: Boolean? = null,
+)
+
+/**
+ * Limits on how long a session waits for a car that does not answer; after them it ends in [SessionState.CannotReadVehicle].
+ *
+ * @property maxProbes how many empty rounds (a negotiation or a probe that found no control unit) are made
+ * @property maxWait the longest the waiting takes, counted from the first round
+ */
+public data class ReadLimits(
+    val maxProbes: Int = 3,
+    val maxWait: Duration = 60.seconds,
+) {
+    init {
+        require(maxProbes >= 1) { "maxProbes must be at least 1" }
+        require(maxWait.isPositive()) { "maxWait must be positive" }
+    }
+}
+
+/**
+ * What the session works with once the car is identified: its signal definitions and which features it may use.
+ *
+ * @property known true when a vehicle definition applies. An unknown car gets the standard signals only, and none of the identifier sweeps,
+ *   the body-unit check, `10 01`, passive capture or the features that belong to one car.
+ */
+public class ResolvedVehicle(
+    public val catalog: knightlink.core.signals.SignalCatalog,
+    public val known: Boolean,
+    public val definitionId: String? = null,
+    public val model: String? = null,
+    public val candidateChecks: knightlink.core.scan.CandidateChecks? = null,
+    public val seedScan: knightlink.core.scan.ScanResult? = null,
+    public val scanPlan: knightlink.core.scan.DidSweepPlan? = null,
+    /** How far up the learning ladder this car may go (see [LadderLevel]): a car with a definition all the way, any other to L4 (and L3 and L4 need the user's deep-scan switch). */
+    public val allowedLevel: LadderLevel = if (known) LadderLevel.L5 else LadderLevel.L4,
+)
+
+/** Chooses the vehicle definition from the probe. Must be quick and must not throw for an unknown car: that is [ResolvedVehicle] with `known = false`. */
+public fun interface VehicleResolver {
+    public fun resolve(report: knightlink.core.vehicle.CapabilityReport): ResolvedVehicle
 }

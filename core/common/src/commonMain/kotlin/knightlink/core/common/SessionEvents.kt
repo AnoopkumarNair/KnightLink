@@ -114,6 +114,24 @@ public object SessionEvents {
     /** The battery voltage the adapter read (`ATRV`) once at the start of a connection. */
     public const val BATTERY: String = "battery"
 
+    /** The fault codes and the readiness were read (counts per list, never a VIN), or could not be. */
+    public const val FAULTS: String = "faults"
+
+    /** Which protocol the adapter found and locked, how long that took and which attempts failed (no VIN). */
+    public const val PROTOCOL: String = "protocol"
+
+    /** What each control unit answered to `01 00` (its first support bitmap, as hex) and how long the probe took. No VIN. */
+    public const val BITMAPS: String = "bitmaps"
+
+    /** The session gave up on reading the car and says why (no answer, a protocol the app cannot read, a gateway that refuses). */
+    public const val CANNOT_READ: String = "cannot-read"
+
+    /**
+     * The learning ladder (levels L1 to L4 on a car the app has no definition for): a level starts, ends or is aborted and why, and what a unit
+     * answered (request identifier, data identifier, length of the answer; never a value). No VIN.
+     */
+    public const val LADDER: String = "ladder"
+
     /** The session ended. The detail says why. */
     public const val END: String = "end"
 

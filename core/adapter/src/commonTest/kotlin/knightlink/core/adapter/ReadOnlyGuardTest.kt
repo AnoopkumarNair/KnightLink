@@ -107,6 +107,14 @@ class ReadOnlyGuardTest {
     }
 
     @Test
+    fun theRequestHeaderMayOnlyBeADiagnosticRequestIdAndTheProtocolCloseCommandIsNotAllowed() {
+        for (command in listOf("ATSH7E0", "ATSH7DF", "ATSH700", "ATSH7FF", "ATSH7E7")) assertNull(ReadOnlyPolicy.violation(command), command)
+        for (command in listOf("ATSH0C9", "ATSH7E8", "ATSH7EF", "ATSH18DB33F1", "ATSH7E", "ATSH6FF", "ATCP18", "ATCP")) {
+            assertNotNull(ReadOnlyPolicy.violation(command), command)
+        }
+    }
+
+    @Test
     fun theReceiveAndFlowControlSettingsOfTheAdapterAreAllowed() {
         val allowed = listOf(
             "ATCF700", "AT CF 700", "ATCM700", "ATCM 7FF", "ATCF18DAF110", "ATFCSH700", "AT FC SH 700",

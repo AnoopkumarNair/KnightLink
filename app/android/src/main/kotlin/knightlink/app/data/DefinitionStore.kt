@@ -4,14 +4,18 @@ import knightlink.app.ui.voice.ThemePack
 import knightlink.core.adapter.AdapterDefinition
 import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidSweepPlan
+import knightlink.core.scan.FaultCodeDictionary
 import knightlink.core.scan.ScanResult
 import knightlink.core.signals.DefinitionException
 import knightlink.core.signals.DefinitionFile
 import knightlink.core.signals.DefinitionJson
 import knightlink.core.signals.SignalCatalog
+import knightlink.core.signals.VehicleInfo
 import knightlink.core.sim.SimulationFile
 import knightlink.core.tpms.TpmsDecoder
 import knightlink.core.tpms.TpmsDefinition
+import knightlink.core.vehicle.ModelList
+import knightlink.core.vehicle.WmiTable
 import kotlinx.serialization.SerializationException
 import java.io.IOException
 
@@ -48,6 +52,30 @@ class DefinitionStore(private val assets: AssetSource) {
             SignalCatalog.of(layers.values.toList())
         } catch (e: DefinitionException) {
             throw DefinitionStoreException("Definition '$id' is not usable: ${e.message}", e)
+        }
+    }
+
+    /** What the vehicle definition [id] says about its car (make, model, years, manufacturer code), or null when it says nothing. */
+    fun vehicleInfo(id: String): VehicleInfo? = definition(id).vehicle
+
+    /** The standard (SAE J1979) signals alone: what a car without a definition of its own is read with. */
+    fun standardCatalog(): SignalCatalog = vehicleCatalog(STANDARD_DEFINITION)
+
+    /** The manufacturer codes (`definitions/identity/wmi.json`). @throws DefinitionStoreException if the file is missing or invalid. */
+    fun wmiTable(): WmiTable = parseData("$DEFINITIONS_ROOT/$WMI_FILE.json") { WmiTable.parse(it) }
+
+    /** The common models per make for the picker (`definitions/identity/models.json`). @throws DefinitionStoreException if missing or invalid. */
+    fun modelList(): ModelList = parseData("$DEFINITIONS_ROOT/$MODELS_FILE.json") { ModelList.parse(it) }
+
+    /** The generic fault code descriptions (`definitions/faults/sae-j2012.json`). @throws DefinitionStoreException if missing or invalid. */
+    fun faultCodes(): FaultCodeDictionary = parseData("$DEFINITIONS_ROOT/$FAULT_CODES_FILE.json") { FaultCodeDictionary.parse(it) }
+
+    private fun <T> parseData(path: String, parse: (String) -> T): T {
+        val text = read(assets, path)
+        return try {
+            parse(text)
+        } catch (e: IllegalArgumentException) {
+            throw DefinitionStoreException("Invalid data file '$path': ${e.message}", e)
         }
     }
 
@@ -194,6 +222,10 @@ class DefinitionStore(private val assets: AssetSource) {
         private const val SWEEP_PLAN = "discovery/did-sweep"
         private const val SEED_DIRECTORY = "discovery/seed"
         private const val CANDIDATES_DIRECTORY = "discovery/candidates"
+        private const val STANDARD_DEFINITION = "standard/sae-j1979-mode01"
+        private const val WMI_FILE = "identity/wmi"
+        private const val MODELS_FILE = "identity/models"
+        private const val FAULT_CODES_FILE = "faults/sae-j2012"
         private const val VEHICLES_PREFIX = "vehicles/"
         private const val ADAPTERS_PREFIX = "adapters/"
         private const val TPMS_PREFIX = "tpms/"

@@ -403,7 +403,8 @@ public class FullScan(
     // Stage 3: which request identifiers are answered -------------------------------------------------------
 
     private suspend fun discover() {
-        val ids = plan.controlUnitIds.ids()
+        // 7E8-7EF are the engine-bay units' answers: nothing listens there, and the adapter's read-only policy does not let a request go to them.
+        val ids = plan.controlUnitIds.ids().filter { it !in OBD_RESPONSE_IDS }
         val unitsBefore = units.size
         var alias = 0
         for ((index, id) in ids.withIndex()) {
@@ -937,6 +938,7 @@ public class FullScan(
         const val CLEAR_TO_SEND = "300000"
 
         val OBD_REQUEST_IDS = 0x7E0..0x7E7
+        val OBD_RESPONSE_IDS = 0x7E8..0x7EF
         val PRINTABLE = 0x20..0x7E
 
         /** ISO 14229-1 annex C names of the identification identifiers. */

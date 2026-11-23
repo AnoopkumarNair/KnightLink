@@ -8,6 +8,10 @@
     <string name="status_connecting">Connecting, attempt %1$d</string>
     <string name="status_initialising">Initialising adapter</string>
     <string name="status_probing">Reading vehicle capabilities: %1$s</string>
+    <string name="status_negotiating">Finding out how this car talks (this can take a few seconds)</string>
+    <string name="status_cannot_read_no_response">Can\'t read this car yet. Turn the ignition on, check that the adapter is fully plugged in, and try again.</string>
+    <string name="status_cannot_read_protocol">Can\'t read this car yet. It talks %1$s, which the app does not support yet.</string>
+    <string name="status_cannot_read_gateway">Can\'t read this car yet. The car is awake but is not letting the app talk to its engine computer.</string>
     <string name="status_waiting_for_ignition">Connected to the adapter. Waiting for the ignition: the car does not answer yet (check %1$d)</string>
     <string name="status_vehicle_asleep">Vehicle asleep (ignition off). Waiting for ignition (check %1$d)</string>
     <string name="status_bus_not_reachable">Connected to the adapter, but the vehicle bus is not reachable. Is the ignition on? (check %1$d)</string>
@@ -29,6 +33,22 @@
     <string name="action_choose_another">Choose another adapter</string>
 
     <!-- Scan of the other units, and the dashboard readings -->
+    <string name="action_retry">Retry</string>
+    <string name="action_read_faults">Read the fault codes again</string>
+    <string name="faults_title">Fault codes</string>
+    <string name="faults_reading">Reading the fault codes…</string>
+    <string name="faults_failed">The fault codes could not be read</string>
+    <string name="faults_none">No fault codes stored</string>
+    <string name="fault_line">%1$s — %2$s</string>
+    <string name="fault_no_description">no description available</string>
+    <string name="identity_vin_end">VIN ends %1$s</string>
+    <string name="ladder_running">Learning this car (%1$s) — keep the car parked (about %2$d s left)</string>
+    <string name="ladder_running_unit">%1$s: %2$d of %3$d</string>
+    <string name="ladder_complete">Learning done — you can drive now</string>
+    <string name="ladder_stopped">Learning stopped at %1$s — you can drive now</string>
+    <string name="ladder_flagged">A new fault code or the warning lamp appeared — nothing more was asked</string>
+    <string name="deep_scan_label">Deep scan of an unknown car</string>
+    <string name="deep_scan_hint">Also reads the data identifiers the car answers while it is parked. Read-only; switch it off to only read the basics.</string>
     <string name="bodyscan_running">Scanning the car\'s other units — keep the car parked (about %1$d s left)</string>
     <string name="bodyscan_running_unit">%1$s: %2$d of %3$d</string>
     <string name="bodyscan_complete">Scan complete — you can drive now</string>

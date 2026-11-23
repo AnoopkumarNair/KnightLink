@@ -10,8 +10,8 @@ import knightlink.voice.intents.LinkStatus
 fun SessionState?.toLinkStatus(): LinkStatus = when (this) {
     null -> LinkStatus.NOT_CONNECTED
     is SessionState.Polling -> LinkStatus.LIVE
-    SessionState.Idle, is SessionState.Connecting, SessionState.Initialising, is SessionState.Probing -> LinkStatus.CONNECTING
+    SessionState.Idle, is SessionState.Connecting, SessionState.Initialising, is SessionState.Negotiating, is SessionState.Probing -> LinkStatus.CONNECTING
     is SessionState.WaitingForIgnition, is SessionState.VehicleAsleep -> LinkStatus.WAITING_FOR_IGNITION
     is SessionState.Recovering, is SessionState.Reconnecting -> LinkStatus.RECONNECTING
-    is SessionState.Failed, SessionState.Stopped -> LinkStatus.NOT_CONNECTED
+    is SessionState.Failed, is SessionState.CannotReadVehicle, SessionState.Stopped -> LinkStatus.NOT_CONNECTED
 }

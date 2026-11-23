@@ -226,7 +226,13 @@ public class Elm327Driver(
 
     /** Sends one command and returns the reply lines, without the echo. */
     public suspend fun command(text: String, timeout: Duration): List<String> =
-        lock.withLock { exchange(text, timeout).lines }
+        lock.withLock {
+            val reply = exchange(text, timeout)
+            // A raw command that moves the header (or resets the adapter) makes the remembered header wrong: the next request sets its own.
+            val compact = text.compact()
+            if (compact.startsWith("ATSH") || compact == "ATD" || compact.startsWith("ATZ") || compact == "ATWS") currentHeader = null
+            reply.lines
+        }
 
     /**
      * Runs the adapter's initialisation script (from its definition file), after the warm-up if [Config.warmUp] is set. The

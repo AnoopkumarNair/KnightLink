@@ -136,11 +136,13 @@ class SessionService : Service() {
             recordings = FileRecordSinkFactory(RecordingStore(recordingsDirectory(applicationContext))),
             connectionLog = connectionLog,
             sessionConfig = VehicleSession.Config(memory = memoryStore),
+            protocolMemory = FileProtocolMemoryStore(java.io.File(applicationContext.filesDir, "protocol-memory.json")),
             samples = AndroidSampleSource(applicationContext),
             tyreSensors = AndroidAdvertisementSource(applicationContext),
             dashboardStore = DashboardStore(
                 SharedPreferencesStringStore(applicationContext.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)),
             ),
+            settings = SharedPreferencesStringStore(applicationContext.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)),
         )
         notifications = SessionNotifications(this)
         knightPackManager = KnightPackManager(applicationContext)

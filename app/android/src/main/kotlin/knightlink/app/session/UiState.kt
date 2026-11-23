@@ -2,9 +2,14 @@ package knightlink.app.session
 
 import knightlink.app.data.DashboardReadings
 import knightlink.core.runtime.BodyScanState
+import knightlink.core.runtime.CannotReadReason
 import knightlink.core.runtime.CaptureMode
+import knightlink.core.runtime.FaultsState
+import knightlink.core.runtime.LadderState
 import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
+import knightlink.core.scan.FaultKind
+import knightlink.core.scan.ReadinessSummary
 import knightlink.core.scan.ScanOutcome
 import knightlink.core.scan.ScanStage
 import knightlink.core.scan.ScanSummary
@@ -13,6 +18,7 @@ import knightlink.core.vehicle.CapabilityReport
 import knightlink.core.vehicle.DefinitionCoverage
 import knightlink.core.vehicle.FuelMethod
 import knightlink.core.vehicle.ProbeStage
+import knightlink.core.vehicle.VehicleIdentity
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -45,6 +51,21 @@ data class UiState(
     val bodyScan: BodyScanProgress = BodyScanProgress.Idle,
     /** The odometer and range the driver typed (start and end of the drive). */
     val dashboard: DashboardReadings = DashboardReadings(),
+    /** Who the car is (make, model, year, last four of the VIN, protocol, support tier); null until the probe has found it. Never a full VIN. */
+    val identity: VehicleIdentity? = null,
+    /**
+     * False for a car the app has no definition for: only the standard signals are read, and the features of one car (drive mode buttons, odometer
+     * and range entry, tyres, definition coverage, body scan, full scan, passive capture) do not work and should not be shown.
+     */
+    val knownVehicle: Boolean = true,
+    /** The fault codes and the readiness: read once after the probe, and again on request. */
+    val faults: FaultSummary = FaultSummary.NOT_READ,
+    /** The models the picker offers for the car's make, from the data file; empty when the make has no list. */
+    val modelChoices: List<String> = emptyList(),
+    /** The learning ladder on a car the app has no definition for: which level runs, and how it ended. Idle for a known car. */
+    val ladder: LadderProgress = LadderProgress.Idle,
+    /** The deep scan switch: whether an unknown car is also swept for data identifiers (levels L3 and L4). The user can switch it off. */
+    val deepScan: Boolean = true,
 ) {
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle
@@ -52,6 +73,68 @@ data class UiState(
     companion object {
         val IDLE = UiState(ConnectionStatus.Idle, vehicle = null, liveValues = emptyList())
     }
+}
+
+/** Where the reading of the fault codes is. */
+enum class FaultsStatus { NOT_READ, READING, READY, FAILED }
+
+/**
+ * One fault code to show: [description] is the generic SAE text, or null (a manufacturer code, or one the list lacks: show the code alone).
+ * [kind] says confirmed, pending, or permanent (stored by the emissions system). No severity is implied.
+ */
+data class FaultItem(val code: String, val description: String?, val kind: FaultKind, val ecu: String)
+
+/** The fault codes and the readiness as the screen shows them. [readiness] is null when no unit answered. */
+data class FaultSummary(
+    val status: FaultsStatus,
+    val items: List<FaultItem>,
+    val readiness: ReadinessSummary?,
+    val failure: String? = null,
+) {
+    companion object {
+        val NOT_READ = FaultSummary(FaultsStatus.NOT_READ, emptyList(), null)
+    }
+}
+
+fun FaultsState.toSummary(): FaultSummary = when (this) {
+    FaultsState.Idle -> FaultSummary.NOT_READ
+    FaultsState.Reading -> FaultSummary(FaultsStatus.READING, emptyList(), null)
+    is FaultsState.Ready -> FaultSummary(
+        FaultsStatus.READY,
+        report.faults.map { FaultItem(it.code, it.description, it.kind, it.ecu) },
+        report.readiness,
+    )
+    is FaultsState.Failed -> FaultSummary(FaultsStatus.FAILED, emptyList(), null, reason)
+}
+
+/**
+ * The learning ladder in the app's terms: the banner says which level [Running] and, at the end, that the car may be driven ([Complete], or
+ * [Stopped] with the reason a rule gave); [Flagged] means a new fault code or the lamp appeared and nothing more was asked.
+ */
+sealed interface LadderProgress {
+    data object Idle : LadderProgress
+
+    /** [level] is `L1`..`L4`; [done] of [total] requests, about [secondsLeft] seconds of the level's time box. */
+    data class Running(val level: String, val label: String, val done: Int, val total: Int, val secondsLeft: Int) : LadderProgress {
+        val fraction: Float get() = if (total <= 0) 0f else (done.toFloat() / total).coerceIn(0f, 1f)
+    }
+
+    data class Complete(val level: String, val answers: Int) : LadderProgress
+
+    data class Stopped(val level: String, val reason: String) : LadderProgress
+
+    data class Flagged(val reason: String) : LadderProgress
+
+    /** True for the two that tell the driver it is over: shown for a while, then gone. A flag stays. */
+    val isOutcome: Boolean get() = this is Complete || this is Stopped
+}
+
+fun LadderState.toProgress(): LadderProgress = when (this) {
+    LadderState.Idle -> LadderProgress.Idle
+    is LadderState.Running -> LadderProgress.Running(level.name, label, done, total, secondsLeft)
+    is LadderState.Complete -> LadderProgress.Complete(highest.name, answers)
+    is LadderState.Stopped -> LadderProgress.Stopped(level.name, reason)
+    is LadderState.Flagged -> LadderProgress.Flagged(reason)
 }
 
 /**
@@ -179,6 +262,15 @@ sealed interface ConnectionStatus {
 
     data class Probing(val stage: ProbeStage) : ConnectionStatus
 
+    /** The adapter is finding out which protocol the car speaks; [round] counts up while the car does not answer. */
+    data class Negotiating(val round: Int) : ConnectionStatus
+
+    /**
+     * The session gave up on this car for now; show [reason] and offer Retry (`SessionController.retry`). [protocol] is what the adapter named,
+     * in words, when it named one (for an unsupported protocol it is the reason itself).
+     */
+    data class CannotRead(val reason: CannotReadReason, val protocol: String?) : ConnectionStatus
+
     /** The link is up but no ECU answers, usually because the ignition is off; [busFault] is set when the adapter said the vehicle bus is not reachable. */
     data class WaitingForIgnition(val probes: Int, val busFault: Boolean) : ConnectionStatus
 
@@ -245,6 +337,8 @@ fun SessionState.toStatus(): ConnectionStatus = when (this) {
     is SessionState.Connecting -> ConnectionStatus.Connecting(attempt)
     SessionState.Initialising -> ConnectionStatus.Initialising
     is SessionState.Probing -> ConnectionStatus.Probing(stage)
+    is SessionState.Negotiating -> ConnectionStatus.Negotiating(round)
+    is SessionState.CannotReadVehicle -> ConnectionStatus.CannotRead(reason, detectedProtocol)
     is SessionState.WaitingForIgnition -> ConnectionStatus.WaitingForIgnition(probes, busFault != null)
     is SessionState.VehicleAsleep -> ConnectionStatus.VehicleAsleep(checks)
     is SessionState.Recovering -> ConnectionStatus.Recovering(attempt, reason)
@@ -311,14 +405,16 @@ fun groupByPrefix(values: List<LiveValue>): List<ValueGroup> =
     values.groupBy { signalPrefix(it.signalId) }.toSortedMap().map { (prefix, group) -> ValueGroup(prefix, group) }
 
 /** Summarises what the probe found. Redacts first, so nothing downstream can show a full VIN. */
-fun vehicleSummary(report: CapabilityReport, coverage: DefinitionCoverage): VehicleSummary {
+fun vehicleSummary(report: CapabilityReport, coverage: DefinitionCoverage, diesel: Boolean? = null): VehicleSummary {
     val safe = report.redacted()
+    // A fuel rate estimated from the air flow assumes a petrol engine's air-fuel ratio; on a diesel it would be wrong, so no estimate is offered.
+    val fuelMethod = safe.derived.fuelMethod.let { if (diesel == true && (it == FuelMethod.MAF || it == FuelMethod.SPEED_DENSITY)) FuelMethod.UNKNOWN else it }
     return VehicleSummary(
         ecus = safe.ecus.map { EcuSummary(it.name, it.requestId) },
         vinRedacted = safe.ecus.firstNotNullOfOrNull { it.vin },
         adapterBanner = safe.adapter.banner,
         requestsPerSecond = safe.timing.estimatedRequestsPerSecond,
-        fuelMethod = safe.derived.fuelMethod,
+        fuelMethod = fuelMethod,
         hasDpfData = safe.derived.hasDpfData,
         confirmed = coverage.confirmed.map { "${it.pid}  ${it.signals.joinToString(", ")}" + it.catalogEcu.inBrackets() },
         missing = coverage.missing.map { "${it.pid}  ${it.signals.joinToString(", ")}" + it.catalogEcu.inBrackets() },

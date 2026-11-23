@@ -59,6 +59,9 @@ import knightlink.app.session.BodyScanProgress
 import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.DriveMode
 import knightlink.app.session.DriveSummary
+import knightlink.app.session.FaultSummary
+import knightlink.app.session.FaultsStatus
+import knightlink.app.session.LadderProgress
 import knightlink.app.session.LiveValue
 import knightlink.app.session.RecordingsSummary
 import knightlink.app.session.ScanStatus
@@ -74,6 +77,7 @@ import knightlink.app.voice.PushToTalkState
 import knightlink.app.voice.RecognitionError
 import knightlink.app.voice.VoiceSettings
 import knightlink.core.runtime.CaptureMode
+import knightlink.core.vehicle.VehicleIdentity
 import kotlin.math.roundToInt
 
 /** Wide enough for the cards and the live values side by side: any phone in landscape. */
@@ -100,6 +104,12 @@ class ConnectionActions(
     val onPassiveCapture: (Boolean) -> Unit = {},
     /** The driver typed what the dashboard shows: odometer and range as text, and whether it is the end of the drive (else the start). */
     val onDashboard: (odometer: String, range: String, end: Boolean) -> Unit = { _, _, _ -> },
+    /** After "can't read this car": negotiates and probes again. */
+    val onRetry: () -> Unit = {},
+    /** Reads the fault codes again (read-only). */
+    val onRefreshFaults: () -> Unit = {},
+    /** The deep scan switch for a car the app has no definition for. */
+    val onDeepScan: (Boolean) -> Unit = {},
 )
 
 /**
@@ -198,7 +208,13 @@ private fun LazyListScope.summaryItems(
     onShareLog: () -> Unit,
 ) {
     item(key = "talk", contentType = "card") { TalkCard(talk) }
-    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
+    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions, state.deepScan) }
+    if (state.ladder != LadderProgress.Idle) {
+        item(key = "ladder", contentType = "card") { LadderBanner(state.ladder) }
+    }
+    if (state.identity != null || state.faults.status != FaultsStatus.NOT_READ) {
+        item(key = "faults", contentType = "card") { IdentityAndFaultsCard(state.identity, state.faults, actions.onRefreshFaults) }
+    }
     item(key = "voice", contentType = "card") { VoiceCard(voice) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
     // Before the vehicle summary exists (the scan runs before polling starts), so it is its own item and not part of the drive card.
@@ -406,7 +422,7 @@ private fun RecognitionError.message(): Int = when (this) {
 }
 
 @Composable
-private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapter: LastAdapter?, actions: ConnectionActions) {
+private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapter: LastAdapter?, actions: ConnectionActions, deepScan: Boolean) {
     // LocalResources, unlike LocalContext.current.resources, is invalidated by a configuration change, so the text follows a language change.
     val resources = LocalResources.current
     val idle = status == ConnectionStatus.Idle
@@ -419,6 +435,14 @@ private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapt
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             )
+            // For a car the app has no definition for: whether it is also swept for data identifiers while parked. Read-only either way.
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.deep_scan_label), style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.deep_scan_hint), style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = deepScan, onCheckedChange = actions.onDeepScan)
+            }
             if (idle) {
                 // A remembered adapter is one tap away; choosing another is the secondary action. Without one, the picker is the way in.
                 if (lastAdapter != null) {
@@ -443,12 +467,78 @@ private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapt
                         Text(stringResource(R.string.action_allow_background))
                     }
                 }
+                if (status is ConnectionStatus.CannotRead) {
+                    Button(onClick = actions.onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_retry)) }
+                }
                 if (status == ConnectionStatus.Live) ScanSection(scan, resources, actions)
                 // One button for both kinds of link.
                 Button(onClick = actions.onDisconnect, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.action_disconnect))
                 }
             }
+        }
+    }
+}
+
+/** Which level of the learning ladder runs on a car the app has no definition for, and at the end that the car may be driven. */
+@Composable
+private fun LadderBanner(progress: LadderProgress) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite },
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when (progress) {
+                LadderProgress.Idle -> Unit
+                is LadderProgress.Running -> {
+                    Text(stringResource(R.string.ladder_running, progress.level, progress.secondsLeft), style = MaterialTheme.typography.titleMedium)
+                    LinearProgressIndicator(progress = { progress.fraction }, modifier = Modifier.fillMaxWidth())
+                    Text(
+                        stringResource(R.string.ladder_running_unit, progress.label, progress.done, progress.total),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                is LadderProgress.Complete -> Text(stringResource(R.string.ladder_complete), style = MaterialTheme.typography.titleMedium)
+                is LadderProgress.Stopped -> {
+                    Text(stringResource(R.string.ladder_stopped, progress.level), style = MaterialTheme.typography.titleMedium)
+                    Text(progress.reason, style = MaterialTheme.typography.bodySmall)
+                }
+                is LadderProgress.Flagged -> {
+                    Text(stringResource(R.string.ladder_flagged), style = MaterialTheme.typography.titleMedium)
+                    Text(progress.reason, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+/** A plain identity line and the fault codes the car reported, each with its generic description or "no description available"; read-only. */
+@Composable
+private fun IdentityAndFaultsCard(identity: VehicleIdentity?, faults: FaultSummary, onRefresh: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (identity != null) {
+                val name = listOfNotNull(identity.make, identity.model, identity.year?.toString()).joinToString(" ")
+                Text(name, style = MaterialTheme.typography.titleMedium)
+                val details = listOfNotNull(identity.vinLast4?.let { stringResource(R.string.identity_vin_end, it) }, identity.protocol).joinToString(" · ")
+                if (details.isNotEmpty()) Text(details, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(stringResource(R.string.faults_title), style = MaterialTheme.typography.titleSmall)
+            when (faults.status) {
+                FaultsStatus.NOT_READ -> Unit
+                FaultsStatus.READING -> Text(stringResource(R.string.faults_reading), style = MaterialTheme.typography.bodyMedium)
+                FaultsStatus.FAILED -> Text(faults.failure ?: stringResource(R.string.faults_failed), style = MaterialTheme.typography.bodyMedium)
+                FaultsStatus.READY -> {
+                    if (faults.items.isEmpty()) Text(stringResource(R.string.faults_none), style = MaterialTheme.typography.bodyMedium)
+                    for (item in faults.items) {
+                        Text(
+                            stringResource(R.string.fault_line, item.code, item.description ?: stringResource(R.string.fault_no_description)),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+            OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_read_faults)) }
         }
     }
 }
