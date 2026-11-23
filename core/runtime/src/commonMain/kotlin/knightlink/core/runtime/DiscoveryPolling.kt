@@ -81,7 +81,7 @@ public fun discoveryPollItems(result: ScanResult, plan: DidSweepPlan, constantIt
  * about the answers: most are refused, and what answers shows in the recording.
  */
 public fun candidateCheckItems(checks: CandidateChecks, answering: Set<Int>): List<PollItem> =
-    checks.checks.filter { it.requestCanId in answering }.flatMap { check ->
+    checks.checks.filter { it.requestCanId in answering || it.unprobed }.flatMap { check ->
         check.identifiers().map { did ->
             PollItem(
                 id = "candidate:" + discoveryItemId(check.requestCanId, did.toString(16).padStart(4, '0')),

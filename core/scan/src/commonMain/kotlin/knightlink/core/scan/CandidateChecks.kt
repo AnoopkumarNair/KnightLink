@@ -17,6 +17,8 @@ public data class CandidateCheck(
     val label: String,
     val ranges: List<DidRange> = emptyList(),
     val dids: List<String> = emptyList(),
+    /** Ask even when the probe did not list this unit: body units outside the engine-bay addresses (7E0-7E7) are never probed. */
+    val unprobed: Boolean = false,
 ) {
     public val requestCanId: Int get() = requestId.toInt(16)
 

@@ -552,6 +552,17 @@ class VehicleSessionSimulationTest {
     }
 
     @Test
+    fun aCandidateCheckMarkedUnprobedIsAskedEvenThoughTheProbeDidNotListTheUnit() = runTest {
+        val unprobed = CandidateChecks.parse(
+            """{"schemaVersion":1,"id":"t","checks":[{"requestId":"7E3","label":"u","unprobed":true,"ranges":[{"from":"1F10","to":"1F13"}]}]}""",
+        )
+        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = unprobed)))
+        rig.session.start()
+        run(30.seconds)
+        assertTrue(rig.simulated.current!!.requests().any { it.startsWith("221F1") })
+    }
+
+    @Test
     fun aLinkThatFailsWithAnErrorInsteadOfClosingIsAlsoRecovered() = runTest {
         val rig = rig()
         rig.session.start()
