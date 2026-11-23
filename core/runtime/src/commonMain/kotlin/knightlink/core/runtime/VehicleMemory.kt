@@ -30,6 +30,8 @@ public data class VehicleMemory(
     val fuel: FuelMemory = FuelMemory(),
     val body: BodyCheckMemory = BodyCheckMemory(),
     val model: String? = null,
+    /** The learning ladder that was finished on this vehicle; it is not run again while the units are the same. */
+    val ladder: LadderMemory? = null,
 ) {
     public fun toJson(): String = writer.encodeToString(serializer(), this)
 
@@ -48,6 +50,13 @@ public data class VehicleMemory(
         }
     }
 }
+
+/**
+ * A learning ladder that ran to its end on a vehicle: which units (request ids, sorted) answered the probe then, the highest level reached and
+ * how many data identifiers answered. No VIN, no values.
+ */
+@Serializable
+public data class LadderMemory(val units: List<String>, val highest: String, val answers: Int)
 
 /**
  * What polling has shown of one discovery identifier: how many answers, the last value (hex) and whether the value has ever differed. An

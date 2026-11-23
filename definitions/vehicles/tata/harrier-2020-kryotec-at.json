@@ -11,6 +11,11 @@
     "engine": "2.0L Kryotec diesel, Bosch EDC17C69",
     "fuel": "diesel",
     "wmi": "MAT",
+    "probeFingerprint": [
+      { "requestId": "7E0", "pids": 41 },
+      { "requestId": "7E1", "pids": 3 },
+      { "requestId": "7E4", "pids": 11 }
+    ],
     "tankCapacityL": 50,
     "fuelDensityKgPerL": 0.832
   },

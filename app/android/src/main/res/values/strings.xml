@@ -34,6 +34,9 @@
 
     <!-- Scan of the other units, and the dashboard readings -->
     <string name="action_retry">Retry</string>
+    <string name="action_skip">Skip</string>
+    <string name="action_scan_again">Scan again</string>
+    <string name="status_learning">Learning this car (%1$s) — keep it parked</string>
     <string name="action_read_faults">Read the fault codes again</string>
     <string name="faults_title">Fault codes</string>
     <string name="faults_reading">Reading the fault codes…</string>

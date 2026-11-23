@@ -88,7 +88,16 @@ public data class VehicleInfo(
     val wmi: String? = null,
     val tankCapacityL: Double? = null,
     val fuelDensityKgPerL: Double? = null,
+    /**
+     * What the standard probe of this very car showed: each listed unit answered with exactly that many supported PIDs. The manufacturer code
+     * only pre-selects; the car must also look like this one (another model of the make has other units). Empty for no requirement.
+     */
+    val probeFingerprint: List<ProbeFingerprint> = emptyList(),
 )
+
+/** One unit of a [VehicleInfo.probeFingerprint]: the request id (`7E0`) and how many service 01 PIDs it listed. */
+@Serializable
+public data class ProbeFingerprint(val requestId: String, val pids: Int)
 
 @Serializable
 public data class EcuDefinition(

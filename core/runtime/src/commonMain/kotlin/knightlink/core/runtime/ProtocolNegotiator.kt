@@ -226,8 +226,9 @@ public class ProtocolNegotiator(
     /** One `0100`, classified. A failed command (no prompt in time) is "no answer". */
     private suspend fun broadcast(step: String, timeout: Duration): Reply {
         val mark = timeSource.markNow()
+        val setHeader = step != "auto" && trying?.isReadable == true
         var lines = try {
-            askFunctional(timeout)
+            askFunctional(timeout, setHeader)
         } catch (e: CancellationException) {
             throw e
         } catch (e: AdapterDisconnectedException) {
@@ -243,7 +244,7 @@ public class ProtocolNegotiator(
             driver.reinitialize("the adapter reset during the protocol search")
             if (step == "auto") adapterCommand("ATSP0") else trying?.let { select(it) }
             lines = try {
-                askFunctional(timeout)
+                askFunctional(timeout, setHeader)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AdapterDisconnectedException) {
@@ -271,8 +272,9 @@ public class ProtocolNegotiator(
     }
 
     /** `0100` to the functional address: the header is set first, whatever an earlier session left (or a reset cleared) in the adapter. */
-    private suspend fun askFunctional(timeout: Duration): List<String> {
-        driver.command("ATSH7DF")
+    private suspend fun askFunctional(timeout: Duration, setHeader: Boolean): List<String> {
+        // Only on 11-bit CAN, where the header is a three-digit identifier; on a K-line or a 29-bit bus (or while the adapter still searches) it is left alone.
+        if (setHeader) driver.command("ATSH7DF")
         return driver.command("0100", timeout)
     }
 

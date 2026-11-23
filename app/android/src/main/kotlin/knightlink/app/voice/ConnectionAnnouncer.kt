@@ -99,7 +99,7 @@ class ConnectionAnnouncer(
                 farewell
             }
             is ConnectionStatus.Connecting, ConnectionStatus.Initialising, is ConnectionStatus.Negotiating, is ConnectionStatus.Probing -> null
-            is ConnectionStatus.CannotRead -> null
+            is ConnectionStatus.CannotRead, is ConnectionStatus.Learning -> null
             is ConnectionStatus.WaitingForIgnition -> {
                 // The link is up again, so an outage is over; the ignition is the story now.
                 endOutage()

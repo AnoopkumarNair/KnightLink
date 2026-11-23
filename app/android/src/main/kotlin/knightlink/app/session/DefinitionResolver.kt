@@ -29,7 +29,7 @@ class DefinitionResolver(
         if (vin != null) {
             for (id in store.vehicleIds()) {
                 val match = try {
-                    match(id, vin)
+                    match(id, vin, report)
                 } catch (e: DefinitionStoreException) {
                     log("definition $id left out: ${e.message}")
                     null
@@ -40,10 +40,20 @@ class DefinitionResolver(
         return ResolvedVehicle(generic, known = false)
     }
 
-    private fun match(id: String, vin: String): ResolvedVehicle? {
+    private fun match(id: String, vin: String, report: CapabilityReport): ResolvedVehicle? {
         val info = store.vehicleInfo(id) ?: return null
         val wmi = info.wmi ?: return null
         if (!vin.startsWith(wmi, ignoreCase = true)) return null
+        // The manufacturer code only pre-selects: another model of the make (a car with other units) is an unknown car.
+        for (unit in info.probeFingerprint) {
+            val found = report.ecus.firstOrNull { it.requestId.equals(unit.requestId, ignoreCase = true) }
+            if (found == null || found.supportedPids.size != unit.pids) {
+                log(
+                    "definition $id left out: the probe does not look like it (${unit.requestId}: ${found?.supportedPids?.size ?: "no answer"} PIDs, the definition says ${unit.pids})",
+                )
+                return null
+            }
+        }
         val candidates = store.candidateChecks(id)
         if (candidates != null && !candidates.appliesTo(vin)) return null
         // A remembered probe has its VIN masked after the manufacturer code: the year is then unknown, and the manufacturer code decides.

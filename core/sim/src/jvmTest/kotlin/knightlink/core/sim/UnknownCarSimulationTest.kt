@@ -314,6 +314,13 @@ class UnknownCarSimulationTest {
             val reason = assertIs<CannotReadReason.UnsupportedProtocol>(state.reason)
             assertTrue("29 bit" in reason.protocolName, reason.protocolName)
             assertEquals("A$code", rig.session.facts.value.dpn)
+            // A 29-bit or K-line trial is not given the functional header of 11-bit CAN.
+            val received = rig.adapter.received
+            for ((index, command) in received.withIndex()) {
+                if (command == "ATTP7" || command == "ATTP9") {
+                    assertTrue(received.drop(index + 1).takeWhile { !it.startsWith("ATTP") }.none { it.startsWith("ATSH") }, "no ATSH in a $command trial")
+                }
+            }
             assertTrue(rig.adapter.received.none { it.startsWith("ATSH") && it != "ATSH7DF" }, "nothing is asked of the units over a bus the app cannot read")
             rig.session.stop()
         }

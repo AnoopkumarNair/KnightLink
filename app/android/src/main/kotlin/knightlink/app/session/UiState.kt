@@ -262,6 +262,9 @@ sealed interface ConnectionStatus {
 
     data class Probing(val stage: ProbeStage) : ConnectionStatus
 
+    /** The learning ladder runs on a car without a definition (see [LadderProgress]); [level] is `L1`..`L4`. The car is to stay parked. */
+    data class Learning(val level: String) : ConnectionStatus
+
     /** The adapter is finding out which protocol the car speaks; [round] counts up while the car does not answer. */
     data class Negotiating(val round: Int) : ConnectionStatus
 

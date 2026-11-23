@@ -81,6 +81,7 @@ class LearningLadderSimulationTest {
         level: LadderLevel = LadderLevel.L4,
         deepScan: Boolean = true,
         ladder: LadderConfig? = LadderConfig(deepScan = deepScan),
+        memory: knightlink.core.runtime.VehicleMemoryStore? = null,
     ): Rig {
         val transport = SimulatedTransport(vehicle = { vehicle }, config = VirtualElm327.Config(responseDelay = 45.milliseconds))
         val resolver = VehicleResolver { ResolvedVehicle(generic, known = false, allowedLevel = level) }
@@ -95,6 +96,7 @@ class LearningLadderSimulationTest {
             readFaults = true,
             faultDictionary = dictionary,
             ladder = ladder,
+            memory = memory,
         )
         val log = ArrayList<String>()
         val sink = SessionEventSink { event -> log += event.toString() }
@@ -158,8 +160,14 @@ class LearningLadderSimulationTest {
         // Only F190 goes to the units that were not known yet.
         val discoveryRequests = rig.sent.withIndex().filter { (_, c) -> c.startsWith("ATSH7") && c.removePrefix("ATSH").toInt(16) !in 0x7E0..0x7E7 }
         assertEquals(setOf("22F190"), dids(rig.sent).intersect(setOf("22F190")))
-        assertEquals(setOf("ATCM700", "ATCF700", "ATCM7F8", "ATCF7E8"), rig.sent.filter { it.startsWith("ATC") || it.startsWith("ATFC") }.toSet())
-        assertTrue(discoveryRequests.size >= 240, "${discoveryRequests.size} identifiers asked")
+        assertEquals(
+            setOf("ATCM700", "ATCF700", "ATFCSH726", "ATFCSD300000", "ATFCSM1", "ATFCSM0", "ATCM7F8", "ATCF7E8"),
+            rig.sent.filter {
+                it.startsWith("ATC") ||
+                    it.startsWith("ATFC")
+            }.toSet(),
+        )
+        assertTrue(discoveryRequests.size >= 230, "${discoveryRequests.size} identifiers asked")
         assertHardLines(rig.sent)
     }
 
@@ -183,14 +191,63 @@ class LearningLadderSimulationTest {
     }
 
     @Test
-    fun theDeepScanSwitchKeepsTheLadderAtLevelTwo() = runTest {
+    fun theDeepScanSwitchOffKeepsTheLadderAtLevelOne() = runTest {
         val rig = rig(VirtualVehicle(listOf(engine(), bodyUnit(0x726))), level = LadderLevel.L4, deepScan = false)
         rig.session.start()
         run(5.minutes)
-        assertIs<LadderState.Complete>(rig.session.ladder.value)
-        assertEquals(LadderLevel.L2, (rig.session.ladder.value as LadderState.Complete).highest)
+        assertEquals(LadderLevel.L1, (assertIs<LadderState.Complete>(rig.session.ladder.value)).highest)
         assertFalse("22F100" in dids(rig.sent))
-        assertTrue(rig.sent.none { payload(it).startsWith("220") || payload(it).startsWith("222") })
+        assertTrue(rig.sent.none { it.startsWith("ATCM700") || it.startsWith("ATSH726") }, "no discovery without the deep scan")
+    }
+
+    @Test
+    fun skipEndsTheLadderCleanlyAndPollingGoesOn() = runTest {
+        val rig = rig(VirtualVehicle(listOf(engine(), bodyUnit(0x726))), level = LadderLevel.L3)
+        rig.session.start()
+        backgroundScope.launch {
+            delay(20.seconds)
+            rig.session.skipLadder()
+        }
+        run(3.minutes)
+        val state = assertIs<LadderState.Stopped>(rig.session.ladder.value)
+        assertTrue("skipped" in state.reason, state.reason)
+        assertIs<SessionState.Polling>(rig.session.state.value)
+        // The receive filter is back to the OBD one before polling.
+        assertTrue(rig.sent.lastIndexOf("ATCM7F8") > rig.sent.lastIndexOf("ATCM700"))
+    }
+
+    @Test
+    fun theParkedTimeBoxIsHonestEvenInTheMiddleOfAUnit() = runTest {
+        val rig = rig(VirtualVehicle(listOf(engine())), level = LadderLevel.L3, ladder = LadderConfig(totalBox = 40.seconds, l3PerUnit = 5.minutes))
+        rig.session.start()
+        run(3.minutes)
+        val state = assertIs<LadderState.Stopped>(rig.session.ladder.value)
+        assertTrue("time box" in state.reason, state.reason)
+        assertIs<SessionState.Polling>(rig.session.state.value)
+    }
+
+    @Test
+    fun aCompletedLadderIsRememberedPerCarAndRunsAgainOnlyOnRequest() = runTest {
+        val memory = knightlink.core.runtime.InMemoryVehicleMemoryStore()
+        val vehicle = VirtualVehicle(listOf(engine()))
+        val first = rig(vehicle, level = LadderLevel.L2, memory = memory)
+        first.session.start()
+        run(3.minutes)
+        assertIs<LadderState.Complete>(first.session.ladder.value)
+        assertEquals(1, first.events.count { it == "ladder: L1 starts" })
+        first.session.stop()
+
+        val second = rig(vehicle, level = LadderLevel.L2, memory = memory)
+        second.session.start()
+        run(2.minutes)
+        assertIs<SessionState.Polling>(second.session.state.value)
+        assertEquals(0, second.events.count { it == "ladder: L1 starts" }, "the car was learned on an earlier connection")
+        assertTrue(second.events.any { it.startsWith("ladder: not run: it was done on this car") }, second.events.toString())
+
+        assertTrue(second.session.rerunLadder())
+        run(3.minutes)
+        assertEquals(1, second.events.count { it == "ladder: L1 starts" })
+        assertIs<SessionState.Polling>(second.session.state.value)
     }
 
     @Test

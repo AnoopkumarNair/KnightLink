@@ -16,6 +16,7 @@ fun ConnectionStatus.text(resources: Resources): String = when (this) {
     ConnectionStatus.Initialising -> resources.getString(R.string.status_initialising)
     is ConnectionStatus.Probing -> resources.getString(R.string.status_probing, resources.getString(stage.textRes()))
     is ConnectionStatus.Negotiating -> resources.getString(R.string.status_negotiating)
+    is ConnectionStatus.Learning -> resources.getString(R.string.status_learning, level)
     is ConnectionStatus.CannotRead -> when (val why = reason) {
         CannotReadReason.NoResponse -> resources.getString(R.string.status_cannot_read_no_response)
         is CannotReadReason.UnsupportedProtocol -> resources.getString(R.string.status_cannot_read_protocol, why.protocolName)

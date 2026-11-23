@@ -412,6 +412,20 @@ class SessionController(
         connectionLog?.app("deep scan ${if (enabled) "on" else "off"}")
     }
 
+    /** Ends the learning ladder that runs now; the adapter is put back and polling goes on. */
+    fun skipLadder() {
+        synchronized(lock) { current }?.session?.skipLadder()
+        connectionLog?.app("learning ladder skipped by the user")
+    }
+
+    /** "Scan again": runs the learning ladder once more on this car (it is otherwise run once per car and set of units). False when it cannot now. */
+    fun rerunLadder(): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        val accepted = session.rerunLadder()
+        connectionLog?.app("learning ladder again: ${if (accepted) "started" else "not possible now"}")
+        return accepted
+    }
+
     /** Reads the fault codes and the readiness again (read-only, nothing is cleared). False when the session is not polling. */
     fun refreshFaults(): Boolean {
         val session = synchronized(lock) { current }?.session ?: return false
@@ -606,8 +620,10 @@ class SessionController(
             val make = identity?.make
             // The rate is only meaningful while polling; elsewhere (reconnecting, recovering) the old number would mislead.
             val rate = session.rates.value.takeIf { state is SessionState.Polling && it.window.isPositive() }?.requestsPerSecond
+            val ladder = ladderProgress(run, session.ladder.value.toProgress())
             _uiState.value = UiState(
-                state.toStatus(),
+                // What the car is asked for while the ladder runs is said in the status, so the notification does not say "Probing".
+                (ladder as? LadderProgress.Running)?.let { ConnectionStatus.Learning(it.level) } ?: state.toStatus(),
                 vehicle,
                 liveValues(session.telemetry.value, started.elapsedNow(), staleAfter, periods),
                 rate,
@@ -621,7 +637,7 @@ class SessionController(
                 facts.known,
                 session.faults.value.toSummary(),
                 make?.let { data?.models?.modelsFor(it) }.orEmpty(),
-                ladderProgress(run, session.ladder.value.toProgress()),
+                ladder,
                 deepScan.value,
             )
         }

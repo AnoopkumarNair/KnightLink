@@ -218,6 +218,8 @@ class MainActivity : ComponentActivity() {
                 onRetry = { controller?.retry() },
                 onRefreshFaults = { controller?.refreshFaults() },
                 onDeepScan = { controller?.setDeepScan(it) },
+                onSkipLadder = { controller?.skipLadder() },
+                onRescan = { controller?.rerunLadder() },
                 onCancelScan = { controller?.cancelFullScan() },
                 onDismissScan = { controller?.dismissFullScan() },
                 backgroundAllowed = backgroundAllowed,

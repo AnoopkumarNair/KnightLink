@@ -141,16 +141,52 @@ class LadderGuardTest {
         run {
             val guard = guard(config)
             assertNull(guard.begin())
-            volts = "11.3V"
+            volts = "11.8V"
             val aborted = assertFailsWith<LevelAborted> { repeat(4) { guard.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), it.toByte()), 1) } }
-            assertTrue("battery" in aborted.reason)
+            assertTrue("battery" in aborted.reason, "a fall of 0.8 V from the start value: ${aborted.reason}")
         }
-        // With the engine running a reading under 12 V is the alternator's business, not a reason to stop.
+        // The adapter reads low through a diode: 11.9 V at the start is no reason to stop, a steady value stays quiet, and so does the engine running.
         rpm = 800
         volts = "11.9V"
         val running = guard(config)
         assertNull(running.begin())
         repeat(6) { running.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), it.toByte()), 1) }
+        volts = "11.3V"
+        repeat(6) { running.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), it.toByte()), 1) }
+        volts = "10.8V"
+        assertFailsWith<LevelAborted> { repeat(4) { running.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), it.toByte()), 1) } }
+    }
+
+    @Test
+    fun withoutAReadableVoltageAtTheStartTheLadderRunsWithoutTheVoltageGuard() = runTest {
+        val config = LadderGuard.Config(checkEvery = 2)
+        volts = "?"
+        val guard = guard(config)
+        assertNull(guard.begin())
+        assertEquals(false, guard.voltageGuarded)
+        volts = "9.0V"
+        repeat(6) { guard.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), it.toByte()), 1) }
+    }
+
+    @Test
+    fun afterTheCarStartsToMoveAtMostTenMoreRequestsGoOut() = runTest {
+        val guard = guard()
+        assertNull(guard.begin())
+        speed = 7
+        val before = sent.size
+        assertFailsWith<LevelAborted> { repeat(40) { guard.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), it.toByte()), 1) } }
+        assertTrue(sent.count { it.startsWith("22") } - sent.take(before).count { it.startsWith("22") } <= 10, sent.toString())
+    }
+
+    @Test
+    fun aStopReasonEndsEverythingBeforeTheNextRequest() = runTest {
+        var reason: String? = null
+        val guard = LadderGuard(link, testTimeSource, stopWhen = { reason })
+        guard.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), 0x00), 1)
+        reason = "skipped by the user"
+        val aborted = assertFailsWith<LevelAborted> { guard.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), 0x01), 1) }
+        assertEquals(AbortScope.LADDER, aborted.scope)
+        assertEquals(1, sent.count { it.startsWith("22") })
     }
 
     @Test
@@ -158,7 +194,7 @@ class LadderGuardTest {
         speed = 5
         assertTrue(guard().begin()!!.contains("moves"))
         speed = 0
-        volts = "11.0V"
+        volts = "10.8V"
         assertTrue(guard().begin()!!.contains("battery"))
     }
 }

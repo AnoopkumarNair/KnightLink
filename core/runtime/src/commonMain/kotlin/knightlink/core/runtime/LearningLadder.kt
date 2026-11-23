@@ -136,6 +136,8 @@ internal class LearningLadder(
     private val faultConfig: FaultReader.Config = FaultReader.Config(),
     private val guardConfig: LadderGuard.Config = LadderGuard.Config(),
     private val canAsk: (LadderLevel) -> Boolean = { true },
+    /** Asked before every request: true when the user skipped the ladder. */
+    private val skip: () -> Boolean = { false },
 ) {
     private class Target(val requestId: Int, val responseId: Int, val label: String) {
         var stopped = false
@@ -145,13 +147,22 @@ internal class LearningLadder(
         link,
         timeSource,
         guardConfig.copy(minInterval = (MILLIS / config.requestsPerSecond).toLong().milliseconds),
+        stopWhen = {
+            if (skip()) {
+                "skipped by the user"
+            } else if (total.elapsedNow() >= config.totalBox) {
+                "the parked time box of ${config.totalBox} is used"
+            } else {
+                null
+            }
+        },
     )
     private val known = LinkedHashMap<Int, Target>()
     private var answers = 0
     private var level = LadderLevel.L0
     private var wideReceive = false
     private var customFlowControl: Int? = null
-    private lateinit var total: TimeMark
+    private var total: TimeMark = timeSource.markNow()
 
     /** How many requests the ladder sent (the guard's count, the safety reads included). */
     val requestsSent: Int get() = guard.sent
@@ -165,11 +176,12 @@ internal class LearningLadder(
                 note("not run: $reason")
                 return LadderResult.Skipped(reason)
             }
+            if (!guard.voltageGuarded) note("the battery voltage could not be read at the start: the ladder runs without the voltage guard")
             if (baselineFaults == null) baselineFaults = readFaults()
             var levelAborts = 0
             for (next in listOf(LadderLevel.L1, LadderLevel.L2, LadderLevel.L3, LadderLevel.L4)) {
                 if (next > maxLevel) break
-                if (next >= LadderLevel.L3 && !deepScan()) {
+                if (next >= LadderLevel.L2 && !deepScan()) {
                     note("${next.name} and above not run: the deep scan is off")
                     break
                 }
@@ -196,6 +208,8 @@ internal class LearningLadder(
                         if (e.reprobe && !probeAgain()) return stopped(next, "the bus does not answer after: ${e.reason}")
                     }
                 }
+                // The receive filter and flow control the level changed are put back before the fault codes are read: they read the engine-bay units.
+                restoreAdapter()
                 flagged(baselineFaults)?.let { reason ->
                     note("FLAGGED after ${next.name}: $reason; nothing more is asked")
                     return LadderResult.Flagged(reason)
@@ -242,7 +256,10 @@ internal class LearningLadder(
                 }
                 progress(LadderLevel.L1, unit.label, done++, all.size * ids.size, config.l1Box - box.elapsedNow())
                 try {
-                    ask(unit, did)
+                    if (ask(unit, did) == Answer.Unsupported) {
+                        note("L1 ${unit.label}: does not support service 22 here")
+                        break
+                    }
                 } catch (e: LevelAborted) {
                     if (e.scope == AbortScope.UNIT) {
                         stopUnit(unit, e)
@@ -258,7 +275,7 @@ internal class LearningLadder(
 
     private suspend fun discovery() {
         setupReceive()
-        val ids = (REQUEST_FIRST..REQUEST_LAST).filter { it != FUNCTIONAL && it !in OBD_RESPONSES && it !in known }
+        val ids = (REQUEST_FIRST..REQUEST_LAST).filter { it != FUNCTIONAL && it !in OBD_RESPONSES }
         val box = timeSource.markNow()
         var found = 0
         for ((index, id) in ids.withIndex()) {
@@ -267,25 +284,33 @@ internal class LearningLadder(
                 break
             }
             progress(LadderLevel.L2, hex3(id), index, ids.size, config.l2Box - box.elapsedNow())
-            if (id in known) continue
-            // One frame is enough to know a unit is there, so flow control is not set up for a unit that may not exist.
-            val response = send(id, readDid(DID_VIN), 1) ?: continue
-            val responder = response.respondingIds.firstOrNull() ?: response.messages.firstOrNull()?.sourceId ?: continue
+            // A known unit is not asked again, and nothing is sent to an identifier a known unit answers from: nothing listens there.
+            if (id in known || known.values.any { it.responseId == id }) continue
+            // One frame is enough to know something answers, so flow control is not set up for an id that may not exist.
+            val first = send(id, readDid(DID_VIN), 1) ?: continue
+            val responder = first.respondingIds.firstOrNull() ?: first.messages.firstOrNull()?.sourceId ?: continue
             if (known.values.any { it.responseId == responder }) continue
+            // The answer must be this request's: ask once more, whole, and take the unit only when its reply names F190 (or refuses service 22).
+            selectFlowControl(id)
+            delay(MULTI_FRAME_SETTLE)
+            val whole = send(id, readDid(DID_VIN), null) ?: continue
+            val own = whole.messages.filter { it.sourceId == responder }
+            val positive = own.filterIsInstance<DiagnosticResponse.Positive>().firstOrNull { it.service == SERVICE_READ_DATA && it.data.matches(DID_VIN) }
+            val refused = own.filterIsInstance<DiagnosticResponse.Negative>().firstOrNull { it.service == SERVICE_READ_DATA }
+            if (positive == null && refused == null) {
+                note("L2: ${hex3(id)}: a reply from ${hex3(responder)} was not the answer to F190 and is dropped")
+                continue
+            }
             known[id] = Target(id, responder, hex3(id))
             found++
-            val positive = response.messages.filterIsInstance<DiagnosticResponse.Positive>().firstOrNull { it.service == SERVICE_READ_DATA }
-            note(
-                "L2: a unit answers ${hex3(id)} from ${hex3(responder)}" + (
-                    positive?.let {
-                        " (F190, ${it.data.size - 2} bytes)"
-                    } ?: " (refused or cut short)"
-                    ),
-            )
+            note("L2: a unit answers ${hex3(id)} from ${hex3(responder)}" + (positive?.let { " (F190, ${it.data.size - 2} bytes)" } ?: " (refuses F190)"))
             answers++
         }
         note("L2: $found more units found; ${known.size} in all: ${known.keys.sorted().joinToString(" ") { hex3(it) }}")
     }
+
+    private fun ByteArray.matches(did: Int): Boolean =
+        size >= 2 && (((this[0].toInt() and 0xFF) shl 8) or (this[1].toInt() and 0xFF)) == did
 
     // L3 -----------------------------------------------------------------------------------------------------
 
@@ -360,7 +385,8 @@ internal class LearningLadder(
             response = send(unit.requestId, readDid(did), null)
             own = response?.messages?.filter { it.sourceId == unit.responseId }.orEmpty()
         }
-        val positive = own.filterIsInstance<DiagnosticResponse.Positive>().firstOrNull { it.service == SERVICE_READ_DATA && it.data.size >= 2 }
+        // Only the answer to this identifier counts: a late reply to an earlier request names another one and is dropped.
+        val positive = own.filterIsInstance<DiagnosticResponse.Positive>().firstOrNull { it.service == SERVICE_READ_DATA && it.data.matches(did) }
         if (positive != null) {
             answers++
             note("${level.name} ${unit.label} ${hex4(did)} -> ${positive.data.size - 2} bytes")
@@ -368,7 +394,7 @@ internal class LearningLadder(
         }
         val negative = own.filterIsInstance<DiagnosticResponse.Negative>().firstOrNull { it.service == SERVICE_READ_DATA }
         return when {
-            negative != null && negative.code == NRC_SERVICE_NOT_SUPPORTED -> Answer.Unsupported
+            negative != null && (negative.code == NRC_SERVICE_NOT_SUPPORTED || negative.code == NRC_SERVICE_NOT_IN_SESSION) -> Answer.Unsupported
             negative != null -> Answer.Refused
             response == null || (own.isEmpty() && response.respondingIds.isEmpty() && response.messages.isEmpty()) -> Answer.Silent
             else -> Answer.Other
@@ -400,19 +426,25 @@ internal class LearningLadder(
 
     // After a level ------------------------------------------------------------------------------------------
 
-    private suspend fun readFaults(): FaultReport = FaultReader(guard, events, timeSource, faultConfig).read(units)
+    private suspend fun readFaults(): FaultReport {
+        // A stop of the guard (the car moves, Skip, the time box) must end the reading, not count as a unit that stayed silent.
+        val config = faultConfig.copy(isLinkLoss = { it is LevelAborted || faultConfig.isLinkLoss(it) })
+        return FaultReader(guard, events, timeSource, config).read(units)
+    }
 
-    /** A reason when the fault codes or the lamp are not as before the ladder; null when they are the same (or fewer). */
+    /**
+     * A reason when the fault codes or the lamp are not as before the ladder; null when they are the same (or fewer). Only what both readings
+     * could see is compared: a unit or a service that did not answer in either reading says nothing, and the lamp is compared only when the first
+     * reading found it. A reading the guard stops ends the ladder ([LevelAborted] goes up).
+     */
     private suspend fun flagged(before: FaultReport?): String? {
-        val after = try {
-            readFaults()
-        } catch (e: LevelAborted) {
-            return null
-        }
-        val old = before?.faults?.map { it.code to it.kind }?.toSet().orEmpty()
-        val fresh = after.faults.filter { (it.code to it.kind) !in old }
+        val after = readFaults()
+        if (before == null) return null
+        val comparable = before.answered intersect after.answered
+        val old = before.faults.map { Triple(it.code, it.kind, it.ecu) }.toSet()
+        val fresh = after.faults.filter { after.answerKey(it) in comparable && Triple(it.code, it.kind, it.ecu) !in old }
         if (fresh.isNotEmpty()) return "a new fault code appeared: ${fresh.joinToString { it.code }}"
-        if (after.readiness?.milOn == true && before?.readiness?.milOn != true) return "the warning lamp is on"
+        if (before.readiness?.milOn == false && after.readiness?.milOn == true) return "the warning lamp is on"
         return null
     }
 
@@ -486,7 +518,8 @@ internal class LearningLadder(
     // Progress and the log -------------------------------------------------------------------------------------
 
     private fun progress(level: LadderLevel, label: String, done: Int, total: Int, left: Duration) {
-        publish(LadderState.Running(level, label, done, total, left.inWholeSeconds.coerceAtLeast(0).toInt()))
+        val totalLeft = config.totalBox - this.total.elapsedNow()
+        publish(LadderState.Running(level, label, done, total, minOf(left, totalLeft).inWholeSeconds.coerceAtLeast(0).toInt()))
     }
 
     private suspend fun note(detail: String) {
@@ -517,6 +550,7 @@ internal class LearningLadder(
         const val SERVICE_READ_DATA = 0x22
         const val DID_VIN = 0xF190
         const val NRC_SERVICE_NOT_SUPPORTED = 0x11
+        const val NRC_SERVICE_NOT_IN_SESSION = 0x7F
         val MULTI_FRAME_SETTLE: Duration = 500.milliseconds
         const val WIDE_MASK = "700"
         const val STANDARD_MASK = "7F8"

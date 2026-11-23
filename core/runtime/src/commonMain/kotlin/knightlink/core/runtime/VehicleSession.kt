@@ -259,6 +259,11 @@ public class VehicleSession(
     private var vehicleKnown = config.resolver == null
     private var allowedLevel = if (config.resolver == null) LadderLevel.L5 else LadderLevel.L1
     private var deepScanOn = config.ladder?.deepScan ?: true
+    private var ladderMemory: LadderMemory? = null
+
+    @Volatile
+    private var ladderSkip = false
+    private val ladderRequests = Channel<Unit>(Channel.CONFLATED)
     private var scanPlan: DidSweepPlan? = config.scanPlan
     private var candidateChecks: CandidateChecks? = config.candidateChecks
     private var seedScan: ScanResult? = config.seedScan
@@ -592,6 +597,7 @@ public class VehicleSession(
         // A scan asked for on an earlier connection is not started on this one, possibly much later and with the car on the road.
         scanRequests.tryReceive()
         faultRequests.tryReceive()
+        ladderRequests.tryReceive()
         retryRequests.tryReceive()
         connectionProtocol = null
         if (_captureMode.value == CaptureMode.PASSIVE) {
@@ -696,6 +702,7 @@ public class VehicleSession(
         memoryProbe = stored.probe
         lastScan = stored.scan
         userModel = stored.model
+        ladderMemory = stored.ladder
         publishFacts()
         history.clear()
         history.putAll(stored.discovery)
@@ -721,6 +728,7 @@ public class VehicleSession(
                 vehicleKey = key
                 lastScan = null
                 userModel = null
+                ladderMemory = null
                 history.clear()
                 gear = GearEstimator()
                 fuel = FuelTracker()
@@ -936,6 +944,7 @@ public class VehicleSession(
                     fuel = fuel.model,
                     body = BodyCheckMemory(bodyCheckId, bodyProgress.toMap()),
                     model = userModel,
+                    ladder = ladderMemory,
                 ),
             )
             memoryDirty = false
@@ -1198,13 +1207,13 @@ public class VehicleSession(
 
     /**
      * How far up the learning ladder this car may go now: a car with a definition all the way; any other as far as the resolver allows, but
-     * without the user's deep-scan switch only to L2, and to L5 (passive capture, `10 01`) only when the user opted in.
+     * without the user's deep-scan switch only to L1, and to L5 (passive capture, `10 01`) only when the user opted in.
      */
     private fun effectiveLevel(): LadderLevel {
         if (vehicleKnown) return LadderLevel.L5
         var level = allowedLevel
         if (config.ladder?.passiveOptIn == true && level >= LadderLevel.L4) level = LadderLevel.L5
-        return if (!deepScanOn && level > LadderLevel.L2) LadderLevel.L2 else level
+        return if (!deepScanOn && level > LadderLevel.L1) LadderLevel.L1 else level
     }
 
     private fun allows(level: LadderLevel): Boolean = effectiveLevel() >= level
@@ -1212,6 +1221,24 @@ public class VehicleSession(
     /** Switches the deep scan (levels L3 and L4 of the learning ladder) on or off. It applies from the next level the ladder starts, and to the next connection. */
     public fun setDeepScan(enabled: Boolean) {
         deepScanOn = enabled
+    }
+
+    /** Ends the learning ladder that runs now, cleanly: the adapter is put back and polling goes on. Does nothing when none runs. */
+    public fun skipLadder() {
+        ladderSkip = true
+    }
+
+    /**
+     * Runs the learning ladder again ("scan again"), parked, in place of polling for a while. It also runs on every level, whatever was remembered.
+     *
+     * @return false, and does nothing, when this car has a definition, the ladder is not configured, or the session is not polling the car
+     */
+    public fun rerunLadder(): Boolean {
+        if (vehicleKnown || config.ladder == null || _state.value !is SessionState.Polling) return false
+        if (_captureMode.value == CaptureMode.PASSIVE) return false
+        val current = _scan.value
+        if (current is ScanState.Starting || current is ScanState.Running) return false
+        return ladderRequests.trySend(Unit).isSuccess
     }
 
     /**
@@ -1307,11 +1334,19 @@ public class VehicleSession(
      * only as far as [effectiveLevel] says. Parked, read-only; polling has not started yet. Errors cost the ladder, not the connection, except a
      * lost link.
      */
-    private suspend fun runLadder(driver: Elm327Driver, report: CapabilityReport) {
+    private suspend fun runLadder(driver: Elm327Driver, report: CapabilityReport, again: Boolean = false) {
         val settings = config.ladder ?: return
         if (vehicleKnown || report.ecus.isEmpty()) return
         val top = minOf(effectiveLevel(), LadderLevel.L4)
         if (top < LadderLevel.L1) return
+        // A ladder that ran to its end on this car is not run on every connection: only when the units are not the same, or on request.
+        val units = report.ecus.map { it.requestId }.sorted()
+        val done = ladderMemory
+        if (!again && done != null && done.units == units && LadderLevel.valueOf(done.highest) >= top) {
+            note(SessionEvents.LADDER, "not run: it was done on this car (${done.highest}, ${done.answers} answers) and the units are the same")
+            return
+        }
+        ladderSkip = false
         val ladder = LearningLadder(
             link = driver,
             units = report.ecus,
@@ -1321,6 +1356,7 @@ public class VehicleSession(
             events = events,
             timeSource = timeSource,
             deepScan = { deepScanOn },
+            skip = { ladderSkip },
             publish = { _ladder.value = it },
             faultConfig = config.faultReader.copy(isLinkLoss = { it is AdapterDisconnectedException || it is TransportException }),
         )
@@ -1341,7 +1377,12 @@ public class VehicleSession(
             return
         }
         when (result) {
-            is LadderResult.Complete -> _ladder.value = LadderState.Complete(result.highest, result.answers)
+            is LadderResult.Complete -> {
+                _ladder.value = LadderState.Complete(result.highest, result.answers)
+                ladderMemory = LadderMemory(units, result.highest.name, result.answers)
+                memoryDirty = true
+                saveMemory()
+            }
             is LadderResult.Stopped -> _ladder.value = LadderState.Stopped(result.level, result.reason, result.answers)
             is LadderResult.Flagged -> {
                 _ladder.value = LadderState.Flagged(result.reason)
@@ -1403,6 +1444,11 @@ public class VehicleSession(
             }
             if (end is PollEnd.FaultsRequested) {
                 readFaults(driver, known.report)
+                lastAnswer = timeSource.markNow()
+                continue
+            }
+            if (end is PollEnd.LadderRequested) {
+                runLadder(driver, known.report, again = true)
                 lastAnswer = timeSource.markNow()
                 continue
             }
@@ -1680,6 +1726,8 @@ public class VehicleSession(
         /** The fault codes were asked for again ([refreshFaults]). */
         data object FaultsRequested : PollEnd
 
+        data object LadderRequested : PollEnd
+
         /** The time limit that the caller gave passed. */
         data object TimeUp : PollEnd
 
@@ -1768,6 +1816,14 @@ public class VehicleSession(
                 trouble.complete(PollEnd.PassiveRequested)
             }
         }
+        val ladderWatcher = if (!listenForScan) {
+            null
+        } else {
+            launch {
+                ladderRequests.receive()
+                trouble.complete(PollEnd.LadderRequested)
+            }
+        }
         val faultWatcher = if (!listenForScan) {
             null
         } else {
@@ -1790,6 +1846,7 @@ public class VehicleSession(
         scanWatcher?.cancelAndJoin()
         captureWatcher?.cancelAndJoin()
         faultWatcher?.cancelAndJoin()
+        ladderWatcher?.cancelAndJoin()
         timer?.cancelAndJoin()
         reason
     }

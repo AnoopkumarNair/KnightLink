@@ -38,7 +38,10 @@ internal class LevelAborted(val scope: AbortScope, val reason: String, val unit:
  *   caller asks (the read-only policy of the adapter driver refuses them too; this is the second lock).
  * - Pace: at most one request every [Config.minInterval] (ten a second).
  * - The car: every [Config.checkEvery] requests or [Config.checkInterval], the speed, the engine state and the battery voltage are read; speed above 0,
- *   the engine started or stopped, or a battery under [Config.minVolts] with the engine off end the whole ladder.
+ *   the engine started or stopped, or a battery that fell more than [Config.maxDrop] below what it read at the start (or under [Config.minVolts]) end the
+ *   whole ladder. The adapter reads the battery through a diode, so only the change counts, not the absolute 12 V of a battery meter. When the first
+ *   reading fails the voltage is not guarded ([voltageGuarded]).
+ * - [stopWhen]: asked before every request; a reason ends the whole ladder (the user skipped it, the parked time box is used).
  * - Refusals: [Config.unitRefusalLimit] security or conditions refusals (`33`, `22`) in a row from one unit stop that unit; such refusals from more
  *   than half of the units asked in a level stop the level. `31` (request out of range) is the ordinary "not here" of a sweep and counts for neither.
  * - Bus trouble: [Config.busErrorLimit] answers with CAN ERROR, BUS ERROR, an ERRxx status, LV RESET or BUFFER FULL in a level stop the level (and
@@ -50,13 +53,15 @@ internal class LadderGuard(
     private val link: DiagnosticLink,
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val config: Config = Config(),
+    private val stopWhen: () -> String? = { null },
 ) : DiagnosticLink {
     data class Config(
         val speedRequestId: Int = 0x7E0,
         val minInterval: Duration = 100.milliseconds,
-        val checkEvery: Int = 20,
-        val checkInterval: Duration = 3.seconds,
-        val minVolts: Double = 12.0,
+        val checkEvery: Int = 10,
+        val checkInterval: Duration = 1.5.seconds,
+        val minVolts: Double = 11.0,
+        val maxDrop: Double = 0.7,
         val unitRefusalLimit: Int = 3,
         val busErrorLimit: Int = 2,
     )
@@ -65,6 +70,10 @@ internal class LadderGuard(
     class Baseline(val engineRunning: Boolean?, val volts: Double?)
 
     private var baseline: Baseline? = null
+
+    /** False when the battery voltage could not be read at the start: the ladder then runs without that guard. */
+    var voltageGuarded: Boolean = false
+        private set
     private var last: TimeMark? = null
     private var sinceCheck = 0
     private var checkMark: TimeMark = timeSource.markNow()
@@ -89,7 +98,8 @@ internal class LadderGuard(
         if (speed != 0) return "the car moves ($speed km/h)"
         val running = engineRunning()
         val volts = readVolts()
-        if (running == false && volts != null && volts < config.minVolts) return "the battery reads $volts V with the engine off"
+        if (volts != null && volts < config.minVolts) return "the battery reads $volts V"
+        voltageGuarded = volts != null
         baseline = Baseline(running, volts)
         checkMark = timeSource.markNow()
         sinceCheck = 0
@@ -113,6 +123,7 @@ internal class LadderGuard(
 
     override suspend fun request(requestId: Int, payload: ByteArray, expectedResponses: Int?): ElmResponse {
         hardLines(requestId, payload)
+        stopWhen()?.let { throw LevelAborted(AbortScope.LADDER, it) }
         if (!checking) {
             if (++sinceCheck >= config.checkEvery || checkMark.elapsedNow() >= config.checkInterval) checkCar()
         }
@@ -160,8 +171,8 @@ internal class LadderGuard(
                 throw LevelAborted(AbortScope.LADDER, "the engine ${if (running) "started" else "stopped"}")
             }
             val volts = readVolts()
-            if (volts != null && volts < config.minVolts && running != true) {
-                throw LevelAborted(AbortScope.LADDER, "the battery reads $volts V with the engine off")
+            if (volts != null && start.volts != null && (volts < config.minVolts || start.volts - volts > config.maxDrop)) {
+                throw LevelAborted(AbortScope.LADDER, "the battery fell from ${start.volts} V to $volts V")
             }
         } finally {
             checking = false

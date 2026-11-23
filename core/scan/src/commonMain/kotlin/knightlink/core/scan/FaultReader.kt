@@ -43,6 +43,8 @@ public data class FaultEntry(
     val kind: FaultKind,
     val ecu: String,
     val description: String? = null,
+    /** True when the code came from `19 02` and no OBD service listed it. */
+    val viaUds: Boolean = false,
 )
 
 /**
@@ -79,12 +81,22 @@ public data class FaultReport(
     val readiness: ReadinessSummary?,
     val unitsAsked: List<String>,
     val notAvailable: List<String> = emptyList(),
+    /**
+     * What answered, as `<request id>:obd:<kind>` and `<request id>:uds:<kind>` (kind in lower case): a list that is empty for a kind is
+     * only a fact when the unit answered for it. Two readings are comparable for the kinds that answered in both.
+     */
+    val answered: Set<String> = emptySet(),
 ) {
+    /** The key under which [entry]'s kind is listed in [answered]. */
+    public fun answerKey(entry: FaultEntry): String = answerKey(entry.ecu, entry.viaUds, entry.kind)
+
     /** The report with each code's description filled in from [dictionary]. A manufacturer-specific code stays without one. */
     public fun described(dictionary: FaultCodeDictionary): FaultReport =
         copy(faults = faults.map { it.copy(description = dictionary.describe(it.code)) })
 
     public companion object {
+        public fun answerKey(ecu: String, uds: Boolean, kind: FaultKind): String = "$ecu:${if (uds) "uds" else "obd"}:${kind.name.lowercase()}"
+
         public val EMPTY: FaultReport = FaultReport(emptyList(), null, emptyList())
     }
 }
@@ -115,6 +127,7 @@ public class FaultReader(
 
     /** What the units refused or did not answer, in words. */
     private val notAvailable = ArrayList<String>()
+    private val answered = LinkedHashSet<String>()
 
     /**
      * @param units the control units that answered the standard probe
@@ -122,6 +135,7 @@ public class FaultReader(
      */
     public suspend fun read(units: List<EcuReport>): FaultReport {
         notAvailable.clear()
+        answered.clear()
         val faults = ArrayList<FaultEntry>()
         val states = ArrayList<MonitorStatus>()
         for (unit in units) {
@@ -132,7 +146,7 @@ public class FaultReader(
             if (config.udsFaults) faults += udsCodes(unit)
         }
         val unique = faults.distinctBy { Triple(it.code, it.kind, it.ecu) }
-        val report = FaultReport(unique, readiness(states), units.map { it.requestId }, notAvailable.toList())
+        val report = FaultReport(unique, readiness(states), units.map { it.requestId }, notAvailable.toList(), answered.toSet())
         note(
             "${unique.size} codes (${unique.count { it.kind == FaultKind.CONFIRMED }} confirmed, ${unique.count { it.kind == FaultKind.PENDING }} pending, " +
                 "${unique.count { it.kind == FaultKind.PERMANENT }} permanent) from ${units.size} units; " +
@@ -154,7 +168,10 @@ public class FaultReader(
 
     private suspend fun obdCodes(unit: EcuReport, service: Int, kind: FaultKind): List<FaultEntry> =
         when (val answer = ask(unit, byteArrayOf(service.toByte()), service, count = null)) {
-            is Answer.Positive -> DtcDecoder.obd(answer.data).map { FaultEntry(it, kind, unit.requestId) }
+            is Answer.Positive -> {
+                answered += FaultReport.answerKey(unit.requestId, uds = false, kind = kind)
+                DtcDecoder.obd(answer.data).map { FaultEntry(it, kind, unit.requestId) }
+            }
             is Answer.Refused -> emptyList<FaultEntry>().also { unavailable(unit, service, "refused with ${answer.code.toString(16).uppercase()}") }
             Answer.Silent -> emptyList<FaultEntry>().also { unavailable(unit, service, "no answer") }
         }
@@ -166,8 +183,10 @@ public class FaultReader(
                 // data: 02 <availability mask>, then four bytes per code.
                 val codes = DtcDecoder.uds(answer.data.copyOfRange(1.coerceAtMost(answer.data.size), answer.data.size))
                 val classified = DtcDecoder.classify(codes)
-                classified.confirmed.map { FaultEntry(sae(it.code), FaultKind.CONFIRMED, unit.requestId) } +
-                    classified.pending.map { FaultEntry(sae(it.code), FaultKind.PENDING, unit.requestId) }
+                answered += FaultReport.answerKey(unit.requestId, uds = true, kind = FaultKind.CONFIRMED)
+                answered += FaultReport.answerKey(unit.requestId, uds = true, kind = FaultKind.PENDING)
+                classified.confirmed.map { FaultEntry(sae(it.code), FaultKind.CONFIRMED, unit.requestId, viaUds = true) } +
+                    classified.pending.map { FaultEntry(sae(it.code), FaultKind.PENDING, unit.requestId, viaUds = true) }
             }
             is Answer.Refused -> emptyList<FaultEntry>().also { unavailable(unit, SERVICE_READ_DTC, "refused with ${answer.code.toString(16).uppercase()}") }
             Answer.Silent -> emptyList<FaultEntry>().also { unavailable(unit, SERVICE_READ_DTC, "no answer") }

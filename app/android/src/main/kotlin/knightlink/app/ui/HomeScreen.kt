@@ -110,6 +110,10 @@ class ConnectionActions(
     val onRefreshFaults: () -> Unit = {},
     /** The deep scan switch for a car the app has no definition for. */
     val onDeepScan: (Boolean) -> Unit = {},
+    /** Ends the learning ladder that runs now. */
+    val onSkipLadder: () -> Unit = {},
+    /** "Scan again": runs the learning ladder once more. */
+    val onRescan: () -> Unit = {},
 )
 
 /**
@@ -208,9 +212,9 @@ private fun LazyListScope.summaryItems(
     onShareLog: () -> Unit,
 ) {
     item(key = "talk", contentType = "card") { TalkCard(talk) }
-    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions, state.deepScan) }
+    item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions, state.deepScan, state.knownVehicle) }
     if (state.ladder != LadderProgress.Idle) {
-        item(key = "ladder", contentType = "card") { LadderBanner(state.ladder) }
+        item(key = "ladder", contentType = "card") { LadderBanner(state.ladder, actions.onSkipLadder) }
     }
     if (state.identity != null || state.faults.status != FaultsStatus.NOT_READ) {
         item(key = "faults", contentType = "card") { IdentityAndFaultsCard(state.identity, state.faults, actions.onRefreshFaults) }
@@ -422,7 +426,14 @@ private fun RecognitionError.message(): Int = when (this) {
 }
 
 @Composable
-private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapter: LastAdapter?, actions: ConnectionActions, deepScan: Boolean) {
+private fun ConnectionCard(
+    status: ConnectionStatus,
+    scan: ScanStatus,
+    lastAdapter: LastAdapter?,
+    actions: ConnectionActions,
+    deepScan: Boolean,
+    knownVehicle: Boolean,
+) {
     // LocalResources, unlike LocalContext.current.resources, is invalidated by a configuration change, so the text follows a language change.
     val resources = LocalResources.current
     val idle = status == ConnectionStatus.Idle
@@ -470,7 +481,12 @@ private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapt
                 if (status is ConnectionStatus.CannotRead) {
                     Button(onClick = actions.onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_retry)) }
                 }
-                if (status == ConnectionStatus.Live) ScanSection(scan, resources, actions)
+                if (status == ConnectionStatus.Live) {
+                    ScanSection(scan, resources, actions)
+                    if (!knownVehicle) {
+                        OutlinedButton(onClick = actions.onRescan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_scan_again)) }
+                    }
+                }
                 // One button for both kinds of link.
                 Button(onClick = actions.onDisconnect, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.action_disconnect))
@@ -482,7 +498,7 @@ private fun ConnectionCard(status: ConnectionStatus, scan: ScanStatus, lastAdapt
 
 /** Which level of the learning ladder runs on a car the app has no definition for, and at the end that the car may be driven. */
 @Composable
-private fun LadderBanner(progress: LadderProgress) {
+private fun LadderBanner(progress: LadderProgress, onSkip: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(
             Modifier.padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite },
@@ -497,6 +513,7 @@ private fun LadderBanner(progress: LadderProgress) {
                         stringResource(R.string.ladder_running_unit, progress.label, progress.done, progress.total),
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    OutlinedButton(onClick = onSkip, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_skip)) }
                 }
                 is LadderProgress.Complete -> Text(stringResource(R.string.ladder_complete), style = MaterialTheme.typography.titleMedium)
                 is LadderProgress.Stopped -> {
