@@ -61,6 +61,8 @@ private const val USAGE = """KnightLink developer tool
                                          with every layout in definitions/tpms (or only --definition), then, per sensor id of each layout that has one,
                                          the share of moving minutes it was heard in (moving: car speed, else GPS speed, above --moving-kmh, default 15)
                                          and whether it passes --share (default 80) as travelling with the car
+  drivetruth <recording.jsonl[.gz]> [--fuel diesel|petrol] [--price <per litre>] [--tank <litres>] [--definition <id>]
+                                         Feed a recording (car speed, engine speed, fuel PIDs, GPS fixes) to the Drive Truth reducer and print its report
   decode <definition-id> <frame>...      Decode adapter output lines, e.g. decode vehicles/tata/harrier-2020-kryotec-at "7E8 03 41 05 6B"
 
 Run from the repository root (definitions are read from ./definitions)."""
@@ -75,6 +77,7 @@ fun main(args: Array<String>) {
             "fullscan-report" -> fullscanReport(args.drop(1))
             "did-timeline" -> didTimeline(args.drop(1))
             "tpms-report" -> tpmsReport(args.drop(1))
+            "drivetruth" -> driveTruth(args.drop(1))
             "decode" -> decode(args.getOrNull(1) ?: fail("decode needs a definition id"), args.drop(2))
             else -> println(USAGE)
         }

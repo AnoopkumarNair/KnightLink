@@ -263,5 +263,5 @@ private fun latest(samples: List<Sample>, timeMs: Long): Double? {
 
 private const val MAX_AGE_MS = 30_000L
 
-private fun decode(exchange: TrafficExchange) =
+internal fun decode(exchange: TrafficExchange) =
     ElmStreamFramer().feed(exchange.response).firstOrNull()?.let { ElmResponseDecoder(extendedIds = false).decode(it).messages }.orEmpty()
