@@ -1,6 +1,8 @@
 package knightlink.app.session
 
 import knightlink.app.data.AppConfig
+import knightlink.app.data.DashboardReadings
+import knightlink.app.data.DashboardStore
 import knightlink.app.data.DefinitionStore
 import knightlink.app.data.DefinitionStoreException
 import knightlink.core.common.SessionEventSink
@@ -87,6 +89,8 @@ class SessionController(
     private val sessionConfig: VehicleSession.Config = VehicleSession.Config(),
     private val samples: SampleSource? = null,
     private val tyreSensors: AdvertisementSource? = null,
+    /** Where the odometer and range the driver typed are kept; null for none (they are then only kept for this run). */
+    private val dashboardStore: DashboardStore? = null,
 ) {
     /** One connection request, from [connect] to the end of [disconnect]. */
     private class Run(val scope: CoroutineScope) {
@@ -108,6 +112,16 @@ class SessionController(
         @Volatile
         var tyres: (() -> TyreSensors)? = null
 
+        /** Where the session's events go (the recording and the log); set when the session is created. */
+        @Volatile
+        var events: SessionEventSink? = null
+
+        /** Whether the dashboard start readings have been written into the recording of the link that is polling now. */
+        var dashboardStamped = false
+
+        /** When the scan of the other units last ended in an outcome the screen shows for a while; null while it has none. */
+        var bodyOutcomeSince: TimeMark? = null
+
         /** What a spoken answer needs besides the live data; set together with [session], before it is. */
         @Volatile
         var voice: VoiceFacts? = null
@@ -122,6 +136,7 @@ class SessionController(
     private val lock = Any()
     private var current: Run? = null
     private val _uiState = MutableStateFlow(UiState.IDLE)
+    private val dashboard = MutableStateFlow(dashboardStore?.load() ?: DashboardReadings())
 
     /** The drive mode the driver last said in this run; forgotten when a run starts. */
     @Volatile
@@ -209,6 +224,7 @@ class SessionController(
             catalog = setup.catalog
             recorded = setup.transport
             run.mark = { line -> setup.transport.external(line) }
+            run.events = setup.events
             tyres = setup.tyres
             VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events)
         } catch (e: CancellationException) {
@@ -284,6 +300,45 @@ class SessionController(
         connectionLog?.app("drive mode: ${mode.tag}")
         run.scope.launch { mark(ExternalSamples.modeLine(mode.tag)) }
         return true
+    }
+
+    /**
+     * The driver typed what the dashboard shows: the odometer ([odometer]) and the distance to empty ([range]) in kilometres, at the start or, with
+     * [end], at the end of the drive. They are kept (and shown again next time), and written into the recording (`odo` and `dte` lines) and the
+     * events when a run is recording; an empty or unreadable field is not written, and the field is kept as it was. False when no run is recording
+     * (the values are kept all the same).
+     */
+    fun markDashboard(odometer: String, range: String, end: Boolean): Boolean {
+        val odo = DashboardReadings.parseKm(odometer)
+        val dte = DashboardReadings.parseKm(range)
+        val before = dashboard.value
+        val updated = if (end) {
+            before.copy(odometerEndKm = odo ?: before.odometerEndKm, rangeEndKm = dte ?: before.rangeEndKm)
+        } else {
+            before.copy(odometerStartKm = odo ?: before.odometerStartKm, rangeStartKm = dte ?: before.rangeStartKm)
+        }
+        dashboard.value = updated
+        dashboardStore?.save(updated)
+        val run = synchronized(lock) { current } ?: return false
+        val mark = run.mark ?: return false
+        run.scope.launch { stampDashboard(run, mark, odo, dte, end) }
+        return true
+    }
+
+    private suspend fun stampDashboard(run: Run, mark: suspend (String) -> Unit, odo: Long?, dte: Long?, end: Boolean) {
+        if (odo == null && dte == null) return
+        odo?.let { mark(ExternalSamples.odometerLine(it, end)) }
+        dte?.let { mark(ExternalSamples.rangeLine(it, end)) }
+        val which = if (end) "end" else "start"
+        val text = "dashboard $which: odometer ${odo ?: "-"} km, range ${dte ?: "-"} km"
+        connectionLog?.app(text)
+        try {
+            run.events?.emit(SessionEvents.APP, text)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // A broken log must not stop the screen.
+        }
     }
 
     /**
@@ -422,8 +477,15 @@ class SessionController(
                     run.modeStamped = true
                     driveMode?.let { run.mark?.invoke(ExternalSamples.modeLine(it.tag)) }
                 }
+                // Every link has its own recording: what the driver typed for the start of the drive is written into each.
+                if (!run.dashboardStamped) {
+                    run.dashboardStamped = true
+                    val saved = dashboard.value
+                    run.mark?.let { mark -> stampDashboard(run, mark, saved.odometerStartKm, saved.rangeStartKm, end = false) }
+                }
             } else {
                 run.modeStamped = false
+                run.dashboardStamped = false
             }
             if (state is SessionState.Polling && state.report !== summarised) {
                 summarised = state.report
@@ -440,8 +502,20 @@ class SessionController(
                 run.tyres?.invoke(),
                 driveSummary(session.fuelFills.value, driveMode),
                 session.captureMode.value,
+                bodyScanProgress(run, session.bodyScan.value.toProgress()),
+                dashboard.value,
             )
         }
+    }
+
+    /** The scan of the other units as the screen shows it: the outcome stays for [BODY_OUTCOME_HOLD] and then the banner goes. */
+    private fun bodyScanProgress(run: Run, progress: BodyScanProgress): BodyScanProgress {
+        if (!progress.isOutcome) {
+            run.bodyOutcomeSince = null
+            return progress
+        }
+        val since = run.bodyOutcomeSince ?: timeSource.markNow().also { run.bodyOutcomeSince = it }
+        return if (since.elapsedNow() > BODY_OUTCOME_HOLD) BodyScanProgress.Idle else progress
     }
 
     /** How often each signal is asked for, from its definition's poll tier, so a value that is refreshed every few seconds is not shown as stale. */
@@ -455,6 +529,7 @@ class SessionController(
         /** Sensor lines held for the recording at most; at 2 motion lines a second this is minutes of a recorder that is stuck. */
         private const val SAMPLE_BUFFER = 512
         const val SCAN_RESULT_SUFFIX = ".scan.json"
+        val BODY_OUTCOME_HOLD: Duration = 90.seconds
         val DEFAULT_UI_REFRESH: Duration = 250.milliseconds
         val DEFAULT_STALE_AFTER: Duration = 5.seconds
     }

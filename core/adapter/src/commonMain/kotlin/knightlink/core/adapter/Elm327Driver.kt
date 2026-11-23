@@ -275,6 +275,10 @@ public class Elm327Driver(
         expectedResponses: Int?,
         timeout: Duration,
     ): ElmResponse = lock.withLock {
+        ReadOnlyPolicy.requestIdViolation(requestId)?.let { reason ->
+            note(SessionEvents.INIT_STEP, "refused (read-only): $reason")
+            throw ReadOnlyViolationException("Refused to send a request: $reason")
+        }
         require(!extendedIds) { "29-bit header selection is not implemented yet" }
         require(expectedResponses == null || expectedResponses in 1..15) { "expectedResponses must be 1..15" }
         val first = attempt(requestId, payload, expectedResponses, timeout)
@@ -466,7 +470,8 @@ public class Elm327Driver(
     private class Attempt(val response: ElmResponse?, val resetHint: String?)
 
     private suspend fun attempt(requestId: Int, payload: ByteArray, expectedResponses: Int?, timeout: Duration): Attempt {
-        if (currentHeader != requestId) {
+        // A session request always gets its header sent right before it, whatever was cached: it must reach exactly this unit.
+        if (currentHeader != requestId || payload.firstOrNull() == SESSION_CONTROL_SERVICE) {
             val header = requestId.toString(16).uppercase().padStart(3, '0')
             val reply = exchange("ATSH$header", timeout)
             resetHint(reply, diagnostic = false)?.let { return Attempt(null, it) }
@@ -479,7 +484,7 @@ public class Elm327Driver(
             if (wait.isPositive()) delay(wait)
         }
         lastRequestStart = config.timeSource.markNow()
-        val reply = exchange(payload.toHex() + suffix, timeout)
+        val reply = exchange(payload.toHex() + suffix, timeout, requestId = requestId)
         resetHint(reply, diagnostic = true)?.let { return Attempt(null, it) }
         val response = settlePending(withoutSupersededPending(decoder.decode(reply.lines)), requestId)
         countStatuses(response, requestId)
@@ -573,20 +578,20 @@ public class Elm327Driver(
     private class Reply(val lines: List<String>, val echoed: Boolean)
 
     /** One command and its reply, with the one resend that STOPPED earns. */
-    private suspend fun exchange(text: String, timeout: Duration, passive: Boolean = false): Reply {
-        val first = exchangeOnce(text, timeout, passive)
+    private suspend fun exchange(text: String, timeout: Duration, passive: Boolean = false, requestId: Int? = null): Reply {
+        val first = exchangeOnce(text, timeout, passive, requestId)
         if (first.lines.none(::isStopped)) return first
         counters = counters.copy(resends = counters.resends + 1)
         note(SessionEvents.RESEND, "'${text.trim()}' was answered with STOPPED; sending it again")
         delay(config.stoppedRetryDelay)
-        return exchangeOnce(text, timeout, passive)
+        return exchangeOnce(text, timeout, passive, requestId)
     }
 
     private fun isStopped(line: String): Boolean = (parser.parse(line) as? ElmLine.Status)?.status == ElmStatus.STOPPED
 
-    private suspend fun exchangeOnce(text: String, timeout: Duration, passive: Boolean = false): Reply {
+    private suspend fun exchangeOnce(text: String, timeout: Duration, passive: Boolean = false, requestId: Int? = null): Reply {
         // The writes to the adapter are here and in [monitor]'s stop, so this is where the read-only guarantee is enforced.
-        checkAllowed(text, passive)
+        checkAllowed(text, passive, requestId)
         disconnection?.let { throw it }
         discardStale()
         val asked = config.timeSource.markNow()
@@ -602,8 +607,8 @@ public class Elm327Driver(
         return Reply(lines.filterNot { it.compact() == sent }, echoed)
     }
 
-    private suspend fun checkAllowed(text: String, passive: Boolean) {
-        (if (passive) ReadOnlyPolicy.passiveViolation(text) else ReadOnlyPolicy.violation(text))?.let { reason ->
+    private suspend fun checkAllowed(text: String, passive: Boolean, requestId: Int?) {
+        (if (passive) ReadOnlyPolicy.passiveViolation(text) else ReadOnlyPolicy.violation(text, requestId))?.let { reason ->
             note(SessionEvents.INIT_STEP, "refused (read-only): $reason")
             throw ReadOnlyViolationException("Refused to send a command: $reason")
         }
@@ -654,6 +659,7 @@ public class Elm327Driver(
         const val MONITOR_COMMAND = "ATMA"
         const val STOP_ATTEMPTS = 2
         const val PENDING_CODE = 0x78
+        const val SESSION_CONTROL_SERVICE: Byte = 0x10
         const val BANNER = "ELM327"
         const val SEARCHING_WORD = "SEARCHING"
         const val MAX_LOGGED_REPLY = 40

@@ -1,7 +1,6 @@
 package knightlink.core.runtime
 
 import knightlink.core.common.hexToBytes
-import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidAnswer
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.ScanResult
@@ -74,22 +73,3 @@ public fun discoveryPollItems(result: ScanResult, plan: DidSweepPlan, constantIt
         )
     }
 }
-
-/**
- * The items of a one-time check: every identifier of [checks] whose control unit is in [answering] (request ids that answered the probe),
- * asked once per connection ([Duration.INFINITE] is the scheduler's "once"), as raw service 22 requests like the scan's. Nothing is promised
- * about the answers: most are refused, and what answers shows in the recording.
- */
-public fun candidateCheckItems(checks: CandidateChecks, answering: Set<Int>): List<PollItem> =
-    checks.checks.filter { it.requestCanId in answering || it.unprobed }.flatMap { check ->
-        check.identifiers().map { did ->
-            PollItem(
-                id = "candidate:" + discoveryItemId(check.requestCanId, did.toString(16).padStart(4, '0')),
-                requestId = check.requestCanId,
-                payload = byteArrayOf(0x22, (did shr 8).toByte(), did.toByte()),
-                period = Duration.INFINITE,
-                expectedResponses = null,
-                dataLength = null,
-            )
-        }
-    }

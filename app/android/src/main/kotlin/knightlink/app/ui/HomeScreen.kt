@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -22,6 +23,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -47,10 +49,13 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import knightlink.app.R
 import knightlink.app.ble.LastAdapter
+import knightlink.app.data.DashboardReadings
 import knightlink.app.fraction
+import knightlink.app.session.BodyScanProgress
 import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.DriveMode
 import knightlink.app.session.DriveSummary
@@ -93,6 +98,8 @@ class ConnectionActions(
     val onDriveMode: (DriveMode) -> Unit = {},
     /** True switches the session to passive capture (it only listens to the car's broadcast), false back to active polling. */
     val onPassiveCapture: (Boolean) -> Unit = {},
+    /** The driver typed what the dashboard shows: odometer and range as text, and whether it is the end of the drive (else the start). */
+    val onDashboard: (odometer: String, range: String, end: Boolean) -> Unit = { _, _, _ -> },
 )
 
 /**
@@ -194,8 +201,14 @@ private fun LazyListScope.summaryItems(
     item(key = "connection", contentType = "card") { ConnectionCard(state.connection, state.scan, lastAdapter, actions) }
     item(key = "voice", contentType = "card") { VoiceCard(voice) }
     state.vehicle?.let { vehicle -> item(key = "vehicle", contentType = "card") { VehicleCard(vehicle, state.pollingRate) } }
+    // Before the vehicle summary exists (the scan runs before polling starts), so it is its own item and not part of the drive card.
+    if (state.bodyScan != BodyScanProgress.Idle) {
+        item(key = "bodyscan", contentType = "card") { BodyScanBanner(state.bodyScan) }
+    }
     if (state.vehicle != null) {
-        item(key = "drive", contentType = "card") { DriveCard(state.drive, state.captureMode, state.connection, actions.onDriveMode, actions.onPassiveCapture) }
+        item(key = "drive", contentType = "card") {
+            DriveCard(state.drive, state.captureMode, state.connection, state.dashboard, actions.onDriveMode, actions.onPassiveCapture, actions.onDashboard)
+        }
     }
     item(key = "drive-data", contentType = "card") { DriveDataCard(driveData, state.tyres) }
     item(key = "recordings", contentType = "card") { RecordingsCard(recordings, onShareLatest, onShareLog) }
@@ -207,8 +220,10 @@ private fun DriveCard(
     drive: DriveSummary?,
     captureMode: CaptureMode,
     connection: ConnectionStatus,
+    dashboard: DashboardReadings,
     onMode: (DriveMode) -> Unit,
     onPassiveCapture: (Boolean) -> Unit,
+    onDashboard: (String, String, Boolean) -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -234,6 +249,13 @@ private fun DriveCard(
                 Text(stringResource(if (passive) R.string.capture_back_to_active else R.string.capture_passive))
             }
             Text(stringResource(R.string.capture_hint), style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(R.string.dashboard_hint), style = MaterialTheme.typography.bodySmall)
+            DashboardEntry(R.string.dashboard_start_title, R.string.dashboard_save_start, dashboard.odometerStartKm, dashboard.rangeStartKm) { odo, dte ->
+                onDashboard(odo, dte, false)
+            }
+            DashboardEntry(R.string.dashboard_end_title, R.string.dashboard_save_end, dashboard.odometerEndKm, dashboard.rangeEndKm) { odo, dte ->
+                onDashboard(odo, dte, true)
+            }
             val fill = drive?.lastFill
             Text(
                 if (fill == null) {
@@ -247,6 +269,65 @@ private fun DriveCard(
                 drive.fillCount > 1
             ) {
                 Text(stringResource(R.string.drive_refuel_count, drive.fillCount), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/** Two number fields (odometer, range) and the button that saves them: what the dashboard shows at the start or at the end of the drive. */
+@Composable
+private fun DashboardEntry(title: Int, saveLabel: Int, odometer: Long?, range: Long?, onSave: (String, String) -> Unit) {
+    var odo by rememberSaveable(odometer) { mutableStateOf(odometer?.toString().orEmpty()) }
+    var dte by rememberSaveable(range) { mutableStateOf(range?.toString().orEmpty()) }
+    Text(stringResource(title), style = MaterialTheme.typography.labelLarge)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = odo,
+            onValueChange = { odo = it.filter(Char::isDigit).take(DASHBOARD_DIGITS) },
+            label = { Text(stringResource(R.string.dashboard_odometer)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedTextField(
+            value = dte,
+            onValueChange = { dte = it.filter(Char::isDigit).take(DASHBOARD_DIGITS) },
+            label = { Text(stringResource(R.string.dashboard_range)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    OutlinedButton(onClick = { onSave(odo, dte) }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(saveLabel)) }
+}
+
+private const val DASHBOARD_DIGITS = 7
+
+/** Tells the driver to keep the car parked while the other units are scanned, how long it will take, and when they may drive. */
+@Composable
+private fun BodyScanBanner(progress: BodyScanProgress) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite },
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when (progress) {
+                BodyScanProgress.Idle -> Unit
+                is BodyScanProgress.Running -> {
+                    Text(stringResource(R.string.bodyscan_running, progress.secondsLeft), style = MaterialTheme.typography.titleMedium)
+                    LinearProgressIndicator(progress = { progress.fraction }, modifier = Modifier.fillMaxWidth())
+                    Text(
+                        stringResource(R.string.bodyscan_running_unit, progress.label, progress.done, progress.total),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                is BodyScanProgress.Complete -> Text(stringResource(R.string.bodyscan_complete), style = MaterialTheme.typography.titleMedium)
+                is BodyScanProgress.Partial -> Text(stringResource(R.string.bodyscan_partial), style = MaterialTheme.typography.titleMedium)
+                is BodyScanProgress.Skipped ->
+                    Text(
+                        stringResource(if (progress.moving) R.string.bodyscan_skipped_moving else R.string.bodyscan_skipped_unknown),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
             }
         }
     }

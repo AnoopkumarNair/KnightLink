@@ -9,13 +9,20 @@ package knightlink.core.adapter
  * - Allowed: OBD services 01 (live data), 02 (freeze frame), 03 (stored codes), 06 (test results), 07 (pending codes),
  *   09 (vehicle information), 0A (permanent codes); UDS 22 (read data by identifier) and 19 (read DTC information) with a
  *   reporting sub-function only.
- * - Refused, among others: 04 (clear codes), 08 (control of on-board systems), UDS 10 (session control), 11 (ECU reset),
- *   14 (clear DTC information), 27 (security access), 28 (communication control), 2E (write data), 2F (I/O control),
- *   31 (routine control), 34–37 (download/upload), 3D (write memory), 85 (DTC setting control).
+ * - Also allowed, narrowly: UDS 10 with sub-function 01 (the default session) and only when the request is addressed to a body unit (a
+ *   request identifier from 700 to 7DE or 7F0 to 7FF, outside the engine-bay addresses; see [isBodyUnit]). Not "nothing": it makes the unit
+ *   start its default session afresh, which ends an extended or programming session another tool may have opened on it. A unit is in the
+ *   default session at power-up, so there it only confirms it; some units answer identifiers only after one, as the commercial scanners send one.
+ * - Every diagnostic request goes to a request identifier from 700 to 7FF ([requestIdViolation]): never to the low identifiers that carry the
+ *   car's own broadcast, whatever a data file says.
+ * - Refused, among others: 04 (clear codes), 08 (control of on-board systems), UDS 10 with any other sub-function (02 programming,
+ *   03 extended) or to an engine-bay unit, 11 (ECU reset), 14 (clear DTC information), 27 (security access), 28 (communication control),
+ *   2E (write data), 2F (I/O control), 31 (routine control), 34–37 (download/upload), 3D (write memory), 3E (tester present),
+ *   85 (DTC setting control).
  *
  * Adapter commands (`AT…`): an allowlist of commands that only affect the adapter's volatile state or read it. That includes the
- * adapter-local receive and flow-control settings that a read of an ECU with a non-OBD address needs: `ATCF`/`ATCM` (which CAN
- * identifiers the adapter listens to), `ATFCSH` (the identifier its flow-control frames go to), `ATFCSD` (their data, only
+ * adapter-local receive and flow-control settings that a read of an ECU with a non-OBD address needs: `ATCF`/`ATCM`/`ATCRA` (which CAN
+ * identifiers the adapter listens to; `ATCRA` with one identifier of three or eight hex digits, or none to reset it), `ATFCSH` (the identifier its flow-control frames go to), `ATFCSD` (their data, only
  * ClearToSend: `30…`) and `ATFCSM` (flow-control mode 0 or 1). None of them puts a diagnostic message on the bus. Refused,
  * among others: `ATPP…` (writes the adapter's EEPROM), `AT@3` (writes its identifier), `ATCV` (writes its calibration),
  * `ATWM`/`ATSW` (make the adapter send wake-up messages on the bus by itself), `ATBI` (skips the bus initialisation checks),
@@ -58,6 +65,23 @@ public object ReadOnlyPolicy {
 
     private val readServices = setOf(0x01, 0x02, 0x03, 0x06, 0x07, 0x09, 0x0A, 0x22)
     private const val UDS_READ_DTC_INFORMATION = 0x19
+    private const val UDS_SESSION_CONTROL = 0x10
+
+    /** The request identifiers of the engine-bay units (7E0-7E7), the functional address (7DF) and the response identifiers (7E8-7EF): not body units. */
+    private val obdIds = 0x7DF..0x7EF
+
+    /** The request identifiers a diagnostic request may go to: the 11-bit diagnostic block, 700-7FF. */
+    private val diagnosticIds = 0x700..0x7FF
+
+    /** Why a diagnostic request may not be sent to [requestId], or null when it may. */
+    public fun requestIdViolation(requestId: Int): String? =
+        if (requestId in diagnosticIds) null else "request identifier ${requestId.toString(16).uppercase()} is outside the diagnostic block 700-7FF"
+
+    /**
+     * Whether [requestId] is a body unit: in the diagnostic block 700-7FF but not an OBD identifier (7DF-7EF). Only to those may the default
+     * session be requested.
+     */
+    public fun isBodyUnit(requestId: Int): Boolean = requestId in diagnosticIds && requestId !in obdIds
 
     // ISO 14229-1 ReadDTCInformation report sub-functions; every one of them only reports.
     private val readDtcSubFunctions = (0x01..0x15).toSet() + setOf(0x16, 0x17, 0x18, 0x19, 0x1A, 0x42, 0x55, 0x56)
@@ -71,8 +95,13 @@ public object ReadOnlyPolicy {
         "CF", "CM", "FCSH", "FCSD", "FCSM",
     )
 
-    /** Why [command] may not be sent, or null when it may. [command] is the text without the trailing carriage return. */
-    public fun violation(command: String): String? {
+    /**
+     * Why [command] may not be sent, or null when it may. [command] is the text without the trailing carriage return.
+     *
+     * @param requestId the request identifier a diagnostic request is sent to, when known (the driver's request path knows it; a raw
+     *   command does not). Only `10 01` to a body unit needs it: without it service 10 is refused.
+     */
+    public fun violation(command: String, requestId: Int? = null): String? {
         val compact = command.filterNot { it.isWhitespace() }.uppercase()
         if (compact.isEmpty()) return "an empty command makes the adapter repeat its previous one"
         if (compact.startsWith("AT")) return adapterCommandViolation(compact.removePrefix("AT"))
@@ -83,6 +112,13 @@ public object ReadOnlyPolicy {
         if (hex.length < 2) return "no service byte: $compact"
         val service = hex.substring(0, 2).toInt(16)
         if (service in readServices) return null
+        if (service == UDS_SESSION_CONTROL) {
+            return if (hex == "1001" && requestId != null && isBodyUnit(requestId)) {
+                null
+            } else {
+                "only the default session (10 01) of a body unit may be requested, nothing else of service 10: $compact"
+            }
+        }
         if (service == UDS_READ_DTC_INFORMATION) {
             if (hex.length < 4) return "ReadDTCInformation without a sub-function: $compact"
             val sub = hex.substring(2, 4).toInt(16) and 0x7F
@@ -104,6 +140,8 @@ public object ReadOnlyPolicy {
             // ClearToSend only (30 = continue, then block size and separation time): never wait or abort, never a stranger's byte.
             "FCSD" -> argument.length in 2..10 && argument.length % 2 == 0 && argument.startsWith("30")
             "FCSM" -> argument == "0" || argument == "1"
+            // One receive address, or none to go back to the automatic one.
+            "CRA" -> argument.isEmpty() || argument.length == 3 || argument.length == 8
             else -> true
         }
         return if (shape) null else "adapter command AT$rest has an argument that is not allowed for $match"

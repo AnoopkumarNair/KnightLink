@@ -21,7 +21,22 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
     /** False simulates an ECU that stays silent on a data identifier it does not have, instead of refusing it with "request out of range". */
     public var refusesUnknownDids: Boolean = true
 
+    /**
+     * True for a body unit: the adapter's automatic flow control does not reach it, so a reply longer than one frame goes on only after the
+     * phone has set `ATFCSH<request id>`, `ATFCSD30...` and `ATFCSM1`. Its replies are heard only when the receive filter passes [responseId] (the
+     * ordinary 7E8-7EF filter does not pass 700-7DF).
+     */
+    public var needsCustomFlowControl: Boolean = false
+
+    /**
+     * True simulates a unit that refuses every service 22 ("service not supported in the active session", 7F) until it has been sent `10 01` (set
+     * the reply of `1001` too), as some body units do after another tool left them in another session.
+     */
+    public var needsDefaultSession: Boolean = false
+    private var sessionRequested = false
+
     private val refusals = HashMap<String, Int>()
+    private val rawReplies = HashMap<String, ByteArray>()
 
     /**
      * @param request service + PID/DID as hex, e.g. `010C` or `22F190`
@@ -29,6 +44,11 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
      */
     public fun set(request: String, data: String) {
         replies[request.filterNot { it.isWhitespace() }.uppercase()] = data.hexToBytes()
+    }
+
+    /** Makes [request] answer with exactly [payload] (hex, the whole message including the service byte), even one that does not match the request. */
+    public fun setRaw(request: String, payload: String) {
+        rawReplies[request.filterNot { it.isWhitespace() }.uppercase()] = payload.hexToBytes()
     }
 
     public fun remove(request: String) {
@@ -46,6 +66,9 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
         if (request.isEmpty() || silent) return null
         val service = request[0].toInt() and 0xFF
         val positive = byteArrayOf((service + POSITIVE_OFFSET).toByte()) + request.copyOfRange(1, request.size)
+        if (request.toHex() == "1001" && replies.containsKey("1001")) sessionRequested = true
+        if (service == 0x22 && needsDefaultSession && !sessionRequested) return byteArrayOf(NEGATIVE, service.toByte(), NRC_NOT_IN_SESSION)
+        rawReplies[request.toHex()]?.let { return it }
         refusals[request.toHex()]?.let { return byteArrayOf(NEGATIVE, service.toByte(), it.toByte()) }
         replies[request.toHex()]?.let { return positive + it }
 
@@ -103,6 +126,7 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
         const val NEGATIVE = 0x7F.toByte()
         const val NRC_SERVICE_NOT_SUPPORTED = 0x11.toByte()
         const val NRC_REQUEST_OUT_OF_RANGE = 0x31.toByte()
+        const val NRC_NOT_IN_SESSION = 0x7F.toByte()
     }
 }
 

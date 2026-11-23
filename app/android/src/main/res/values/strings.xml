@@ -28,6 +28,24 @@
     <string name="action_connect_last_unnamed">Connect to last adapter</string>
     <string name="action_choose_another">Choose another adapter</string>
 
+    <!-- Scan of the other units, and the dashboard readings -->
+    <string name="bodyscan_running">Scanning the car\'s other units — keep the car parked (about %1$d s left)</string>
+    <string name="bodyscan_running_unit">%1$s: %2$d of %3$d</string>
+    <string name="bodyscan_complete">Scan complete — you can drive now</string>
+    <string name="bodyscan_partial">Scan partly done — you can drive; the rest continues in the background</string>
+    <string name="bodyscan_skipped_moving">Scan skipped: car is moving — it will run in the background</string>
+    <string name="bodyscan_skipped_unknown">Scan skipped: the car\'s speed could not be read — it will run in the background</string>
+    <string name="bodyscan_spoken_complete">Scan complete, you can drive</string>
+    <string name="bodyscan_spoken_partial">Scan partly done, you can drive. The rest continues in the background</string>
+    <string name="bodyscan_channel_name">Scan finished</string>
+    <string name="dashboard_hint">Type what the dashboard shows at the start and at the end of the drive, so the recording can be checked against it.</string>
+    <string name="dashboard_odometer">Odometer (km)</string>
+    <string name="dashboard_range">Range / distance to empty (km)</string>
+    <string name="dashboard_save_start">Save start readings</string>
+    <string name="dashboard_save_end">Save end readings</string>
+    <string name="dashboard_start_title">At the start</string>
+    <string name="dashboard_end_title">At the end</string>
+
     <!-- Full scan -->
     <string name="drive_title">Drive</string>
     <string name="drive_mode_hint">Tap the mode you switch the car to, so the recording knows how each stretch was driven.</string>

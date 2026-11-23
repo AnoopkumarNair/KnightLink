@@ -16,6 +16,7 @@ import kotlinx.serialization.json.Json
  * @property discovery for each discovery item (by poll item id), what polling has shown of its value: it decides how often it is asked
  * @property gear what the calculated gear learned (see [GearModel])
  * @property fuel the last fuel level and the refuels found (see [FuelTracker])
+ * @property body how far the one-time body-unit check got on this vehicle (see [BodyUnitReader]): done once per vehicle per installation
  */
 @Serializable
 public data class VehicleMemory(
@@ -26,6 +27,7 @@ public data class VehicleMemory(
     val discovery: Map<String, DidHistory> = emptyMap(),
     val gear: GearModel = GearModel(),
     val fuel: FuelMemory = FuelMemory(),
+    val body: BodyCheckMemory = BodyCheckMemory(),
 ) {
     public fun toJson(): String = writer.encodeToString(serializer(), this)
 

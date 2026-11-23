@@ -17,7 +17,7 @@ import kotlin.time.TimeSource
  * A simulated ELM327 adapter plugged into a [VirtualVehicle]. It speaks the adapter's text protocol
  * over a [ByteStream], so the real driver and everything above it run unmodified against it.
  *
- * Models: echo, linefeed, space and header settings, header selection, functional vs physical
+ * Models: echo, linefeed, space and header settings, header selection, receive filters (`ATCF`/`ATCM`/`ATCRA`), functional vs physical
  * addressing, ISO-TP segmentation of long replies, the response-count suffix, `NO DATA`, and
  * delivery in small chunks with a configurable delay.
  *
@@ -44,6 +44,8 @@ public class VirtualElm327(
         val timeSource: TimeSource = TimeSource.Monotonic,
         /** `ATMA` prints `BUFFER FULL` once and drops the rest after this many frames in one monitoring; null for no limit. */
         val monitorBufferFrames: Int? = null,
+        /** Commands (upper case, no spaces, e.g. `ATCRA708`) this adapter answers with `?` from the start, as one that does not know them. */
+        val unsupported: Set<String> = emptySet(),
     )
 
     private val channel = Channel<ByteArray>(Channel.UNLIMITED)
@@ -76,7 +78,7 @@ public class VirtualElm327(
     private var automaticProtocol = true
 
     /** Commands (upper case, no spaces, e.g. `ATCSM1`) the adapter always answers with `?`, as one that does not know them. */
-    public val unsupportedCommands: MutableSet<String> = HashSet()
+    public val unsupportedCommands: MutableSet<String> = HashSet(config.unsupported)
 
     /** Commands answered with `?` once, then accepted again. */
     public val rejectNext: MutableSet<String> = HashSet()
@@ -250,7 +252,17 @@ public class VirtualElm327(
                 receiveMask = DEFAULT_RECEIVE_MASK
             }
             else -> {
-                if (body.startsWith("CF") && !body.startsWith("CFC")) {
+                if (body.startsWith("CRA")) {
+                    // One receive address; without an argument the automatic one again.
+                    val argument = body.substring(3)
+                    if (argument.isEmpty()) {
+                        receiveFilter = DEFAULT_RECEIVE_FILTER
+                        receiveMask = DEFAULT_RECEIVE_MASK
+                    } else {
+                        receiveFilter = hex3(argument) ?: return listOf("?")
+                        receiveMask = EXACT_MASK
+                    }
+                } else if (body.startsWith("CF") && !body.startsWith("CFC")) {
                     receiveFilter = hex3(body.substring(2)) ?: return listOf("?")
                 } else if (body.startsWith("CM")) {
                     receiveMask = hex3(body.substring(2)) ?: return listOf("?")
@@ -286,21 +298,23 @@ public class VirtualElm327(
         // An ECU whose reply the adapter is not listening to is as good as silent.
         val replies = vehicle.targets(header)
             .filter { ecu -> (ecu.responseId xor receiveFilter) and receiveMask == 0 }
-            .mapNotNull { ecu -> ecu.respond(request)?.let { ecu.responseId to it } }
+            .mapNotNull { ecu -> ecu.respond(request)?.let { Triple(ecu.responseId, it, ecu.needsCustomFlowControl) } }
         if (replies.isEmpty()) return listOf("NO DATA")
         // A long reply goes on after its first frame only if the ECU gets a flow-control frame it understands: user-defined flow control
         // that is addressed to another identifier than the request leaves the ECU waiting for ever.
-        val flowControlWorks = flowControlMode != 1 || (flowControlHeader == header && flowControlData?.startsWith("30") == true)
-        if (limit ==
-            null
-        ) {
-            return replies.flatMap { (id, payload) -> format(id, payload, firstFrameOnly = !flowControlWorks && payload.size > SINGLE_FRAME_MAX) }
+        val customWorks = flowControlMode == 1 && flowControlHeader == header && flowControlData?.startsWith("30") == true
+        val flowControlWorks = flowControlMode != 1 || customWorks
+        if (limit == null) {
+            return replies.flatMap { (id, payload, needsCustom) ->
+                val works = if (needsCustom) customWorks else flowControlWorks
+                format(id, payload, firstFrameOnly = !works && payload.size > SINGLE_FRAME_MAX)
+            }
         }
 
         // The count is in CAN frames: a long reply is cut to its first frame, and the replies after that are not sent at all.
         val lines = ArrayList<String>()
         var frames = 0
-        for ((id, payload) in replies) {
+        for ((id, payload, _) in replies) {
             if (frames >= limit) break
             lines += format(id, payload, firstFrameOnly = payload.size > SINGLE_FRAME_MAX)
             frames++
@@ -362,6 +376,7 @@ public class VirtualElm327(
         const val FIRST_FRAME_DATA = 6
         const val DEFAULT_RECEIVE_FILTER = 0x7E8
         const val DEFAULT_RECEIVE_MASK = 0x7F8
+        const val EXACT_MASK = 0x7FF
 
         /** Settings the simulator accepts without modelling their effect. */
         val ACCEPTED_PREFIXES = listOf("SP", "TP", "AT", "ST", "CAF", "CFC", "AL", "M", "WS", "CSM")

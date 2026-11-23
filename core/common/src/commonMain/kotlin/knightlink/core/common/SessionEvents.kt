@@ -98,6 +98,22 @@ public object SessionEvents {
     /** Passive capture started or ended (button, link loss, silent bus, adapter that cannot monitor). The detail says why. */
     public const val CAPTURE_MODE: String = "capture-mode"
 
+    /**
+     * An adapter command that sets how the adapter listens to a body unit or sends flow control for it (`ATCRA708`, `ATFCSH700`, `ATFCSD300000`,
+     * `ATFCSM1`), and the restore of the ordinary filter afterwards (`ATAR`, `ATCM7F8`, `ATCF7E8`, `ATFCSM0`). The detail is the command and the
+     * adapter's answer, so the recording shows that the setup worked.
+     */
+    public const val BODY_SETUP: String = "body-setup"
+
+    /**
+     * The body-unit check (see `BodyUnitReader`): a stage or a paced slice starts or ends, a unit's `10 01` and `19 02 FF` and what its data
+     * identifiers answered (identifiers and lengths, never the values), why it stopped. One line for a person; never a VIN.
+     */
+    public const val BODY_SCAN: String = "body-scan"
+
+    /** The battery voltage the adapter read (`ATRV`) once at the start of a connection. */
+    public const val BATTERY: String = "battery"
+
     /** The session ended. The detail says why. */
     public const val END: String = "end"
 

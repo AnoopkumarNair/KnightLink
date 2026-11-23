@@ -34,7 +34,7 @@ class ReadOnlyGuardTest {
             "04", // clear OBD codes
             "0800", // control of on-board systems
             "1003", // diagnostic session control (extended)
-            "1001", // even the default session: not needed for reading
+            "1001", // the default session without an address: only a request to a body unit may ask for it (see below)
             "1101", // ECU reset
             "14FFFFFF", // clear DTC information
             "2701", // security access
@@ -48,6 +48,41 @@ class ReadOnlyGuardTest {
             "8502", // control DTC setting
         )
         for (request in writes) assertNotNull(ReadOnlyPolicy.violation(request), request)
+    }
+
+    @Test
+    fun theDefaultSessionMayBeRequestedOnlyFromABodyUnit() {
+        for (body in listOf(0x700, 0x701, 0x703, 0x705, 0x750, 0x7DE)) {
+            assertNull(ReadOnlyPolicy.violation("1001", body), body.toString(16))
+            assertNull(ReadOnlyPolicy.violation("10011", body), "with the response count")
+        }
+        for (obd in listOf(0x7DF, 0x7E0, 0x7E1, 0x7E4, 0x7E7)) assertNotNull(ReadOnlyPolicy.violation("1001", obd), obd.toString(16))
+        assertNotNull(ReadOnlyPolicy.violation("1001"), "a raw command has no address")
+        assertNotNull(ReadOnlyPolicy.violation("1001", 0x1000), "not an 11-bit identifier")
+    }
+
+    @Test
+    fun everyOtherServiceThatChangesStateStaysRefusedEvenForABodyUnit() {
+        val refused = listOf(
+            "1003", "1002", "1004", "100301", "100101", "10", // other sessions, extra bytes, no sub-function
+            "3E00", "3E80", // tester present
+            "2701", "2702", // security access
+            "2EF19000", // write data by identifier
+            "310100FF", // routine control
+            "1101", "1103", // ECU reset
+            "14FFFFFF", // clear DTC information
+            "2803", "2F123403", "3400", "3D00", "8502", "04", "0800",
+        )
+        for (request in refused) {
+            assertNotNull(ReadOnlyPolicy.violation(request, 0x700), "$request to 700")
+            assertNotNull(ReadOnlyPolicy.violation(request, 0x7E0), "$request to 7E0")
+        }
+    }
+
+    @Test
+    fun theReceiveAddressOfTheAdapterMayBeSetToOneIdentifierOrReset() {
+        for (command in listOf("ATCRA708", "AT CRA 708", "ATCRA7E8", "ATCRA18DAF110", "ATCRA")) assertNull(ReadOnlyPolicy.violation(command), command)
+        for (command in listOf("ATCRA70", "ATCRA7080", "ATCRAXYZ", "ATCRA 7 0 8 0 0")) assertNotNull(ReadOnlyPolicy.violation(command), command)
     }
 
     @Test
@@ -149,6 +184,51 @@ class ReadOnlyGuardTest {
             },
             adapter.written.toString(),
         )
+    }
+
+    @Test
+    fun theDefaultSessionReachesTheAdapterOnlyForABodyUnitAndNothingElseOfServiceTenDoes() = runTest {
+        val adapter = adapter()
+        val driver = driver(adapter)
+        for (id in listOf(0x700, 0x7E0)) {
+            for (payload in listOf("1002", "1003", "3E00", "2701", "2EF19000", "310100FF", "1101", "14FFFFFF")) {
+                assertFailsWith<ReadOnlyViolationException> { driver.request(id, payload.hexToBytes(), expectedResponses = null) }
+            }
+        }
+        assertFailsWith<ReadOnlyViolationException> { driver.request(0x7E0, "1001".hexToBytes(), expectedResponses = 1) }
+        assertFailsWith<ReadOnlyViolationException> { driver.command("1001") }
+        assertTrue(adapter.written.none { it.startsWith("10") || it.startsWith("3E") }, adapter.written.toString())
+
+        driver.request(0x700, "1001".hexToBytes(), expectedResponses = 1)
+        assertTrue(adapter.written.contains("ATSH700") && adapter.written.contains("10011"), adapter.written.toString())
+    }
+
+    @Test
+    fun aDiagnosticRequestGoesOnlyToTheDiagnosticBlock() = runTest {
+        for (id in listOf(0x700, 0x7DF, 0x7E0, 0x7E4, 0x7FF)) assertNull(ReadOnlyPolicy.requestIdViolation(id), id.toString(16))
+        // The low identifiers carry the car's own broadcast: a data file must not be able to address them.
+        for (id in listOf(0x000, 0x1A0, 0x2C0, 0x6FF, 0x800, -1)) assertNotNull(ReadOnlyPolicy.requestIdViolation(id), id.toString(16))
+        assertTrue(ReadOnlyPolicy.isBodyUnit(0x7F0) && !ReadOnlyPolicy.isBodyUnit(0x1A0) && !ReadOnlyPolicy.isBodyUnit(0x7E4))
+
+        val adapter = adapter()
+        val driver = driver(adapter)
+        for (id in listOf(0x1A0, 0x2C0, 0x6FF)) {
+            assertFailsWith<ReadOnlyViolationException> { driver.request(id, "22F190".hexToBytes(), expectedResponses = null) }
+        }
+        assertTrue(adapter.written.none { it.startsWith("ATSH") || it.startsWith("22") }, adapter.written.toString())
+    }
+
+    @Test
+    fun theHeaderIsSentRightBeforeEverySessionRequestEvenWhenItIsTheOneInUse() = runTest {
+        val adapter = adapter()
+        val driver = driver(adapter)
+        driver.request(0x700, "22F190".hexToBytes(), expectedResponses = 1)
+        driver.request(0x700, "1001".hexToBytes(), expectedResponses = 1)
+        driver.request(0x700, "1001".hexToBytes(), expectedResponses = 1)
+        driver.request(0x700, "22F191".hexToBytes(), expectedResponses = 1)
+        val sent = adapter.written
+        // ATSH700 once for the first request, then once more right before each 10 01; the plain request after them reuses it.
+        assertEquals(listOf("ATSH700", "22F1901", "ATSH700", "10011", "ATSH700", "10011", "22F1911"), sent)
     }
 
     @Test

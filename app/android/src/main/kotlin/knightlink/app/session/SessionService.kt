@@ -25,6 +25,7 @@ import knightlink.app.R
 import knightlink.app.SharedPreferencesStringStore
 import knightlink.app.data.AndroidAssetSource
 import knightlink.app.data.AppConfig
+import knightlink.app.data.DashboardStore
 import knightlink.app.data.DefinitionStore
 import knightlink.app.data.DefinitionStoreException
 import knightlink.app.text
@@ -137,6 +138,9 @@ class SessionService : Service() {
             sessionConfig = VehicleSession.Config(memory = memoryStore),
             samples = AndroidSampleSource(applicationContext),
             tyreSensors = AndroidAdvertisementSource(applicationContext),
+            dashboardStore = DashboardStore(
+                SharedPreferencesStringStore(applicationContext.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)),
+            ),
         )
         notifications = SessionNotifications(this)
         knightPackManager = KnightPackManager(applicationContext)
@@ -332,6 +336,28 @@ class SessionService : Service() {
             announce = { speaker.speak(statusUtterance(it.text(applicationContext.resources))) },
         )
         scope.launch { announcer.collect(controller.uiState.map { it.connection }.distinctUntilChanged()) }
+        scope.launch { announceBodyScan() }
+    }
+
+    /**
+     * Tells the driver when the parked scan of the other units is over: a one-shot notification (heads-up) and, when spoken status is on, the voice.
+     * Only the step from "running" to an outcome counts, so a banner that is still on screen is not announced again.
+     */
+    private suspend fun announceBodyScan() {
+        var wasRunning = false
+        controller.uiState.map { it.bodyScan }.distinctUntilChanged().collect { progress ->
+            val message = when {
+                wasRunning && progress is BodyScanProgress.Complete -> R.string.bodyscan_spoken_complete
+                wasRunning && progress is BodyScanProgress.Partial -> R.string.bodyscan_spoken_partial
+                else -> null
+            }
+            wasRunning = progress is BodyScanProgress.Running
+            if (message == null) return@collect
+            val text = applicationContext.getString(message)
+            connectionLog.app("body scan: $text")
+            if (!closed) notifications.postScanDone(text)
+            if (voiceSettings.settings.value.spokenStatus) speaker.speak(statusUtterance(text))
+        }
     }
 
     /** The notification follows the status (at most once a second); leaving the idle state for good stops the service. */
@@ -463,10 +489,40 @@ internal class SessionNotifications(private val context: Context) {
 
     fun cancel() {
         manager.cancel(ID)
+        manager.cancel(SCAN_ID)
+    }
+
+    /** A one-shot heads-up that the parked scan is over and the driver may drive; the session's own notification is not touched. */
+    fun postScanDone(text: String) {
+        manager.createNotificationChannel(
+            NotificationChannel(SCAN_CHANNEL_ID, context.getString(R.string.bodyscan_channel_name), NotificationManager.IMPORTANCE_HIGH),
+        )
+        val open = PendingIntent.getActivity(
+            context,
+            0,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        manager.notify(
+            SCAN_ID,
+            NotificationCompat.Builder(context, SCAN_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_session)
+                .setContentTitle(context.getString(R.string.app_name))
+                .setContentText(text)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setTimeoutAfter(SCAN_NOTIFICATION_TIMEOUT_MS)
+                .setContentIntent(open)
+                .build(),
+        )
     }
 
     companion object {
         const val ID = 1
+        const val SCAN_ID = 2
         private const val CHANNEL_ID = "session"
+        private const val SCAN_CHANNEL_ID = "scan"
+        private const val SCAN_NOTIFICATION_TIMEOUT_MS = 120_000L
     }
 }

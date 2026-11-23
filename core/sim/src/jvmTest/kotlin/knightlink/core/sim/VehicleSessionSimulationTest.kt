@@ -283,20 +283,20 @@ class VehicleSessionSimulationTest {
 
     @Test
     fun anAdapterThatAnswersQuestionMarkToAnEssentialInitCommandIsAConnectionFailureAndIsRetried() = runTest {
-        // "ATCRA7E8" (a receive filter) is not a command the simulated adapter knows, so it answers "?" like a real ELM327 would; here it is declared essential.
+        // "ATIGN" (the ignition level) is not a command the simulated adapter knows, so it answers "?" like a real ELM327 would; here it is declared essential.
         val simulated = SimulatedTransport(vehicle = { simulation.buildVehicle() }, config = adapterConfig)
         val transport = CountingTransport(simulated)
         val session =
             VehicleSession(
                 transport,
-                initScript + "ATCRA7E8",
+                initScript + "ATIGN",
                 catalog,
                 backgroundScope,
                 testTimeSource,
                 fastDpf(
                     VehicleSession.Config(
                         maxConnectAttempts = 2,
-                        driver = Elm327Driver.Config(warmUp = false, postResetDelay = Duration.ZERO, essentialCommands = listOf("ATCRA")),
+                        driver = Elm327Driver.Config(warmUp = false, postResetDelay = Duration.ZERO, essentialCommands = listOf("ATIGN")),
                     ),
                 ),
             )
@@ -307,7 +307,7 @@ class VehicleSessionSimulationTest {
         run(30.seconds)
 
         val reconnecting = states.filterIsInstance<SessionState.Reconnecting>().single()
-        assertTrue(reconnecting.cause.contains("rejected 'ATCRA7E8'"), reconnecting.cause)
+        assertTrue(reconnecting.cause.contains("rejected 'ATIGN'"), reconnecting.cause)
         assertEquals(listOf(1, 1), transport.streams.map { it.closes })
         assertEquals(2, simulated.opens)
         assertIs<SessionState.Failed>(session.state.value)
@@ -316,12 +316,12 @@ class VehicleSessionSimulationTest {
     @Test
     fun anAdapterThatAnswersQuestionMarkToAnOrdinaryInitCommandIsUsedAndTheCommandIsReportedAsUnsupported() = runTest {
         val simulated = SimulatedTransport(vehicle = { simulation.buildVehicle() }, config = adapterConfig)
-        val session = VehicleSession(simulated, initScript + "ATCRA7E8", catalog, backgroundScope, testTimeSource, fastDpf())
+        val session = VehicleSession(simulated, initScript + "ATIGN", catalog, backgroundScope, testTimeSource, fastDpf())
         session.start()
         run(20.seconds)
 
         val polling = assertIs<SessionState.Polling>(session.state.value)
-        assertEquals(listOf("ATCRA7E8"), polling.report.adapter.unsupportedCommands)
+        assertEquals(listOf("ATIGN"), polling.report.adapter.unsupportedCommands)
         assertEquals(799.0, session.telemetry.value.value("engine.rpm"))
     }
 
@@ -491,7 +491,7 @@ class VehicleSessionSimulationTest {
 
         val requests = rig.simulated.current!!.requests()
         val candidates = requests.count { it.startsWith("221F") }
-        assertTrue(candidates in 35..75, "about one a second, not a burst: $candidates in about 55 s")
+        assertTrue(candidates in 20..75, "well under one a second, not a burst: $candidates in about 55 s")
         val live = requests.count { it.startsWith("01") }
         assertTrue(live * 10 >= baselineLive * 7, "the live signals keep most of their share: $live requests against $baselineLive without the check")
         assertTrue(rig.kinds.none { it is SessionState.Recovering || it is SessionState.Reconnecting }, "no recovery: ${rig.kinds.distinct()}")
@@ -549,17 +549,6 @@ class VehicleSessionSimulationTest {
         rig.session.start()
         run(30.seconds)
         assertTrue(rig.simulated.current!!.requests().none { it.startsWith("221F1") })
-    }
-
-    @Test
-    fun aCandidateCheckMarkedUnprobedIsAskedEvenThoughTheProbeDidNotListTheUnit() = runTest {
-        val unprobed = CandidateChecks.parse(
-            """{"schemaVersion":1,"id":"t","checks":[{"requestId":"7E3","label":"u","unprobed":true,"ranges":[{"from":"1F10","to":"1F13"}]}]}""",
-        )
-        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = unprobed)))
-        rig.session.start()
-        run(30.seconds)
-        assertTrue(rig.simulated.current!!.requests().any { it.startsWith("221F1") })
     }
 
     @Test

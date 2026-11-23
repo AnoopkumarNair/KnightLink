@@ -87,12 +87,20 @@ class DidSweepFileTest {
     }
 
     @Test
-    fun theHarrierCandidateFileIsValidAndAsksTheClusterAndBodyController() {
+    fun theHarrierCandidateFileIsValidAndAsksTheBodyUnits() {
         val file = File(System.getProperty("knightlink.repoRoot"), "definitions/discovery/candidates/tata/harrier-2020-kryotec-at.json")
         val checks = CandidateChecks.parse(file.readText())
+        assertEquals(listOf("700", "701", "703", "705", "750"), checks.checks.map { it.requestId })
+        assertTrue(checks.checks.all { it.unprobed }, "none of the body units is in the OBD probe")
+        assertTrue(checks.checks.all { check -> (0xF180..0xF1FF).all { it in check.identifiers() } }, "F180-F1FF on every unit")
         val cluster = checks.checks.single { it.requestId == "700" }.identifiers()
-        assertTrue(0xF190 in cluster && 0x0100 in cluster && 0x01FF in cluster)
-        assertTrue(checks.checks.single { it.requestId == "701" }.identifiers().isNotEmpty())
+        assertTrue(0xF190 in cluster && 0x0100 in cluster && 0x01FF in cluster && 0xDD00 in cluster && 0xDDFF in cluster)
+        assertEquals(0x80 * 5 + 0x100 * 2, checks.checks.sumOf { it.identifiers().size })
+        assertTrue(checks.checks.sumOf { it.identifiers().size } <= CandidateChecks.MAX_IDENTIFIERS)
+        assertEquals(listOf("MAT"), checks.appliesTo, "only for the Tata manufacturer code, as the vehicle definition's wmi")
+        assertTrue(checks.appliesTo("MAT123456789") && !checks.appliesTo("SIM123") && !checks.appliesTo(null))
+        assertEquals(0x708, checks.checks.first().responseCanId)
+        assertEquals(listOf(128, 256, 256), checks.checks.first().groups().map { it.size })
     }
 
     @Test
@@ -101,6 +109,10 @@ class DidSweepFileTest {
         assertTrue(runCatching { CandidateChecks.parse(big) }.isFailure)
         val badId = """{"schemaVersion":1,"id":"x","checks":[{"requestId":"7E100","label":"g","dids":["1F12"]}]}"""
         assertTrue(runCatching { CandidateChecks.parse(badId) }.isFailure)
+        val broadcastId = """{"schemaVersion":1,"id":"x","checks":[{"requestId":"1A0","label":"g","dids":["1F12"]}]}"""
+        assertTrue(runCatching { CandidateChecks.parse(broadcastId) }.isFailure, "a request id outside 700-7FF is the car's own broadcast")
+        val badPrefix = """{"schemaVersion":1,"id":"x","appliesTo":["M A"],"checks":[]}"""
+        assertTrue(runCatching { CandidateChecks.parse(badPrefix) }.isFailure)
         val unknownKey = """{"schemaVersion":1,"id":"x","checks":[],"service":"2E"}"""
         assertTrue(runCatching { CandidateChecks.parse(unknownKey) }.isFailure, "a file cannot name a service")
     }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 /** The one operation the loop needs from an adapter driver. */
@@ -50,9 +51,15 @@ public class PollingLoop(
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val maxConsecutiveFailures: Int = 5,
     private val idleDelay: Duration = 1.seconds,
+    /**
+     * The zero of the loop's clock, which is the zero the scheduler's times run from. Null: every collection starts its own clock at its own start
+     * (then [PollScheduler.restart] must be called before it, as the old times mean nothing on a new clock). With a mark the clock keeps running
+     * across collections, so a pause in polling (to ask something else) does not make every item due at once.
+     */
+    private val origin: TimeMark? = null,
 ) {
     public fun results(): Flow<PollResult> = flow {
-        val start = timeSource.markNow()
+        val start = origin ?: timeSource.markNow()
         var currentRequestId: Int? = null
         var failures = 0
 

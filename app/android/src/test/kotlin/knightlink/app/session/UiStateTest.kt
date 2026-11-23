@@ -1,5 +1,7 @@
 package knightlink.app.session
 
+import knightlink.app.data.DashboardReadings
+import knightlink.core.runtime.BodyScanState
 import knightlink.core.runtime.CaptureMode
 import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
@@ -221,5 +223,32 @@ class UiStateTest {
         val passive = UiState.IDLE.copy(captureMode = CaptureMode.PASSIVE)
         assertEquals(CaptureMode.PASSIVE, passive.captureMode)
         assertEquals(UiState.IDLE.liveValues, passive.liveValues)
+    }
+
+    @Test
+    fun theBodyScanIsShownAsProgressThenAsAnOutcomeTheDriverCanActOn() {
+        assertEquals(BodyScanProgress.Idle, BodyScanState.Idle.toProgress())
+        val running = BodyScanState.Running("instrument cluster", done = 250, total = 1000, secondsLeft = 47).toProgress()
+        assertEquals(BodyScanProgress.Running("instrument cluster", 250, 1000, 47), running)
+        assertEquals(0.25f, (running as BodyScanProgress.Running).fraction)
+        assertEquals(0f, BodyScanProgress.Running("x", 0, 0, 0).fraction, "no total yet: an empty bar, not a division by zero")
+        assertEquals(1f, BodyScanProgress.Running("x", 12, 10, 0).fraction)
+        assertFalse(running.isOutcome, "while it runs the driver is asked to wait")
+
+        assertEquals(BodyScanProgress.Complete(7), BodyScanState.Complete(7).toProgress())
+        assertEquals(BodyScanProgress.Partial(3), BodyScanState.Partial(3).toProgress())
+        assertEquals(BodyScanProgress.Skipped(moving = true), BodyScanState.Skipped(true, "the car moves (40 km/h)").toProgress())
+        assertEquals(BodyScanProgress.Skipped(moving = false), BodyScanState.Skipped(false, "the speed cannot be read").toProgress())
+        for (outcome in listOf(BodyScanProgress.Complete(0), BodyScanProgress.Partial(0), BodyScanProgress.Skipped(true))) assertTrue(outcome.isOutcome)
+        assertFalse(BodyScanProgress.Idle.isOutcome)
+        assertEquals(BodyScanProgress.Idle, UiState.IDLE.bodyScan)
+    }
+
+    @Test
+    fun dashboardReadingsAreWholeKilometresAndNothingElse() {
+        assertEquals(12345L, DashboardReadings.parseKm("12345"))
+        assertEquals(310L, DashboardReadings.parseKm(" 310 "))
+        assertEquals(0L, DashboardReadings.parseKm("0"))
+        for (bad in listOf("", "  ", "12.5", "-3", "12 345", "abc", "99999999", "12345678901234567890")) assertEquals(null, DashboardReadings.parseKm(bad), bad)
     }
 }

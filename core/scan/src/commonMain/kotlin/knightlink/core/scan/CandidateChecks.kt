@@ -4,6 +4,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 
+private const val RESPONSE_OFFSET = 8
+private const val VIN_LENGTH = 17
+
 /** Highest schema of the candidate file this build reads. */
 public const val SUPPORTED_CANDIDATES_SCHEMA: Int = 1
 
@@ -22,6 +25,25 @@ public data class CandidateCheck(
 ) {
     public val requestCanId: Int get() = requestId.toInt(16)
 
+    /** The control unit's response identifier under the usual UDS rule for 11-bit identifiers: the request identifier plus 8 (700 answers from 708). */
+    public val responseCanId: Int get() = requestCanId + RESPONSE_OFFSET
+
+    /**
+     * The identifiers in the order they are asked, in groups: [dids] first, then each range. A unit that is silent for a long run of one group
+     * is not asked the rest of that group, but the next group is still tried.
+     */
+    public fun groups(): List<List<Int>> {
+        val seen = HashSet<Int>()
+        val groups = ArrayList<List<Int>>()
+        val first = dids.map { it.toInt(16) }.filter { seen.add(it) }
+        if (first.isNotEmpty()) groups += first
+        for (range in ranges) {
+            val group = (range.first..range.last).filter { seen.add(it) }
+            if (group.isNotEmpty()) groups += group
+        }
+        return groups
+    }
+
     /** Every identifier once, [dids] first, then the ranges. */
     public fun identifiers(): List<Int> {
         val ordered = LinkedHashSet<Int>()
@@ -38,13 +60,24 @@ public data class CandidateChecks(
     val id: String,
     val checks: List<CandidateCheck>,
     val notes: String? = null,
+    /**
+     * VIN prefixes (the manufacturer code, e.g. `MAT`) of the vehicles this file is for. The check runs only when the probed VIN starts with one of
+     * them; a vehicle without a VIN, or with another one, is left alone. Prefixes of at most three characters also match a remembered probe, whose
+     * VIN is masked after the manufacturer code. Empty: any vehicle (the file's author has said nothing about which).
+     */
+    val appliesTo: List<String> = emptyList(),
 ) {
+    /** Whether the check is for a vehicle with [vin] (null when the probe found none). */
+    public fun appliesTo(vin: String?): Boolean =
+        appliesTo.isEmpty() || (vin != null && appliesTo.any { vin.startsWith(it, ignoreCase = true) })
+
     init {
         require(schemaVersion in 1..SUPPORTED_CANDIDATES_SCHEMA) { "$id: unsupported schema $schemaVersion" }
+        appliesTo.forEach { require(it.length in 1..VIN_LENGTH && it.all { c -> c.isLetterOrDigit() }) { "$id: '$it' is not a VIN prefix" } }
         var total = 0
         for (check in checks) {
             val unit = check.requestId.toIntOrNull(16)
-            require(check.requestId.length == 3 && unit != null && unit in 0..0x7FF) { "$id: '${check.requestId}' is not an 11-bit request id" }
+            require(check.requestId.length == 3 && unit != null && unit in 0x700..0x7FF) { "$id: '${check.requestId}' is not a request id from 700 to 7FF" }
             require(check.label.isNotBlank()) { "$id: ${check.requestId} has no label" }
             check.dids.forEach { require(it.length == 4 && it.toIntOrNull(16) != null) { "$id: '$it' is not a four-digit identifier" } }
             check.ranges.forEach { range ->
@@ -59,8 +92,8 @@ public data class CandidateChecks(
     }
 
     public companion object {
-        /** A one-time check is for a few hundred requests, not a scan. */
-        public const val MAX_IDENTIFIERS: Int = 512
+        /** A one-time check is for a couple of thousand requests at scan pace (about two minutes), not a scan. */
+        public const val MAX_IDENTIFIERS: Int = 2048
 
         private val json = Json { ignoreUnknownKeys = false }
 

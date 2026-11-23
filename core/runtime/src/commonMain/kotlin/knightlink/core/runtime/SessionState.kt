@@ -103,3 +103,27 @@ public sealed interface ScanState {
     /** The scan was not started or failed at once; [reason] is in words. */
     public data class Failed(val reason: String) : ScanState
 }
+
+/**
+ * Where the body-unit check is, next to [SessionState] (see [VehicleSession.bodyScan]). Its parked stage runs before polling starts and takes up to
+ * [VehicleSession.Config.bodyStageCap]; the user is told to keep the car parked meanwhile and when it is over.
+ */
+public sealed interface BodyScanState {
+    /** Nothing running, nothing to report. */
+    public data object Idle : BodyScanState
+
+    /**
+     * The parked stage is asking the units: [label] is the unit now, [done] of [total] identifiers of all units are done, and about [secondsLeft]
+     * seconds remain (never more than what is left of the time cap).
+     */
+    public data class Running(val label: String, val done: Int, val total: Int, val secondsLeft: Int) : BodyScanState
+
+    /** The parked stage finished every unit: [answered] data identifiers answered. The user may drive. */
+    public data class Complete(val answered: Int) : BodyScanState
+
+    /** The time cap or movement ended the parked stage before every unit was done; the rest is asked in the background. The user may drive. */
+    public data class Partial(val answered: Int) : BodyScanState
+
+    /** There was no parked stage (the car [moving], or its speed cannot be read, [reason] in words); the units are asked in the background, a few requests at a time. */
+    public data class Skipped(val moving: Boolean, val reason: String) : BodyScanState
+}

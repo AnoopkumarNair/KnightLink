@@ -1,5 +1,7 @@
 package knightlink.app.session
 
+import knightlink.app.data.DashboardReadings
+import knightlink.core.runtime.BodyScanState
 import knightlink.core.runtime.CaptureMode
 import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
@@ -39,6 +41,10 @@ data class UiState(
     val drive: DriveSummary? = null,
     /** Whether the session polls the car or only listens to its broadcast (passive capture); live values are paused while it is PASSIVE. */
     val captureMode: CaptureMode = CaptureMode.ACTIVE,
+    /** The scan of the car's other units (instrument cluster, body controller ...) that runs before polling starts; see [BodyScanProgress]. */
+    val bodyScan: BodyScanProgress = BodyScanProgress.Idle,
+    /** The odometer and range the driver typed (start and end of the drive). */
+    val dashboard: DashboardReadings = DashboardReadings(),
 ) {
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle
@@ -46,6 +52,37 @@ data class UiState(
     companion object {
         val IDLE = UiState(ConnectionStatus.Idle, vehicle = null, liveValues = emptyList())
     }
+}
+
+/**
+ * The parked scan of the car's other units in the app's terms: the driver is asked to keep the car parked while it [Running], told when it is
+ * [Complete] or [Partial] (they may drive), or that it was [Skipped] (it runs in the background). Texts are in string resources.
+ */
+sealed interface BodyScanProgress {
+    data object Idle : BodyScanProgress
+
+    /** [done] of [total] identifiers asked, about [secondsLeft] seconds to go; [fraction] is for a progress bar. */
+    data class Running(val label: String, val done: Int, val total: Int, val secondsLeft: Int) : BodyScanProgress {
+        val fraction: Float get() = if (total <= 0) 0f else (done.toFloat() / total).coerceIn(0f, 1f)
+    }
+
+    data class Complete(val answered: Int) : BodyScanProgress
+
+    data class Partial(val answered: Int) : BodyScanProgress
+
+    /** [moving] is true when the car moves, false when its speed could not be read. */
+    data class Skipped(val moving: Boolean) : BodyScanProgress
+
+    /** True for the three that tell the driver the scan is over (or will not run now): shown for a while, then gone. */
+    val isOutcome: Boolean get() = this is Complete || this is Partial || this is Skipped
+}
+
+fun BodyScanState.toProgress(): BodyScanProgress = when (this) {
+    BodyScanState.Idle -> BodyScanProgress.Idle
+    is BodyScanState.Running -> BodyScanProgress.Running(label, done, total, secondsLeft)
+    is BodyScanState.Complete -> BodyScanProgress.Complete(answered)
+    is BodyScanState.Partial -> BodyScanProgress.Partial(answered)
+    is BodyScanState.Skipped -> BodyScanProgress.Skipped(moving)
 }
 
 /** The drive modes of the car; [tag] is what goes into the recording (see ExternalSamples.modeLine). */

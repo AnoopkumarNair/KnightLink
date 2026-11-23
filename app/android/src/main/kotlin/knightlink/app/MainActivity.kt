@@ -212,6 +212,7 @@ class MainActivity : ComponentActivity() {
                 onDisconnect = { startService(SessionService.disconnectIntent(this)) },
                 onStartScan = { controller?.startFullScan() },
                 onDriveMode = { controller?.markDriveMode(it) },
+                onDashboard = { odo, dte, end -> controller?.markDashboard(odo, dte, end) },
                 onPassiveCapture = { controller?.setCaptureMode(it) },
                 onResumeScan = { controller?.resumeFullScan() },
                 onCancelScan = { controller?.cancelFullScan() },

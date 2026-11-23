@@ -99,4 +99,38 @@ class VirtualElm327Test {
         assertTrue(chunks.all { it.size <= 4 })
         assertEquals("ATI\r\nELM327 ", chunks.joinToString("") { it.decodeToString() })
     }
+
+    private fun withCluster(): VirtualVehicle {
+        val cluster = VirtualEcu(0x700, 0x708).apply {
+            needsCustomFlowControl = true
+            set("1001", "003201F4")
+            set("22F187", "504152544E554D424552")
+        }
+        return VirtualVehicle(vehicle().ecus + cluster)
+    }
+
+    @Test
+    fun aBodyUnitIsSilentUnderTheOrdinaryFilterAndHeardOnceTheReceiveAddressIsSet() = runTest {
+        val replies = VirtualElm327(withCluster()).talk(
+            "ATE0", "ATL0", "ATS0", "ATH1", "ATSH700", "1001",
+            "ATCRA708", "1001", "ATCRA", "1001", "ATCRA70", "ATCRA7E8", "1001",
+        )
+        assertEquals("NO DATA\r\r", replies[5])
+        assertEquals("OK\r\r", replies[6])
+        assertEquals("708065001003201F4\r\r", replies[7])
+        assertEquals("OK\r\r", replies[8])
+        assertEquals("NO DATA\r\r", replies[9], "ATCRA without an address is the automatic one again")
+        assertEquals("?\r\r", replies[10])
+        assertEquals("NO DATA\r\r", replies[12], "listening to 7E8 only")
+    }
+
+    @Test
+    fun aLongReplyOfABodyUnitNeedsFlowControlSetForIt() = runTest {
+        val whole = VirtualElm327(withCluster()).talk(
+            "ATE0", "ATL0", "ATS0", "ATH1", "ATSH700", "ATCRA708", "22F187", "ATFCSH700", "ATFCSD300000", "ATFCSM1", "22F187",
+        )
+        assertEquals("708100D", whole[6].take(7), "only the first frame without flow control")
+        assertEquals(1, whole[6].trim().lines().size)
+        assertTrue(whole[10].trim().lines().size == 2, whole[10])
+    }
 }

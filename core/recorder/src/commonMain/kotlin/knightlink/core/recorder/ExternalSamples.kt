@@ -62,6 +62,9 @@ public data class TpmsSample(
  * - `mode <name>`: the driver said the car is now in drive mode `ECO`, `CITY` or `SPORT` (a button in the app), so the mode can be read off the recording.
  * - `capture <passive|active>`: the app switched the session to passive capture (the adapter only listens to the bus broadcast, no request goes to
  *   the car) or back to active polling, so a reader knows which stretches of the raw traffic are broadcast only.
+ * - `odo <km> <start|end>` and `dte <km> <start|end>`: what the dashboard showed, typed by the driver at the start and at the end of a drive: the
+ *   odometer in whole kilometres and the distance to empty in whole kilometres (`-` when not known). They calibrate whatever the car
+ *   broadcasts or answers for those values; a shared copy keeps only a whole number (or `-`) and the word start or end.
  * - `tpms <where> <payload> <rssi>`: one advertisement of a tyre sensor (see [TpmsSample]), at the event's time. Where is the company id as
  *   four hex digits for manufacturer data, or `s:` and the 16-bit service UUID for service data (e.g. `s:FEAA`), the payload is hex (`-` when empty, at most [MAX_TPMS_PAYLOAD_BYTES] bytes), the RSSI is in dBm (`-` when not known). There is
  *   no device address in the line, and a shared copy keeps only what parses as these three fields.
@@ -72,6 +75,23 @@ public object ExternalSamples {
     public const val TPMS: String = "tpms"
     public const val MODE: String = "mode"
     public const val CAPTURE: String = "capture"
+    public const val ODOMETER: String = "odo"
+    public const val RANGE: String = "dte"
+
+    private const val START_WORD = "start"
+    private const val END_WORD = "end"
+
+    /** The most kilometres an `odo` or `dte` line holds: seven digits cover any odometer. */
+    public const val MAX_KM: Long = 9_999_999
+
+    /** The line for the odometer reading [km] (null for unknown) at the [end] of a drive, or its start: `odo 12345 start`. */
+    public fun odometerLine(km: Long?, end: Boolean): String = dashboardLine(ODOMETER, km, end)
+
+    /** The line for the distance to empty [km] (null for unknown): `dte 310 end`. */
+    public fun rangeLine(km: Long?, end: Boolean): String = dashboardLine(RANGE, km, end)
+
+    private fun dashboardLine(tag: String, km: Long?, end: Boolean): String =
+        "$tag " + (km?.takeIf { it in 0..MAX_KM }?.toString() ?: MISSING) + " " + if (end) END_WORD else START_WORD
 
     private const val PASSIVE_WORD = "passive"
     private const val ACTIVE_WORD = "active"
@@ -176,6 +196,13 @@ public object ExternalSamples {
             return parseTpms(0, payload)?.let(::tpmsLine) ?: "$TPMS $MISSING $MISSING $MISSING"
         }
         if (payload.startsWith("$MODE ") || payload == MODE) return modeLine(payload.removePrefix(MODE).trim())
+        for (tag in listOf(ODOMETER, RANGE)) {
+            if (payload.startsWith("$tag ") || payload == tag) {
+                val fields = payload.trim().split(' ')
+                val km = fields.getOrNull(1)?.takeIf { it.length <= MAX_KM_DIGITS && it.all { c -> c in '0'..'9' } }?.toLongOrNull()
+                return dashboardLine(tag, km, fields.getOrNull(2) == END_WORD)
+            }
+        }
         // Only the two words survive; anything else (which should not exist) becomes `capture active`, the harmless reading.
         if (payload.startsWith("$CAPTURE ") || payload == CAPTURE) return captureLine(payload.removePrefix(CAPTURE).trim() == PASSIVE_WORD)
         if (!payload.startsWith("$GPS ") && payload != GPS) return payload
@@ -192,6 +219,7 @@ public object ExternalSamples {
 
     private fun Double?.text(decimals: Int): String = if (this == null || !isFinite()) MISSING else fixed(this, decimals)
 
+    private const val MAX_KM_DIGITS = 7
     private const val MOTION_FIELDS = 7
     private const val GPS_FIELDS = 6
     private const val TPMS_FIELDS = 4

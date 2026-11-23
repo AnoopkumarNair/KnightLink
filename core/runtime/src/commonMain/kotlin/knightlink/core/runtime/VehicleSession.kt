@@ -9,6 +9,7 @@ import knightlink.core.common.emit
 import knightlink.core.common.toHex
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmStatus
+import knightlink.core.scan.CandidateCheck
 import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.FullScan
@@ -167,10 +168,19 @@ public class VehicleSession(
          */
         val seedScan: ScanResult? = null,
         /**
-         * Identifiers no scan has asked yet, asked once per app session while connected, for the control units that answered the probe (see
-         * [candidateCheckItems]). Their answers show in the recording; nothing else is done with them.
+         * Identifiers no scan has asked yet, asked once per vehicle for the control units that answered the probe or are marked unprobed (the body
+         * units): in a parked stage before polling starts when the car stands still, otherwise a few at a time between stretches of polling (see
+         * [BodyUnitReader]). Their answers show in the recording; nothing else is done with them.
          */
         val candidateChecks: CandidateChecks? = null,
+        /** How the body-unit check asks: pace, how often the speed is read, when a unit counts as absent. */
+        val body: BodyUnitReader.Config = BodyUnitReader.Config(),
+        /** The longest the parked body-unit stage takes before polling starts; what is left is asked in the background. */
+        val bodyStageCap: Duration = 120.seconds,
+        /** While driving (or when the speed is unknown), the body-unit check interrupts polling this often... */
+        val bodyPacedEvery: Duration = 15.seconds,
+        /** ... for at most this many requests (a pause of about a second, and under one request a second on average). */
+        val bodyPacedRequests: Int = 10,
         /** How passive capture listens: slice length, identifier groups, limits (see [setCaptureMode]). */
         val capture: PassiveCapture.Config = PassiveCapture.Config(),
         /**
@@ -206,6 +216,7 @@ public class VehicleSession(
             require(scanPauseSlice > Duration.ZERO) { "scanPauseSlice must be positive" }
             require(asleepAfter > Duration.ZERO) { "asleepAfter must be positive" }
             require(asleepProbeInterval > Duration.ZERO) { "asleepProbeInterval must be positive" }
+            require(bodyStageCap > Duration.ZERO && bodyPacedEvery > Duration.ZERO && bodyPacedRequests >= 1) { "the body check's limits must be positive" }
         }
     }
 
@@ -254,33 +265,22 @@ public class VehicleSession(
     /** The data identifiers the last scan found, polled raw from then on; kept across reconnects, like [knowledge]. */
     private var discoveryItems: List<PollItem> = emptyList()
 
-    // The one-time candidate check. The queue lives as long as the app session: an identifier that was asked leaves it for good, so a
-    // reconnect carries on where the last connection stopped. Only one candidate at a time is given to the scheduler, and the next one only
-    // after CANDIDATE_SPACING: a never-asked item is always due first, so 256 of them at once would push the vehicle's own signals aside.
-    private var candidatesQueued = false
-    private val candidateQueue = ArrayDeque<PollItem>()
-    private var candidateActive: PollItem? = null
-    private var candidateNextAt: Duration = Duration.ZERO
+    // The one-time body-unit check (see [BodyUnitReader]). The units and their progress live as long as the app session (and, with a memory
+    // store, across installations of the session), so a reconnect carries on where the last connection stopped.
+    private var bodyPrepared = false
+    private var bodyUnits: List<CandidateCheck> = emptyList()
+    private var bodyCheckId: String = config.candidateChecks?.id.orEmpty()
+    private val bodyProgress = LinkedHashMap<String, BodyUnitProgress>()
 
-    /** What the scheduler polls beyond the vehicle's own signals: the discovery identifiers, and the candidate being asked now. */
-    private fun extras(): List<PollItem> = discoveryItems + listOfNotNull(candidateActive)
+    /** Set per connection: the parked stage did not finish, so the rest is asked a few at a time between stretches of polling. */
+    private var bodyPaced = false
+    private var bodyReader: BodyUnitReader? = null
+    private var bodyFailures = 0
+    private var bodyGaveUp = false
+    private val _bodyScan = MutableStateFlow<BodyScanState>(BodyScanState.Idle)
 
-    /**
-     * Called with every result: the active candidate leaves when it has been asked (answered or refused), and the next one is given to the
-     * scheduler when CANDIDATE_SPACING has passed. Nothing happens when there is no check.
-     */
-    private fun feedCandidates(result: PollResult, now: Duration) {
-        val active = candidateActive
-        if (active != null && result.item.id == active.id) {
-            candidateActive = null
-            candidateNextAt = now + CANDIDATE_SPACING
-            activeScheduler?.replaceExtras(extras())
-        }
-        if (candidateActive == null && candidateQueue.isNotEmpty() && now >= candidateNextAt) {
-            candidateActive = candidateQueue.removeFirst()
-            activeScheduler?.replaceExtras(extras())
-        }
-    }
+    /** What polling asks beyond the vehicle's own signals: the discovery identifiers. */
+    private fun extras(): List<PollItem> = discoveryItems
     private var discoveryIds: Set<String> = emptySet()
 
     // What is remembered about the vehicle between sessions (see [Config.memory]); only the session coroutine and the poll collector touch it.
@@ -324,6 +324,12 @@ public class VehicleSession(
      * after a reconnect or a recovery: the mode lives as long as the link does.
      */
     public val captureMode: StateFlow<CaptureMode> = _captureMode.asStateFlow()
+
+    /**
+     * Where the body-unit check is: running in its parked stage (with a progress and an estimate of the seconds left), done, partly done
+     * (the time cap or movement ended it; the rest is asked in the background), or skipped (the car moves or its speed is unknown).
+     */
+    public val bodyScan: StateFlow<BodyScanState> = _bodyScan.asStateFlow()
 
     /** Where the full scan is. See [startScan]. */
     public val scan: StateFlow<ScanState> = _scan.asStateFlow()
@@ -540,10 +546,15 @@ public class VehicleSession(
         driver.initialize(if (cached == null) initScript + config.probeScript else pollingScript)
 
         restoreFuelEarly()
+        var probedNow = false
         val known = cached ?: restoreStored(driver) ?: probeUntilVehicleAnswers(driver).also {
+            probedNow = true
             // The probe's timing is done with; polling runs with the definition's own, and a re-init must restore that, not the probe's.
             if (config.probeScript.isNotEmpty() || config.pollScript.isNotEmpty()) driver.applyScript(pollingScript, send = config.pollScript)
         }
+        // The probe has read the voltage already (ATRV); without a probe on this connection it is asked once now.
+        val probedVoltage = known.report.adapter.voltageText
+        if (probedNow && probedVoltage != null) note(SessionEvents.BATTERY, probedVoltage) else readBattery(driver)
         // A convenience, never a reason to fail the connection: a bad seed or candidate file only costs itself.
         try {
             applySeed(known.report)
@@ -559,11 +570,14 @@ public class VehicleSession(
         } catch (e: Exception) {
             note(SessionEvents.MEMORY, "the one-time identifier check was not used: ${e.message ?: e::class.simpleName}")
         }
+        runBodyStage(driver)
         val items = confirmedPollItems(catalog, known.coverage, primaryEcu, config.pollPeriod)
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
         val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(extras()) }
         activeScheduler = scheduler
-        val loop = PollingLoop(requester, scheduler, timeSource)
+        // One clock for the whole connection: polling is interrupted now and then (the body check, a scan), and what the scheduler learned about
+        // the items' timing must survive that.
+        val loop = PollingLoop(requester, scheduler, timeSource, origin = timeSource.markNow())
         val decoder = TelemetryDecoder(catalog)
 
         onPolling()
@@ -571,6 +585,20 @@ public class VehicleSession(
         // With nothing to ask for, silence means nothing: initialising the adapter again would only disturb a link that works.
         // Items that are asked once leave nothing to watch after the first round.
         pollWithRecovery(driver, loop, scheduler, decoder, known, watchSilence = items.any { it.period.isFinite() })
+    }
+
+    /** The battery voltage as the adapter reads it (`ATRV`), once per connection, as an event: it explains a session that went wrong at cranking. */
+    private suspend fun readBattery(driver: Elm327Driver) {
+        try {
+            val text = driver.command("ATRV").firstOrNull { it.isNotBlank() && it.trim() != "?" }?.trim() ?: return
+            note(SessionEvents.BATTERY, text)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AdapterDisconnectedException) {
+            throw e
+        } catch (_: Exception) {
+            // A convenience, never a reason to fail the connection.
+        }
     }
 
     // What is remembered between sessions -------------------------------------------------------------------
@@ -607,6 +635,7 @@ public class VehicleSession(
         gearRevisionSaved = gear.revision
         fuel = FuelTracker(stored.fuel)
         _fuelFills.value = stored.fuel.fills
+        loadBodyProgress(stored.body)
         rebuildDiscovery()
         val partial = stored.scan?.takeIf { it.resumable }
         if (partial != null && _scan.value == ScanState.Idle) _scan.value = ScanState.Finished(partial, restored = true)
@@ -628,6 +657,7 @@ public class VehicleSession(
                 fuel = FuelTracker()
                 _fuelFills.value = emptyList()
                 gearRevisionSaved = 0
+                bodyProgress.clear()
                 rebuildDiscovery()
             }
         }
@@ -657,25 +687,145 @@ public class VehicleSession(
         note(SessionEvents.MEMORY, "polling ${discoveryItems.size} seeded data identifiers (from an earlier scan of this kind of vehicle), no scan needed")
     }
 
-    /** Adds the one-time candidate check (once per app session) for the control units that answered the probe. */
+    /** Decides, once per app session, which units the one-time body check covers: those that answered the probe and those marked unprobed. */
     private suspend fun applyCandidates(report: CapabilityReport) {
         val checks = config.candidateChecks ?: return
-        if (candidatesQueued) {
-            // A reconnect: the one that was in flight when the link went is asked again, then the queue carries on.
-            candidateActive?.let { candidateQueue.addFirst(it) }
-            candidateActive = null
-            candidateNextAt = Duration.ZERO
+        if (bodyPrepared) return
+        bodyPrepared = true
+        bodyCheckId = checks.id
+        val vin = report.ecus.firstNotNullOfOrNull { it.vin }
+        if (!checks.appliesTo(vin)) {
+            // The app's config names one vehicle; another car on the same app must not be asked the first one's identifiers.
+            bodyUnits = emptyList()
+            note(SessionEvents.BODY_SCAN, "skipped: not a known vehicle")
             return
         }
         val answering = report.ecus.mapNotNull { it.requestId.toIntOrNull(16) }.toSet()
-        val items = candidateCheckItems(checks, answering)
-        candidatesQueued = true
-        if (items.isEmpty()) return
-        candidateQueue.addAll(items)
-        note(
-            SessionEvents.MEMORY,
-            "asking ${items.size} untested data identifiers once, one about every ${CANDIDATE_SPACING.inWholeSeconds} s, to see whether any answers (read-only)",
-        )
+        bodyUnits = checks.checks.filter { it.requestCanId in answering || it.unprobed }
+        bodyUnits.forEach { bodyProgress.getOrPut(it.requestId) { BodyUnitProgress() } }
+    }
+
+    /** Takes over the stored progress of the body check when it is for the same candidate file. */
+    private fun loadBodyProgress(stored: BodyCheckMemory) {
+        bodyProgress.clear()
+        if (stored.checkId.isNotEmpty() && stored.checkId == bodyCheckId) bodyProgress.putAll(stored.units)
+    }
+
+    private fun pendingBodyUnits(): List<CandidateCheck> = bodyUnits.filter { bodyProgress[it.requestId]?.done != true }
+
+    private fun bodyTotals(): Pair<Int, Int> {
+        val done = bodyUnits.sumOf { unit -> bodyProgress[unit.requestId]?.let { if (it.done) it.total.coerceAtLeast(it.asked) else it.asked } ?: 0 }
+        val total = bodyUnits.sumOf { unit -> unit.identifiers().size }
+        return done to total
+    }
+
+    private fun bodyAnswered(): Int = bodyProgress.values.sumOf { it.positive }
+
+    private fun bodyReaderFor(driver: Elm327Driver): BodyUnitReader = BodyUnitReader(driver, events, timeSource, config.body)
+
+    /**
+     * The parked stage: with the car standing still (speed 0, read once), every unit that is not done is asked at scan pace before polling starts,
+     * for at most [Config.bodyStageCap]. The speed is read again while it runs; when the car moves, the speed cannot be read, the cap passes or
+     * the link is lost, the stage ends and the rest is asked in the background (see [runBodySlice]), or on the next connection. Polling is simply
+     * not running meanwhile, and nothing the units answer (or do not) reaches the silence, asleep or bus-fault logic.
+     */
+    private suspend fun runBodyStage(driver: Elm327Driver) {
+        bodyPaced = false
+        bodyReader = null
+        if (_bodyScan.value is BodyScanState.Running) _bodyScan.value = BodyScanState.Idle
+        if (config.candidateChecks == null || bodyGaveUp) return
+        val pending = pendingBodyUnits()
+        if (pending.isEmpty()) {
+            note(SessionEvents.BODY_SCAN, "the body units were all checked on an earlier connection or session; nothing to ask")
+            return
+        }
+        val reader = bodyReaderFor(driver)
+        bodyReader = reader
+        val speed = try {
+            reader.readSpeed()
+        } catch (e: AdapterDisconnectedException) {
+            throw e
+        } catch (e: TransportException) {
+            throw e
+        } catch (e: AdapterException) {
+            null
+        }
+        if (speed != 0) {
+            val reason = if (speed == null) "the speed cannot be read" else "the car moves ($speed km/h)"
+            note(SessionEvents.BODY_SCAN, "no parked stage: $reason; the ${pending.size} body units are asked in the background, about one identifier a second")
+            bodyPaced = true
+            _bodyScan.value = BodyScanState.Skipped(moving = speed != null, reason = reason)
+            return
+        }
+        note(SessionEvents.BODY_SCAN, "parked stage: ${pending.size} body units, up to ${config.bodyStageCap}")
+        val stageStart = timeSource.markNow()
+        publishBodyRunning(pending.first().label, stageStart)
+        val outcome = try {
+            reader.run(pending, bodyProgress, BodyUnitReader.Limits(maxTime = config.bodyStageCap, watchSpeed = true)) { label, _, _ ->
+                memoryDirty = true
+                publishBodyRunning(label, stageStart)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AdapterDisconnectedException) {
+            throw e
+        } catch (e: TransportException) {
+            throw e
+        } catch (e: AdapterException) {
+            note(SessionEvents.BODY_SCAN, "the parked stage failed: ${describe(e)}; the rest is asked in the background")
+            bodyFailures++
+            BodyOutcome.SPEED_UNKNOWN
+        } finally {
+            memoryDirty = true
+            saveMemory()
+            // However the stage ended (a lost link included), the banner must not stay on "keep the car parked".
+            if (_bodyScan.value is BodyScanState.Running) {
+                _bodyScan.value = if (bodyAnswered() > 0 || bodyTotals().first > 0) BodyScanState.Partial(bodyAnswered()) else BodyScanState.Idle
+            }
+        }
+        val remaining = pendingBodyUnits()
+        if (outcome == BodyOutcome.COMPLETED || remaining.isEmpty()) {
+            _bodyScan.value = BodyScanState.Complete(bodyAnswered())
+            note(SessionEvents.BODY_SCAN, "parked stage complete: ${bodyAnswered()} identifiers answered")
+        } else {
+            bodyPaced = true
+            _bodyScan.value = BodyScanState.Partial(bodyAnswered())
+            note(SessionEvents.BODY_SCAN, "parked stage ended (${outcome.name.lowercase()}); ${remaining.size} units are asked in the background")
+        }
+    }
+
+    private fun publishBodyRunning(label: String, stageStart: TimeMark) {
+        val (done, total) = bodyTotals()
+        val capLeft = (config.bodyStageCap - stageStart.elapsedNow()).coerceAtLeast(Duration.ZERO).inWholeSeconds
+        val needed = kotlin.math.ceil((total - done).coerceAtLeast(0) / config.body.requestsPerSecond * BODY_ESTIMATE_MARGIN).toLong()
+        _bodyScan.value = BodyScanState.Running(label, done, total, minOf(needed, capLeft).toInt())
+    }
+
+    /** A few body-unit requests between two stretches of polling (the car moves or its speed is unknown). Errors cost only the check. */
+    private suspend fun runBodySlice(driver: Elm327Driver) {
+        val pending = pendingBodyUnits()
+        if (pending.isEmpty() || bodyGaveUp) return
+        val reader = bodyReader ?: bodyReaderFor(driver).also { bodyReader = it }
+        try {
+            reader.run(pending, bodyProgress, BodyUnitReader.Limits(maxRequests = config.bodyPacedRequests)) { _, _, _ -> memoryDirty = true }
+            bodyFailures = 0
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AdapterDisconnectedException) {
+            throw e
+        } catch (e: TransportException) {
+            throw e
+        } catch (e: AdapterException) {
+            note(SessionEvents.BODY_SCAN, "a background slice of the body check failed: ${describe(e)}")
+            if (++bodyFailures >= MAX_BODY_FAILURES) {
+                bodyGaveUp = true
+                note(SessionEvents.BODY_SCAN, "the body check is given up for this session after $bodyFailures failed slices")
+            }
+        }
+        saveMemory()
+        if (pendingBodyUnits().isEmpty()) {
+            note(SessionEvents.BODY_SCAN, "every body unit is checked: ${bodyAnswered()} identifiers answered")
+        }
     }
 
     /**
@@ -699,7 +849,17 @@ public class VehicleSession(
         val probe = memoryProbe ?: return
         if (!memoryDirty) return
         try {
-            store.save(VehicleMemory(key = key, probe = probe, scan = lastScan, discovery = history.toMap(), gear = gear.model, fuel = fuel.model))
+            store.save(
+                VehicleMemory(
+                    key = key,
+                    probe = probe,
+                    scan = lastScan,
+                    discovery = history.toMap(),
+                    gear = gear.model,
+                    fuel = fuel.model,
+                    body = BodyCheckMemory(bodyCheckId, bodyProgress.toMap()),
+                ),
+            )
             memoryDirty = false
         } catch (_: Exception) {
             // Remembering is a convenience.
@@ -782,9 +942,29 @@ public class VehicleSession(
         watchSilence: Boolean,
     ) {
         var failedReinits = 0
+        var afterSlice = false
         while (true) {
             val answersBefore = answers
-            val end = pollUntilTrouble(loop, scheduler, decoder, watchSilence, listenForScan = true)
+            // Slices only while the car is being watched and answers: not with nothing to watch, and not while it looks asleep or has gone quiet (more than half the silence window).
+            val slice = bodyPaced && !bodyGaveUp && watchSilence && pendingBodyUnits().isNotEmpty()
+            val end = pollUntilTrouble(
+                loop,
+                scheduler,
+                decoder,
+                watchSilence,
+                limit = if (slice) config.bodyPacedEvery else null,
+                listenForScan = true,
+                restartScheduler = !afterSlice,
+            )
+            afterSlice = false
+            if (end is PollEnd.TimeUp) {
+                if (noDataSince == null && (lastAnswer?.elapsedNow() ?: Duration.ZERO) < config.silenceWindow / 2) {
+                    runBodySlice(driver)
+                    afterSlice = true
+                }
+                lastAnswer = timeSource.markNow()
+                continue
+            }
             if (end is PollEnd.ScanRequested) {
                 runScan(driver, loop, scheduler, decoder, watchSilence)
                 lastAnswer = timeSource.markNow()
@@ -1084,9 +1264,11 @@ public class VehicleSession(
         watchSilence: Boolean,
         limit: Duration? = null,
         listenForScan: Boolean = false,
+        restartScheduler: Boolean = true,
     ): PollEnd = coroutineScope {
-        // A silence backs every item off and a new collection of the loop starts its clock again: begin with a clean slate.
-        scheduler.restart()
+        // A silence backs every item off: begin with a clean slate. Not after a pause that only interrupted healthy polling (the body check), which
+        // must not make every slow item due again at once.
+        if (restartScheduler) scheduler.restart()
         val meter = RateMeter(start = sessionStart.elapsedNow())
         var ratesShown = sessionStart.elapsedNow()
         var ratesLogged = ratesShown
@@ -1188,7 +1370,6 @@ public class VehicleSession(
             isCleanNoData(result) -> if (noDataSince == null) noDataSince = timeSource.markNow()
             else -> noDataSince = null
         }
-        feedCandidates(result, sessionStart.elapsedNow())
         observeDiscovery(result)
         if (result.answered) {
             lastAnswer = timeSource.markNow()
@@ -1344,6 +1525,10 @@ public class VehicleSession(
         const val SIGNAL_FUEL_LEVEL = "fuel.level_pct"
         const val SIGNAL_SPEED = "vehicle.speed"
         const val MAX_SAMPLES = 1_000_000
+        const val MAX_BODY_FAILURES = 3
+
+        /** The time left of the parked stage is shown a little longer than the pace alone says: refusals and the speed checks cost time too. */
+        const val BODY_ESTIMATE_MARGIN = 1.15
 
         /** Engine speed and vehicle speed are read a few hundred milliseconds apart; older than this and the pair says nothing about the gear. */
         val GEAR_MAX_AGE: Duration = 1.seconds
@@ -1357,6 +1542,3 @@ public class VehicleSession(
         val RATES_LOG_INTERVAL: Duration = 30.seconds
     }
 }
-
-/** The pause between two identifiers of the one-time check: it must not take more than a small share of the bus. */
-private val CANDIDATE_SPACING: Duration = 1.seconds

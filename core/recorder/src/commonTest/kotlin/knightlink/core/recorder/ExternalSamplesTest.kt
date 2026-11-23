@@ -225,4 +225,24 @@ class ExternalSamplesTest {
         assertEquals("capture active", ExternalSamples.scrub("capture active"))
         assertEquals("capture active", ExternalSamples.scrub("capture my street 12"))
     }
+
+    @Test
+    fun theDashboardReadingsAreWholeKilometresAtTheStartOrTheEnd() {
+        assertEquals("odo 12345 start", ExternalSamples.odometerLine(12345, end = false))
+        assertEquals("odo 12399 end", ExternalSamples.odometerLine(12399, end = true))
+        assertEquals("dte 310 start", ExternalSamples.rangeLine(310, end = false))
+        assertEquals("dte - end", ExternalSamples.rangeLine(null, end = true))
+        assertEquals("odo - start", ExternalSamples.odometerLine(-5, end = false))
+        assertEquals("odo 12345 start", ExternalSamples.scrub("odo 12345 start"))
+        assertEquals("dte 310 end", ExternalSamples.scrub("dte 310 end"))
+    }
+
+    @Test
+    fun aSharedCopyKeepsOnlyANumberAndTheWordStartOrEndInTheDashboardLines() {
+        assertEquals("odo - start", ExternalSamples.scrub("odo my street 12 start"))
+        assertEquals("odo - start", ExternalSamples.scrub("odo 12345678901 end").replace("end", "start"))
+        assertEquals("dte - start", ExternalSamples.scrub("dte 12.5 whatever"))
+        assertEquals("dte - start", ExternalSamples.scrub("dte"))
+        assertEquals("odo 7 end", ExternalSamples.scrub("odo 7 end with a secret"))
+    }
 }

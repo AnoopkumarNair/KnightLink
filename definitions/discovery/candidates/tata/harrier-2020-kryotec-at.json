@@ -1,9 +1,13 @@
 {
   "schemaVersion": 1,
+  "appliesTo": ["MAT"],
   "id": "discovery/candidates/tata/harrier-2020-kryotec-at",
-  "notes": "One-time read-only service 22 tries on the body ECUs that answered 19 02 in Car Scanner's log (700 instrument cluster, 701 body controller). Looking for odometer, distance to empty and the cluster's own fuel value; the engine ECU's identifiers are already polled. Standard identification identifiers F180-F1A0 name the unit, 0100-01FF is a guessed block of cluster data. Answers appear in the recording as 22 xxxx requests to 700/701 and their 62 replies; refusals are expected for most. Delete this file once the answer is known.",
+  "notes": "One-time read-only body-unit check, done once per vehicle per installation (a parked stage of up to two minutes at the start of a session, or a few requests a minute while driving). The units are the body ECUs that answered 19 02 in Car Scanner's log (700 instrument cluster, 701 body controller) and three that commonly sit on the same bus (703 head unit, 705 climate, 750 ESP); none of them is in the OBD probe, so all are marked unprobed. Per unit the app sets the receive address (ATCRA, response id = request id + 8) and flow control, sends 19 02 FF (stored fault codes; also proves the setup works) and service 22 for F180-F1FF, and 10 01 (default session; it makes the unit start its default session afresh, so it is sent only once, after a plain 22 was refused)  (the standard identification identifiers); the instrument cluster also gets 0100-01FF and DD00-DDFF, where scanners show odometer, distance to empty and fuel. Looking for odometer, distance to empty and the cluster's own fuel value; the engine ECU's identifiers are already polled. Answers appear in the recording as 22 xxxx requests to 700-750 and their 62 replies; refusals are expected for most. Runs only on a vehicle whose VIN starts with one of appliesTo (the Tata manufacturer code MAT, as in the Harrier definition). Delete this file once the answer is known.",
   "checks": [
-    { "requestId": "700", "label": "instrument cluster", "unprobed": true, "ranges": [ { "from": "F180", "to": "F1A0" }, { "from": "0100", "to": "01FF" } ] },
-    { "requestId": "701", "label": "body controller", "unprobed": true, "ranges": [ { "from": "F180", "to": "F1A0" } ] }
+    { "requestId": "700", "label": "instrument cluster", "unprobed": true, "ranges": [ { "from": "F180", "to": "F1FF" }, { "from": "0100", "to": "01FF" }, { "from": "DD00", "to": "DDFF" } ] },
+    { "requestId": "701", "label": "body controller", "unprobed": true, "ranges": [ { "from": "F180", "to": "F1FF" } ] },
+    { "requestId": "703", "label": "head unit", "unprobed": true, "ranges": [ { "from": "F180", "to": "F1FF" } ] },
+    { "requestId": "705", "label": "climate control", "unprobed": true, "ranges": [ { "from": "F180", "to": "F1FF" } ] },
+    { "requestId": "750", "label": "ESP", "unprobed": true, "ranges": [ { "from": "F180", "to": "F1FF" } ] }
   ]
 }
