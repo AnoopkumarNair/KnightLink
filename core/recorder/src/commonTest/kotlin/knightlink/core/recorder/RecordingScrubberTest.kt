@@ -9,6 +9,27 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class RecordingScrubberTest {
+    @Test
+    fun dropGpsLeavesNoPositionAtAllAndKeepsTheRestOfTheExternalLines() {
+        val recording = Recording(
+            RecordingHeader("adapter", "note"),
+            listOf(
+                RecordingEvent.open(0),
+                RecordingEvent.external(1000, "gps 12.97162 77.59463 41.0 90 5"),
+                RecordingEvent.external(1500, "gps - - - - -"),
+                RecordingEvent.external(2000, "mode SPORT"),
+                RecordingEvent.close(3000),
+            ),
+        )
+        val kept = RecordingScrubber.scrub(recording).recording
+        assertEquals(5, kept.events.size, "by default a fix is rounded, not dropped")
+        val dropped = RecordingScrubber.scrub(recording, dropGps = true).recording
+        assertEquals(listOf(EventKind.OPEN, EventKind.EXTERNAL, EventKind.CLOSE), dropped.events.map { it.kind })
+        assertEquals("mode SPORT", dropped.events[1].payload)
+        assertFalse(dropped.toText().contains("gps"))
+        assertTrue(dropped.events.all { it.timeMs <= 3000 }, "times stay relative to the start of the recording")
+    }
+
     private val vin = "SIM1234567890ABCD"
     private val scrubbedVin = "SIM00000000000000"
 

@@ -16,8 +16,8 @@ class VoiceSettingsStoreTest {
     }
 
     @Test
-    fun defaultsAreSpokenStatusOnAndFullVolume() {
-        assertEquals(VoiceSettings(spokenStatus = true, volume = 1.0f), VoiceSettingsStore(MapStore()).settings.value)
+    fun defaultsAreSpokenStatusOffAndFullVolume() {
+        assertEquals(VoiceSettings(spokenStatus = false, volume = 1.0f), VoiceSettingsStore(MapStore()).settings.value)
     }
 
     @Test

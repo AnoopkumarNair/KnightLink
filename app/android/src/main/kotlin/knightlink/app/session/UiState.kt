@@ -8,6 +8,7 @@ import knightlink.core.runtime.FaultsState
 import knightlink.core.runtime.LadderState
 import knightlink.core.runtime.ScanState
 import knightlink.core.runtime.SessionState
+import knightlink.core.runtime.drivetruth.DriveTruthReport
 import knightlink.core.scan.FaultKind
 import knightlink.core.scan.ReadinessSummary
 import knightlink.core.scan.ScanOutcome
@@ -66,6 +67,18 @@ data class UiState(
     val ladder: LadderProgress = LadderProgress.Idle,
     /** The deep scan switch: whether an unknown car is also swept for data identifiers (levels L3 and L4). The user can switch it off. */
     val deepScan: Boolean = true,
+    /** Whether the car is one the app has met before (its profile is kept on this phone), or a new one to ask about. */
+    val garage: GarageStatus = GarageStatus.Unknown,
+    /** The fuel price per litre in rupees that the driver entered; null until they do. */
+    val fuelPrice: Double? = null,
+    /** Where the drive is: not started, under way, or over (see [DriveStageTracker]). */
+    val driveStage: DriveStage = DriveStage.NOT_STARTED,
+    /** What the drive that just ended can say about itself; null until a drive ends (and until the reducer feeds one). */
+    val driveTruth: DriveTruthReport? = null,
+    /** How the learning ladder last ended on this connection (it stays after the banner goes); [LadderProgress.Idle] before it has. */
+    val ladderResult: LadderProgress = LadderProgress.Idle,
+    /** How the parked scan of the other units last ended on this connection; [BodyScanProgress.Idle] before it has. */
+    val bodyResult: BodyScanProgress = BodyScanProgress.Idle,
 ) {
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle

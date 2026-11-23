@@ -243,4 +243,256 @@
     <!-- Notification -->
     <string name="notification_channel_name">Vehicle session</string>
     <string name="notification_channel_description">Shows while KnightLink is connected to a vehicle or running the demo.</string>
+
+    <!-- Friend-facing screens: navigation and shell -->
+    <string name="nav_scan">Scan</string>
+    <string name="nav_car">Car</string>
+    <string name="nav_faults">Faults</string>
+    <string name="nav_live">Live</string>
+    <string name="nav_settings">Settings</string>
+    <string name="dev_title">Developer</string>
+    <string name="dev_back">Back</string>
+    <string name="title_hint">Press and hold for the developer page</string>
+
+    <!-- Guided flow: step names and states -->
+    <string name="step_adapter">Adapter</string>
+    <string name="step_ignition">Ignition</string>
+    <string name="step_answers">Car answers</string>
+    <string name="step_identified">Car identified</string>
+    <string name="step_health">Health check</string>
+    <string name="step_ready">Ready to drive</string>
+    <string name="step_drive">Drive detected</string>
+    <string name="step_report">Drive report</string>
+    <string name="step_state_pending">not started</string>
+    <string name="step_state_active">in progress</string>
+    <string name="step_state_done">done</string>
+    <string name="step_state_failed">needs attention</string>
+    <string name="step_still_working">Still working. This is taking longer than usual.</string>
+
+    <!-- Guided flow: one sentence per step -->
+    <string name="s_adapter_waiting">Plug the adapter into the car, then tap Connect.</string>
+    <string name="s_adapter_connecting">Looking for your adapter…</string>
+    <string name="s_adapter_found">Adapter connected.</string>
+    <string name="s_adapter_link_lost">Lost the adapter for a moment. Reconnecting…</string>
+    <string name="s_adapter_failed">Couldn\'t reach the adapter. Check that it is plugged in, then try again.</string>
+    <string name="s_ignition_prompt">Start the car or switch the ignition on, then wait before driving.</string>
+    <string name="s_ignition_waiting">Waiting for the car to wake up. Start the car or switch the ignition on, then wait before driving.</string>
+    <string name="s_ignition_ok">The car is awake.</string>
+    <string name="s_ignition_failed">Couldn\'t reach the car. Turn the ignition on and try again.</string>
+    <string name="s_answer_later">Next: finding out how your car talks.</string>
+    <string name="s_answer_looking">Finding out how your car talks. This can take a few seconds.</string>
+    <string name="s_answer_ok">The car answers.</string>
+    <string name="s_answer_ok_protocol">The car answers (%1$s).</string>
+    <string name="s_answer_unsupported">This car talks a language the app can\'t read yet.</string>
+    <string name="s_answer_unsupported_protocol">This car talks a language the app can\'t read yet (%1$s).</string>
+    <string name="s_answer_gateway">The car is awake but isn\'t letting the app talk to its engine computer.</string>
+    <string name="s_identify_later">Then: working out which car this is.</string>
+    <string name="s_identify_reading">Working out which car this is…</string>
+    <string name="s_identify_ok">Car identified.</string>
+    <string name="s_identify_ok_name">This is a %1$s.</string>
+    <string name="s_health_later">Then: a quick health check while you are parked.</string>
+    <string name="s_health_running">Checking the car while it is parked. Please keep it parked.</string>
+    <string name="s_health_running_unit">Checking %1$s. Please keep the car parked.</string>
+    <string name="s_health_learning">Getting to know this car. Please keep it parked.</string>
+    <string name="s_health_ok">Health check done.</string>
+    <string name="s_health_stopped">The health check ended early to be safe. You can drive.</string>
+    <string name="s_health_flagged">A new fault code or the warning lamp appeared, so nothing more was asked. You can drive.</string>
+    <string name="s_ready_later">Then you can drive.</string>
+    <string name="s_ready_now">You can drive now. I will keep learning while you drive.</string>
+    <string name="s_ready_done">Ready.</string>
+    <string name="s_drive_later">Waiting for the health check.</string>
+    <string name="s_drive_waiting">Waiting for you to start driving.</string>
+    <string name="s_drive_under_way">Driving. The drive is being recorded.</string>
+    <string name="s_drive_started">The drive was recorded.</string>
+    <string name="s_report_later">Your report appears here when the drive ends.</string>
+    <string name="s_report_building">The drive has ended. Putting your report together.</string>
+    <string name="s_report_ready">Your drive report is ready.</string>
+
+    <!-- Scan screen -->
+    <string name="scan_drive_now_title">You can drive now</string>
+    <string name="scan_drive_now_body">I will keep learning while you drive.</string>
+    <string name="scan_idle_title">Ready when you are</string>
+    <string name="scan_idle_body">Plug the adapter into the car, switch the ignition on, then connect.</string>
+    <string name="scan_welcome">Welcome back, %1$s</string>
+    <string name="scan_odometer_known">Odometer: %1$s km, as you told me.</string>
+    <string name="scan_odometer_unknown">Odometer: not noted yet.</string>
+    <string name="scan_edit">Edit</string>
+    <string name="demo_drive">Demo drive</string>
+    <string name="demo_drive_leave">Leave the demo</string>
+    <string name="demo_banner">Demo drive: a made-up car. Nothing here is read from a real one.</string>
+
+    <!-- New car form -->
+    <string name="car_new_title">Tell me about this car</string>
+    <string name="car_new_intro">This stays on your phone. It helps the app read the car\'s numbers correctly.</string>
+    <string name="car_make">Make</string>
+    <string name="car_model">Model</string>
+    <string name="car_model_pick">Pick the model</string>
+    <string name="car_name">Name (optional)</string>
+    <string name="car_fuel">Fuel</string>
+    <string name="car_gearbox">Gearbox</string>
+    <string name="car_odometer">Odometer now (km)</string>
+    <string name="car_save">Save</string>
+    <string name="car_cancel_edit">Cancel</string>
+    <string name="fuel_petrol">Petrol</string>
+    <string name="fuel_diesel">Diesel</string>
+    <string name="fuel_cng">CNG</string>
+    <string name="fuel_hybrid">Hybrid</string>
+    <string name="gearbox_manual">Manual</string>
+    <string name="gearbox_automatic">Automatic</string>
+
+    <!-- Car summary -->
+    <string name="summary_empty_title">No car yet</string>
+    <string name="summary_empty_body">Connect to your car on the Scan tab. Its summary appears here.</string>
+    <string name="summary_support_full">Full support</string>
+    <string name="summary_support_basic">Basic support</string>
+    <string name="summary_protocol">Talks %1$s</string>
+    <string name="verdict_not_checked_title">Not checked yet</string>
+    <string name="verdict_not_checked_body">The fault codes are read once the car is identified.</string>
+    <string name="verdict_clear_title">No fault codes stored</string>
+    <string name="verdict_clear_body">The car reported none. Method: read from the car\'s fault memory.</string>
+    <plurals name="verdict_codes_title">
+        <item quantity="one">%1$d fault code stored</item>
+        <item quantity="other">%1$d fault codes stored</item>
+    </plurals>
+    <string name="verdict_codes_body">This is what the car reported. The app does not judge how serious a code is.</string>
+    <string name="verdict_lamp_on">The warning lamp is on.</string>
+    <string name="readiness_line">Emission checks ready: %1$d of %2$d</string>
+    <string name="readiness_method">Method: the car\'s own emissions self-checks.</string>
+    <string name="readiness_none">Emission checks: not reported by this car.</string>
+    <string name="fuel_level_title">Fuel level</string>
+    <string name="fuel_level_value">%1$d %%</string>
+    <string name="fuel_level_description">Fuel level in percent: %1$d</string>
+    <string name="fuel_level_method">From the car\'s fuel level sensor.</string>
+    <string name="not_reported">Not reported by this car.</string>
+    <string name="distance_title">Distance</string>
+    <string name="distance_from_you">%1$s km, typed by you.</string>
+    <string name="coverage_section">What the app could read</string>
+    <string name="coverage_section_hint">Not available on this car means the app asked and the car did not offer it. That is a fact about the car, not a fault.</string>
+    <string name="cov_identity">Car identity</string>
+    <string name="cov_engine">Engine basics</string>
+    <string name="cov_fuel">Fuel</string>
+    <string name="cov_distance">Distance and odometer</string>
+    <string name="cov_faults">Fault codes and readiness</string>
+    <string name="cov_gearbox">Gearbox</string>
+    <string name="cov_drive_mode">Drive mode</string>
+    <string name="cov_tyres">Tyres</string>
+    <string name="cov_body">Other control units</string>
+    <string name="cov_emissions">Emissions (DPF, AdBlue)</string>
+    <string name="cov_state_collected">Collected</string>
+    <string name="cov_state_partial">Partial</string>
+    <string name="cov_state_unavailable">Not available on this car</string>
+    <string name="cov_state_not_tried">Not tried yet</string>
+    <string name="cov_note_model_missing">model not known</string>
+    <string name="cov_note_from_you">typed by you</string>
+    <string name="cov_note_calculated">calculated, not read</string>
+    <string name="cov_note_unconfirmed">readings unconfirmed</string>
+    <string name="cov_note_approximate">approximate only</string>
+    <string name="cov_note_needs_profile">only on cars with a full profile</string>
+    <string name="cov_note_asked_nothing">asked, nothing answered</string>
+    <string name="cov_note_stopped">stopped early to be safe</string>
+    <string name="cov_note_in_progress">in progress</string>
+    <string name="cov_note_deep_off">deep scan is off</string>
+    <string name="cov_note_no_readiness">readiness not reported</string>
+    <string name="cov_row_description">%1$s: %2$s</string>
+    <string name="cov_row_description_note">%1$s: %2$s, %3$s</string>
+
+    <!-- Fuel price -->
+    <string name="fuel_price_title">Fuel price</string>
+    <string name="fuel_price_hint">Used only to work out what a drive cost. It stays on your phone.</string>
+    <string name="fuel_price_field">Price per litre</string>
+    <string name="fuel_price_save">Save price</string>
+    <string name="fuel_price_saved">Saved: ₹%1$s per litre.</string>
+    <string name="fuel_price_invalid">Type a price like 104.5.</string>
+
+    <!-- Share the car\'s findings -->
+    <string name="findings_button">Share this car\'s findings</string>
+    <string name="findings_title">Share this car\'s findings</string>
+    <string name="findings_intro">This makes one file. You choose where to send it; the app uploads nothing.</string>
+    <string name="findings_included_title">Included</string>
+    <string name="findings_included">• The protocol, and the car\'s make, model and model year\n• The manufacturer code from the VIN (its first three characters)\n• The control units that answered, the data they support and their calibration ids\n• Fault codes and emission readiness\n• App and adapter versions\n• A recording of the car\'s conversation with the adapter</string>
+    <string name="findings_excluded_title">Not included</string>
+    <string name="findings_excluded">• The VIN\n• Your location: no GPS at all\n• Your name\n• Clock times: times in the recording count from its start</string>
+    <string name="findings_create">Create and share</string>
+    <string name="findings_none">Connect to your car first, then try again.</string>
+    <string name="findings_failed">Couldn\'t prepare the file: %1$s</string>
+    <string name="findings_chooser">Share findings</string>
+
+    <!-- Faults screen -->
+    <string name="faults_screen_none_body">The car reported no stored codes.</string>
+    <string name="faults_kind_confirmed">Confirmed</string>
+    <string name="faults_kind_pending">Pending</string>
+    <string name="faults_kind_permanent">Stored by the emissions system</string>
+    <string name="faults_neutral">These are the codes the car reported. The app does not judge how serious a code is.</string>
+    <string name="faults_read_again">Read again</string>
+    <string name="faults_not_read_title">Fault codes not read yet</string>
+    <string name="faults_not_read_body">They are read once the car is identified.</string>
+    <string name="faults_failed_title">Couldn\'t read the fault codes</string>
+    <string name="faults_failed_body">Turn the ignition on and try again.</string>
+    <string name="faults_lamp_on">Warning lamp: on</string>
+    <string name="faults_lamp_off">Warning lamp: off</string>
+    <string name="faults_lamp_unknown">Warning lamp: not reported by this car</string>
+    <string name="faults_item_description">%1$s, %2$s, %3$s</string>
+
+    <!-- Live screen -->
+    <string name="live_empty_title">Nothing live yet</string>
+    <string name="live_empty_body">Connect to your car on the Scan tab. Live values appear here.</string>
+    <string name="live_speed">Speed</string>
+    <string name="live_rpm">Engine speed</string>
+    <string name="live_coolant">Coolant temperature</string>
+    <string name="live_fuel">Fuel level</string>
+    <string name="live_load">Engine load</string>
+    <string name="live_rate">Fuel rate</string>
+    <string name="live_method_speed">From the car\'s speed signal</string>
+    <string name="live_method_rpm">From the engine computer</string>
+    <string name="live_method_coolant">From the engine\'s temperature sensor</string>
+    <string name="live_method_fuel">From the car\'s fuel level sensor</string>
+    <string name="live_method_load">Worked out by the engine computer</string>
+    <string name="live_method_rate">From the car\'s fuel-rate signal</string>
+    <string name="live_method_missing">Not reported by this car</string>
+    <string name="live_method_stale">No update for %1$d s</string>
+
+    <!-- Drive Truth card -->
+    <string name="dt_title">Your drive</string>
+    <string name="dt_cost_full">%1$s for %2$s km (%3$s/km)</string>
+    <string name="dt_cost_km">%1$s for %2$s km</string>
+    <string name="dt_cost_only">%1$s</string>
+    <string name="dt_fuel">%1$s L of fuel used</string>
+    <string name="dt_fuel_economy">%1$s L of fuel used, %2$s km per litre</string>
+    <string name="dt_idle">Idling: %1$s</string>
+    <string name="dt_idle_cost">Idling: %1$s (%2$s)</string>
+    <string name="dt_distance_both">Distance: %1$s km by the car, %2$s km by GPS</string>
+    <string name="dt_distance_car">Distance: %1$s km by the car\'s speed signal</string>
+    <string name="dt_distance_gps">Distance: %1$s km by GPS</string>
+    <string name="dt_vs_gps">Car-reported speed vs GPS: %1$s</string>
+    <string name="dt_time">Time: %1$s, %2$s of it moving</string>
+    <string name="dt_method_rate">Method: from the car\'s own fuel-rate signal</string>
+    <string name="dt_method_maf">Method: estimated from the air-flow sensor</string>
+    <string name="dt_method_level">Method: from the drop in the fuel level</string>
+    <string name="dt_note_fuel_not_reported">This car does not report fuel use, so no cost is shown.</string>
+    <string name="dt_note_fuel_approx">Fuel use is only approximate on this car.</string>
+    <string name="dt_note_price_missing">Add a fuel price to see what the drive cost.</string>
+    <string name="dt_note_gps_poor">GPS was too weak to compare distances.</string>
+    <string name="dt_note_speed_gaps">The car\'s speed signal had gaps, so its distance is not shown.</string>
+    <string name="dt_note_too_short">The drive was too short to compare the car\'s speed with GPS.</string>
+    <string name="dt_note_not_ended">The drive has not ended yet, so these figures may change.</string>
+    <string name="dt_note_airflow">Fuel is estimated from air flow, which assumes a petrol engine.</string>
+    <string name="dt_note_density">Litres use an assumed fuel density.</string>
+    <string name="dt_share">Share</string>
+    <string name="dt_share_header">My drive, from KnightLink</string>
+    <string name="dt_share_chooser">Share your drive</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_voice">Voice</string>
+    <string name="settings_voice_hint">Spoken updates are off until you switch them on.</string>
+    <string name="settings_trip">Trip cost</string>
+    <string name="settings_scanning">Scanning</string>
+    <string name="settings_sharing">Sharing</string>
+    <string name="settings_phone">This phone</string>
+    <string name="settings_location_on">Location is on, so a drive can be compared with GPS.</string>
+    <string name="settings_location_off">Location is off. Allow it to compare the car\'s speed with GPS.</string>
+    <string name="settings_about">About</string>
+    <string name="settings_version">Version %1$s</string>
+    <string name="settings_developer">Developer page</string>
+    <string name="settings_developer_hint">Raw data for troubleshooting. A long press on the title opens it too.</string>
 </resources>
