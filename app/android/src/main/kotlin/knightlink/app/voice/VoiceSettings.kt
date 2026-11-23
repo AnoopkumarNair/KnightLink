@@ -17,7 +17,7 @@ data class VoiceSettings(val spokenStatus: Boolean = DEFAULT_SPOKEN_STATUS, val 
         const val MIN_VOLUME = 0.1f
         const val MAX_VOLUME = 1.0f
         const val DEFAULT_VOLUME = 1.0f
-        const val DEFAULT_SPOKEN_STATUS = true
+        const val DEFAULT_SPOKEN_STATUS = false
 
         /** [volume] within the allowed range; the default for something that is not a number. */
         fun clampVolume(volume: Float): Float = if (volume.isNaN()) DEFAULT_VOLUME else volume.coerceIn(MIN_VOLUME, MAX_VOLUME)

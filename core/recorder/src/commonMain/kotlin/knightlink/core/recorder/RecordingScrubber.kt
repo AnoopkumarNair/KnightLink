@@ -60,8 +60,12 @@ public object RecordingScrubber {
     private val vinRequest = Regex("(?:0902|22F190)[0-9A-F]?")
     private val noData = "NO DATA\r\r>".encodeToByteArray()
 
-    /** @return the scrubbed copy; [Recording.truncated] and the order of events are kept. */
-    public fun scrub(recording: Recording): ScrubResult {
+    /**
+     * @param dropGps true leaves out every `gps` line, so the copy holds no position at all (not even a rounded one); event times are
+     *   milliseconds since the recording started either way, never a clock time
+     * @return the scrubbed copy; [Recording.truncated] and the order of events are kept.
+     */
+    public fun scrub(recording: Recording, dropGps: Boolean = false): ScrubResult {
         val events = recording.events.toMutableList<RecordingEvent?>()
         val warnings = ArrayList<String>()
         val vins = LinkedHashSet<String>()
@@ -97,7 +101,7 @@ public object RecordingScrubber {
         sweepBytes(events, EventKind.RX, vins)
         sweepFrameHex(events, vins)
         val header = RecordingHeader(recording.header.adapter?.let { it.scrubText(vins) }, recording.header.note?.let { it.scrubText(vins) })
-        val scrubbed = events.filterNotNull().map {
+        val scrubbed = events.filterNotNull().filterNot { dropGps && it.kind == EventKind.EXTERNAL && ExternalSamples.isGps(it.payload) }.map {
             when (it.kind) {
                 EventKind.ERROR, EventKind.EVENT -> it.copy(payload = it.payload.scrubText(vins))
                 // A position never leaves the device more precisely than about a kilometre.

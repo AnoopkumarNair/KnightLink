@@ -24,8 +24,10 @@ import knightlink.core.runtime.SessionFacts
 import knightlink.core.runtime.SessionState
 import knightlink.core.runtime.VehicleResolver
 import knightlink.core.runtime.VehicleSession
+import knightlink.core.runtime.drivetruth.DriveTruthReport
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.FaultCodeDictionary
+import knightlink.core.scan.ScanSummary
 import knightlink.core.signals.SignalCatalog
 import knightlink.core.telemetry.TelemetrySnapshot
 import knightlink.core.tpms.TpmsDecoder
@@ -117,6 +119,14 @@ class SessionController(
     /** The deep scan switch (levels L3 and L4 of the learning ladder on an unknown car): on unless the user turned it off. */
     private val deepScan = MutableStateFlow(settings?.get(DEEP_SCAN_KEY) != "off")
 
+    /** The cars this phone has met, and the fuel price the driver typed; both live in [settings] (null keeps nothing). */
+    private val garage: CarProfileStore? = settings?.let(::CarProfileStore)
+    private val fuelPriceStore: FuelPriceStore? = settings?.let(::FuelPriceStore)
+    private val fuelPrice = MutableStateFlow(fuelPriceStore?.load())
+
+    /** What the drive that just ended can say; fed by [publishDriveTruth]. Forgotten when a connection starts. */
+    private val driveTruth = MutableStateFlow<DriveTruthReport?>(null)
+
     /** One connection request, from [connect] to the end of [disconnect]. */
     private class Run(val scope: CoroutineScope) {
         @Volatile
@@ -157,6 +167,20 @@ class SessionController(
         /** The data files that turn the probe into who the car is; set when the run is prepared. */
         @Volatile
         var identityData: IdentityData? = null
+
+        /** The latest probe report and what the full scan counted: what "share this car's findings" is made from. */
+        @Volatile
+        var lastReport: CapabilityReport? = null
+
+        @Volatile
+        var scanSummary: ScanSummary? = null
+
+        /** How the ladder and the parked body scan last ended, kept after their banners go. */
+        var ladderResult: LadderProgress = LadderProgress.Idle
+        var bodyResult: BodyScanProgress = BodyScanProgress.Idle
+
+        /** Tells the drive start and end from the speed and rpm the screen state is built from. */
+        val driveTracker = DriveStageTracker()
     }
 
     /** The manufacturer codes, the model picker lists of a run. */
@@ -195,6 +219,7 @@ class SessionController(
             }
         } ?: return false
         driveMode = null
+        driveTruth.value = null
         connectionLog?.app("connect requested: ${target.describe()}")
         _uiState.value = UiState(ConnectionStatus.Connecting(1), vehicle = null, liveValues = emptyList())
         run.scope.launch { start(run, target) }
@@ -277,14 +302,15 @@ class SessionController(
         run.voice = VoiceFacts(started, catalog.signalProvenance(), ReadingAges.fromPeriods(periods))
         run.session = session
         run.scope.launch { publish(session, started, signalPeriods(checkNotNull(catalog)), run) }
-        run.scope.launch { keepScanResults(session) }
+        run.scope.launch { keepScanResults(run, session) }
         startSamples(run, checkNotNull(recorded), started, tyres)
         session.start()
     }
 
     /** The scan's result goes beside the recording of the link it ran on (VIN masked), where it can be pulled from the phone. */
-    private suspend fun keepScanResults(session: VehicleSession) {
+    private suspend fun keepScanResults(run: Run, session: VehicleSession) {
         session.scan.filterIsInstance<ScanState.Finished>().collect { finished ->
+            run.scanSummary = finished.result.summary
             recordings.writeSidecar(SCAN_RESULT_SUFFIX, finished.result.toJson(pretty = true))
             connectionLog?.app("full scan ended: ${finished.result.outcome.name.lowercase()}")
         }
@@ -440,6 +466,40 @@ class SessionController(
         session.setVehicleModel(model)
         connectionLog?.app("vehicle model set by the user")
         return true
+    }
+
+    /**
+     * Keeps what the driver told about the car in the garage on this phone, and its odometer reading goes into the recording like a dashboard
+     * entry (`odo` line). False when there is no way to tell this car from another yet (the identity has no end of a VIN), in which case nothing is kept.
+     */
+    fun saveCarProfile(profile: CarProfile): Boolean {
+        val identity = _uiState.value.identity
+        val key = garage?.keyFor(identity) ?: return false
+        garage.save(key, profile)
+        profile.model?.let { setVehicleModel(it) }
+        profile.odometerKm?.let { markDashboard(it.toString(), "", end = false) }
+        connectionLog?.app("car profile saved")
+        return true
+    }
+
+    /** The fuel price per litre in rupees, as typed: kept on this phone. An empty text clears it; an unusable one changes nothing. */
+    fun setFuelPrice(text: String) {
+        fuelPrice.value = fuelPriceStore?.save(text) ?: FuelPriceStore.parse(text)
+    }
+
+    /** Hands over what the drive that ended can say (from the Drive Truth reducer); it appears on the report card. Null takes it away. */
+    fun publishDriveTruth(report: DriveTruthReport?) {
+        driveTruth.value = report
+    }
+
+    /**
+     * What "Share this car's findings" is made from, or null when there is no session or nothing probed yet. The VIN stays out: see [FindingsInput].
+     */
+    fun findingsInput(appVersion: String, bundleId: String): FindingsInput? {
+        val run = synchronized(lock) { current } ?: return null
+        val report = run.lastReport ?: return null
+        val state = _uiState.value
+        return FindingsInput(report, state.identity, state.faults, run.scanSummary, appVersion, bundleId)
     }
 
     /** Resumes an interrupted scan from its last completed stage; false when there is none to resume. */
@@ -609,7 +669,10 @@ class SessionController(
                 run.dashboardStamped = false
             }
             val facts = session.facts.value
-            if (state is SessionState.Polling) lastReport = state.report
+            if (state is SessionState.Polling) {
+                lastReport = state.report
+                run.lastReport = state.report
+            }
             if (state is SessionState.Polling && (state.report !== summarised || facts.compressionIgnition != summarisedDiesel)) {
                 summarised = state.report
                 summarisedDiesel = facts.compressionIgnition
@@ -621,17 +684,31 @@ class SessionController(
             // The rate is only meaningful while polling; elsewhere (reconnecting, recovering) the old number would mislead.
             val rate = session.rates.value.takeIf { state is SessionState.Polling && it.window.isPositive() }?.requestsPerSecond
             val ladder = ladderProgress(run, session.ladder.value.toProgress())
+            val bodyScan = bodyScanProgress(run, session.bodyScan.value.toProgress())
+            val shownLadder = session.ladder.value.toProgress()
+            if (shownLadder.isOutcome || shownLadder is LadderProgress.Flagged) run.ladderResult = shownLadder
+            val shownBody = session.bodyScan.value.toProgress()
+            if (shownBody.isOutcome) run.bodyResult = shownBody
+            val liveNow = liveValues(session.telemetry.value, started.elapsedNow(), staleAfter, periods)
+            val stage = run.driveTracker.update(
+                started.elapsedNow().inWholeMilliseconds,
+                liveNow.freshNumber("vehicle.speed"),
+                liveNow.freshNumber("engine.rpm"),
+                asleep = state is SessionState.VehicleAsleep,
+            )
+            val key = garage?.keyFor(identity)
+            val profile = key?.let { garage?.load(it) }
             _uiState.value = UiState(
                 // What the car is asked for while the ladder runs is said in the status, so the notification does not say "Probing".
                 (ladder as? LadderProgress.Running)?.let { ConnectionStatus.Learning(it.level) } ?: state.toStatus(),
                 vehicle,
-                liveValues(session.telemetry.value, started.elapsedNow(), staleAfter, periods),
+                liveNow,
                 rate,
                 session.scan.value.toStatus(),
                 run.tyres?.invoke(),
                 driveSummary(session.fuelFills.value, driveMode, if (facts.known) TANK_LITRES else 0.0),
                 session.captureMode.value,
-                bodyScanProgress(run, session.bodyScan.value.toProgress()),
+                bodyScan,
                 dashboard.value,
                 identity,
                 facts.known,
@@ -639,6 +716,16 @@ class SessionController(
                 make?.let { data?.models?.modelsFor(it) }.orEmpty(),
                 ladder,
                 deepScan.value,
+                garage = when {
+                    identity == null -> GarageStatus.Unknown
+                    profile != null -> GarageStatus.Known(profile)
+                    else -> GarageStatus.New
+                },
+                fuelPrice = fuelPrice.value,
+                driveStage = stage,
+                driveTruth = driveTruth.value,
+                ladderResult = run.ladderResult,
+                bodyResult = run.bodyResult,
             )
         }
     }
@@ -687,6 +774,10 @@ class SessionController(
         val DEFAULT_STALE_AFTER: Duration = 5.seconds
     }
 }
+
+/** The number of a signal's latest reading, or null when it is missing, stale or not a number. */
+private fun List<LiveValue>.freshNumber(signalId: String): Double? =
+    firstOrNull { it.signalId == signalId && !it.stale }?.valueText?.toDoubleOrNull()
 
 /** What kind of link, for the log. Never an address. */
 private fun ConnectionTarget.describe(): String = when (this) {

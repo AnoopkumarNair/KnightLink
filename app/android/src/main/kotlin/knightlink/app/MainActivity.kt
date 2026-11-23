@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -25,12 +26,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -46,23 +47,31 @@ import knightlink.app.ble.LastAdapter
 import knightlink.app.ble.PendingStart
 import knightlink.app.ble.PermissionDenial
 import knightlink.app.ble.PermissionPolicy
+import knightlink.app.session.DemoDrive
+import knightlink.app.session.FindingsExport
 import knightlink.app.session.RecordingShare
+import knightlink.app.session.RecordingStore
 import knightlink.app.session.RecordingsSummary
+import knightlink.app.session.SessionController
 import knightlink.app.session.SessionService
 import knightlink.app.session.UiState
 import knightlink.app.ui.AdapterPickerDialog
+import knightlink.app.ui.AppActions
 import knightlink.app.ui.ConnectionActions
+import knightlink.app.ui.DemoActions
 import knightlink.app.ui.DriveDataActions
 import knightlink.app.ui.HomeScreen
 import knightlink.app.ui.SessionViewModel
 import knightlink.app.ui.TalkActions
 import knightlink.app.ui.VoiceActions
+import knightlink.app.ui.design.KnightLinkTheme
 import knightlink.app.ui.voice.ThemePack
 import knightlink.app.ui.voice.VoiceOverlay
 import knightlink.app.ui.voice.rememberReduceMotion
 import knightlink.app.voice.ButtonGesture
 import knightlink.app.voice.MediaButtonTrigger
 import knightlink.app.voice.VoiceSettings
+import knightlink.core.recorder.Recording
 import knightlink.platform.ble.BlePermissions
 import knightlink.platform.ble.DiscoveredAdapter
 import knightlink.voice.api.Priority
@@ -76,6 +85,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -100,6 +110,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private val locationAllowed = MutableStateFlow(false)
+
+    /** What to tell the user about sharing the car's findings when it could not be done; null when there is nothing to say. */
+    private val findingsMessage = MutableStateFlow<String?>(null)
 
     /** Whether Android's battery optimisation leaves this app alone (the phone's sensors stalled for tens of seconds before link drops without it). */
     private val backgroundExempt = MutableStateFlow(true)
@@ -133,7 +146,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            KnightLinkTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Home()
                 }
@@ -174,8 +187,21 @@ class MainActivity : ComponentActivity() {
         val controller by viewModel.controller.collectAsStateWithLifecycle()
         // A new flow only when the service's controller changes; until the first bind completes the screen reads as idle.
         val uiFlow = remember(controller) { controller?.uiState ?: IDLE_STATE }
-        val state by uiFlow.collectAsStateWithLifecycle()
-        val recordings = rememberRecordingsSummary(state.isActive)
+        val realState by uiFlow.collectAsStateWithLifecycle()
+        // The debug-only demo drive plays made-up frames through the screens; a real session is never mixed into it.
+        var demoFrame by rememberSaveable { mutableStateOf<Int?>(null) }
+        val demoActive = demoFrame != null
+        LaunchedEffect(demoActive) {
+            while (demoActive) {
+                delay(DEMO_FRAME_MS)
+                val next = (demoFrame ?: break) + 1
+                if (next >= DemoDrive.frames.size) break
+                demoFrame = next
+            }
+        }
+        val state = demoFrame?.let { DemoDrive.frames[it.coerceIn(0, DemoDrive.frames.lastIndex)] } ?: realState
+        val recordings = rememberRecordingsSummary(realState.isActive)
+        val findingsText by findingsMessage.collectAsStateWithLifecycle()
         val pendingShare by viewModel.pendingShare.collectAsStateWithLifecycle()
         val shareError by viewModel.shareError.collectAsStateWithLifecycle()
 
@@ -209,7 +235,7 @@ class MainActivity : ComponentActivity() {
                 onStartDemo = { begin(PendingStart.Demo) },
                 onConnectLast = { begin(PendingStart.ConnectTo(it)) },
                 onChooseAdapter = { begin(PendingStart.ChooseAdapter) },
-                onDisconnect = { startService(SessionService.disconnectIntent(this)) },
+                onDisconnect = { if (demoActive) demoFrame = null else startService(SessionService.disconnectIntent(this)) },
                 onStartScan = { controller?.startFullScan() },
                 onDriveMode = { controller?.markDriveMode(it) },
                 onDashboard = { odo, dte, end -> controller?.markDashboard(odo, dte, end) },
@@ -227,6 +253,14 @@ class MainActivity : ComponentActivity() {
             ),
             onShareLatest = ::shareLatest,
             onShareLog = ::shareConnectionLog,
+            app = AppActions(
+                onSaveProfile = { controller?.saveCarProfile(it) },
+                onFuelPrice = { controller?.setFuelPrice(it) },
+                onShareFindings = ::shareFindings,
+                onShareText = ::sendText,
+                appVersion = appVersion(),
+                demo = if (isDebuggable()) DemoActions(demoActive, onStart = { demoFrame = 0 }, onLeave = { demoFrame = null }) else null,
+            ),
             driveData = DriveDataActions(
                 locationAllowed = location,
                 onAllowLocation = {
@@ -296,6 +330,13 @@ class MainActivity : ComponentActivity() {
                     send(prepared.file)
                 },
                 onCancel = { viewModel.setPendingShare(null) },
+            )
+        }
+        findingsText?.let { message ->
+            AlertDialog(
+                onDismissRequest = { findingsMessage.value = null },
+                confirmButton = { TextButton(onClick = { findingsMessage.value = null }) { Text(stringResource(android.R.string.ok)) } },
+                text = { Text(message) },
             )
         }
         shareError?.let { message ->
@@ -506,19 +547,67 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Hands [scrubbed] to the system share sheet. Only files in the scrubbed copies' directory are exposed by the provider. */
-    private fun send(scrubbed: File, chooserTitle: Int = R.string.share_chooser_title) {
+    private fun send(scrubbed: File, chooserTitle: Int = R.string.share_chooser_title, mime: String = "text/plain") {
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", scrubbed)
         val send = Intent(Intent.ACTION_SEND)
-            .setType("text/plain")
+            .setType(mime)
             .putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         send.clipData = ClipData.newRawUri(null, uri)
         startActivity(Intent.createChooser(send, getString(chooserTitle)))
     }
 
+    /** Hands plain text (the Drive Truth card) to the share sheet. */
+    private fun sendText(text: String) {
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+        startActivity(Intent.createChooser(send, getString(R.string.dt_share_chooser)))
+    }
+
+    private fun appVersion(): String = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
+
+    private fun isDebuggable(): Boolean = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+
+    /**
+     * "Share this car's findings", after the user has seen what it holds: a zip of the capabilities file and the newest recording with the VIN
+     * scrubbed and every GPS line dropped (and the full scan's result when there is one), written off the main thread and offered to the share sheet.
+     * Nothing is uploaded.
+     */
+    private fun shareFindings() {
+        lifecycleScope.launch {
+            val input = viewModel.controller.value?.findingsInput(appVersion(), UUID.randomUUID().toString())
+            if (input == null) {
+                findingsMessage.value = getString(R.string.findings_none)
+                return@launch
+            }
+            val outcome = withContext(Dispatchers.IO) {
+                try {
+                    val newest = viewModel.recordings.newest()
+                    val recording = newest?.let { FindingsExport.scrubbedRecording(Recording.parse(RecordingStore.readText(it))).toText() }
+                    val scan = newest
+                        ?.let { File(it.parentFile, RecordingStore.baseName(it) + SessionController.SCAN_RESULT_SUFFIX) }
+                        ?.takeIf { it.isFile }
+                        ?.readText(Charsets.UTF_8)
+                    File(File(cacheDir, SHARE_DIRECTORY), FINDINGS_FILE).also {
+                        FindingsExport.writeZip(it, FindingsExport.capabilities(input), recording, scan)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    e
+                }
+            }
+            when (outcome) {
+                is File -> send(outcome, R.string.findings_chooser, "application/zip")
+                is Exception -> findingsMessage.value = getString(R.string.findings_failed, outcome.message ?: outcome::class.simpleName)
+            }
+        }
+    }
+
     private companion object {
         const val TAG = "KnightLink"
         const val SHARE_DIRECTORY = "shared"
+        const val FINDINGS_FILE = "knightlink-findings.zip"
+        const val DEMO_FRAME_MS = 2500L
         const val RECORDINGS_REFRESH_MS = 5000L
         val IDLE_STATE = MutableStateFlow(UiState.IDLE)
         val DEFAULT_VOICE_SETTINGS = MutableStateFlow(VoiceSettings())

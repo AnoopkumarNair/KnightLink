@@ -184,6 +184,9 @@ public object ExternalSamples {
         return TpmsSample(eventTimeMs, key, hex, rssi, serviceData)
     }
 
+    /** True for a `gps` line (a position fix, or one that could not be read). */
+    public fun isGps(payload: String): Boolean = payload == GPS || payload.startsWith("$GPS ")
+
     /**
      * The copy of an external line that may leave the device: a position is rounded to [SHARED_DECIMALS] decimals, which is about a
      * kilometre, so a shared drive shows where in the world it was, not at which door. Speed, bearing and accuracy stay (a speed trace does
