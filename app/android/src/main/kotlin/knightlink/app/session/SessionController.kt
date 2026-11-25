@@ -187,6 +187,10 @@ class SessionController(
     /** The last drive of each car, kept so that its card is still there after a restart. */
     private val driveTruthStore: DriveTruthStore? = settings?.let(::DriveTruthStore)
 
+    /** Kept across disconnect so "Share this car's findings" works offline after a drive too. */
+    @Volatile
+    private var lastFindings: FindingsInput? = null
+
     /** One connection request, from [connect] to the end of [disconnect]. */
     private class Run(val scope: CoroutineScope, fuelPrice: () -> Double?) {
         @Volatile
@@ -247,6 +251,7 @@ class SessionController(
         /** How the ladder and the parked body scan last ended, kept after their banners go. */
         var ladderResult: LadderProgress = LadderProgress.Idle
         var bodyResult: BodyScanProgress = BodyScanProgress.Idle
+        var drivingStartedAtMs: Long? = null
 
         /** Tells the drive start and end from the speed and rpm the screen state is built from. */
         val driveTracker = DriveStageTracker()
@@ -294,7 +299,7 @@ class SessionController(
 
     /** The drive mode the driver last said in this run; forgotten when a run starts. */
     @Volatile
-    private var driveMode: DriveMode? = null
+    private var driveMode: String? = null
 
     /** What to show. Idle until [connect], and again after [disconnect] has finished. */
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -511,12 +516,12 @@ class SessionController(
      * The driver says the car is now in [mode]: it goes into the recording at this moment (and the connection log), so the data can be read
      * with the mode it was driven in. False when no run is recording.
      */
-    fun markDriveMode(mode: DriveMode): Boolean {
+    fun markDriveMode(mode: String): Boolean {
         val run = synchronized(lock) { current } ?: return false
         val mark = run.mark ?: return false
         driveMode = mode
-        connectionLog?.app("drive mode: ${mode.tag}")
-        run.scope.launch { mark(ExternalSamples.modeLine(mode.tag)) }
+        connectionLog?.app("drive mode: $mode")
+        run.scope.launch { mark(ExternalSamples.modeLine(mode)) }
         return true
     }
 
@@ -552,7 +557,11 @@ class SessionController(
         if (!readings.endIsCurrent) return
         val scale = OdometerEstimator.calibrate(readings.odometerStartKm?.toDouble(), readings.odometerEndKm?.toDouble(), run.odometer.distanceKm)
         if (scale == null) {
-            connectionLog?.app("odometer scale not changed: start ${readings.odometerStartKm}, end ${readings.odometerEndKm}, integrated ${"%.2f".format(run.odometer.distanceKm)} km")
+            connectionLog?.app(
+                "odometer scale not changed: start ${readings.odometerStartKm}, end ${readings.odometerEndKm}, integrated ${"%.2f".format(
+                    run.odometer.distanceKm,
+                )} km",
+            )
             return
         }
         odometerScale = scale
@@ -729,13 +738,17 @@ class SessionController(
     }
 
     /**
-     * What "Share this car's findings" is made from, or null when there is no session or nothing probed yet. The VIN stays out: see [FindingsInput].
+     * What "Share this car's findings" is made from, or null when nothing has been probed yet. Works both while connected and after
+     * disconnecting (using the latest probed session). The VIN stays out: see [FindingsInput].
      */
     fun findingsInput(appVersion: String, bundleId: String): FindingsInput? {
-        val run = synchronized(lock) { current } ?: return null
-        val report = run.lastReport ?: return null
-        val state = _uiState.value
-        return FindingsInput(report, state.identity, state.faults, run.scanSummary, appVersion, bundleId)
+        val run = synchronized(lock) { current }
+        val report = run?.lastReport
+        if (run != null && report != null) {
+            val state = _uiState.value
+            return FindingsInput(report, state.identity, state.faults, run.scanSummary, appVersion, bundleId)
+        }
+        return lastFindings?.copy(appVersion = appVersion, bundleId = bundleId)
     }
 
     /** Resumes an interrupted scan from its last completed stage; false when there is none to resume. */
@@ -892,7 +905,7 @@ class SessionController(
             if (state is SessionState.Polling) {
                 if (!run.modeStamped) {
                     run.modeStamped = true
-                    driveMode?.let { run.mark?.invoke(ExternalSamples.modeLine(it.tag)) }
+                    driveMode?.let { run.mark?.invoke(ExternalSamples.modeLine(it)) }
                 }
                 // Every link has its own recording: what the driver typed for the start of the drive is written into each.
                 if (!run.dashboardStamped) {
@@ -937,14 +950,27 @@ class SessionController(
                 liveNow.freshNumber("engine.rpm"),
                 asleep = state is SessionState.VehicleAsleep,
             )
+            val nowMs = started.elapsedNow().inWholeMilliseconds
+            if (stage == DriveStage.DRIVING && run.drivingStartedAtMs == null) run.drivingStartedAtMs = nowMs
+            val droveEnough = run.drivingStartedAtMs?.let { nowMs - it >= TWIN_READY_DRIVE_MS } == true
             val key = garage?.keyFor(identity)
             val profile = key?.let { garage?.load(it) }
             run.carKey = key
             run.carFuel = profile?.fuelType
-            // The tank is only known for the car the app has a definition for.
-            run.tankLitres = if (facts.known) TANK_LITRES else null
+            val vehicleInfo = lookupVehicleInfo(identity?.make, profile?.model ?: identity?.model)
+            run.tankLitres = profile?.tankCapacityL ?: vehicleInfo?.tankCapacityL ?: if (facts.known) TANK_LITRES else null
+            val driveModes = vehicleInfo?.driveModes ?: if (facts.known) DriveMode.DEFAULT else emptyList()
             val faultSummary = session.faults.value.toSummary()
             feedDriveTruth(run, session, started, state, faultSummary, key)
+            lastReport?.let { rep ->
+                lastFindings = FindingsInput(rep, identity, faultSummary, run.scanSummary, appVersion = "", bundleId = "")
+            }
+            val twinReady = identity != null &&
+                (
+                    driveTruth.value != null ||
+                        stage == DriveStage.ENDED ||
+                        (stage == DriveStage.DRIVING && droveEnough && (run.scanSummary != null || run.ladderResult is LadderProgress.Complete || facts.known))
+                    )
             _uiState.value = UiState(
                 // What the car is asked for while the ladder runs is said in the status, so the notification does not say "Probing".
                 (ladder as? LadderProgress.Running)?.let { ConnectionStatus.Learning(it.level) } ?: state.toStatus(),
@@ -953,7 +979,7 @@ class SessionController(
                 rate,
                 session.scan.value.toStatus(),
                 run.tyres?.invoke(),
-                driveSummary(session.fuelFills.value, driveMode, if (facts.known) TANK_LITRES else 0.0),
+                driveSummary(session.fuelFills.value, driveMode, run.tankLitres ?: 0.0),
                 session.captureMode.value,
                 bodyScan,
                 dashboard.value,
@@ -977,6 +1003,8 @@ class SessionController(
                 autoBodyCheck = autoBodyCheck.value,
                 clusterDeepCheck = clusterDeepCheck.value,
                 odometerEstimate = odometer,
+                twinReady = twinReady,
+                driveModes = driveModes,
                 internalError = _uiState.value.internalError,
             )
         }
@@ -1083,6 +1111,20 @@ class SessionController(
         val BODY_OUTCOME_HOLD: Duration = 90.seconds
         val DEFAULT_UI_REFRESH: Duration = 250.milliseconds
         val DEFAULT_STALE_AFTER: Duration = 5.seconds
+        private const val TWIN_READY_DRIVE_MS = 45_000L
+    }
+
+    private fun lookupVehicleInfo(make: String?, model: String?): knightlink.core.signals.VehicleInfo? {
+        if (make.isNullOrBlank() || model.isNullOrBlank()) return null
+        return store.vehicleIds().firstNotNullOfOrNull { id ->
+            try {
+                store.vehicleInfo(id)?.takeIf {
+                    it.make.equals(make, ignoreCase = true) && it.model.equals(model, ignoreCase = true)
+                }
+            } catch (_: DefinitionStoreException) {
+                null
+            }
+        }
     }
 }
 

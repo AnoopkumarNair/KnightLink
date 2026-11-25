@@ -5,11 +5,17 @@ import knightlink.core.adapter.AdapterException
 import knightlink.core.common.SessionEventSink
 import knightlink.core.common.SessionEvents
 import knightlink.core.common.emit
+import knightlink.core.protocol.BusAddressing
 import knightlink.core.protocol.DiagnosticLink
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmResponse
+import knightlink.core.scan.DidAnswer
 import knightlink.core.scan.FaultReader
 import knightlink.core.scan.FaultReport
+import knightlink.core.scan.ScanEcu
+import knightlink.core.scan.ScanOutcome
+import knightlink.core.scan.ScanResult
+import knightlink.core.scan.SweepResult
 import knightlink.core.transport.TransportException
 import knightlink.core.vehicle.CapabilityProbe
 import knightlink.core.vehicle.EcuReport
@@ -100,9 +106,9 @@ public sealed interface LadderState {
 
 /** What a run of the ladder ended with. */
 internal sealed interface LadderResult {
-    class Complete(val highest: LadderLevel, val answers: Int) : LadderResult
+    class Complete(val highest: LadderLevel, val answers: Int, val scanResult: ScanResult? = null) : LadderResult
 
-    class Stopped(val level: LadderLevel, val reason: String, val answers: Int) : LadderResult
+    class Stopped(val level: LadderLevel, val reason: String, val answers: Int, val scanResult: ScanResult? = null) : LadderResult
 
     class Flagged(val reason: String) : LadderResult
 
@@ -138,10 +144,13 @@ internal class LearningLadder(
     private val canAsk: (LadderLevel) -> Boolean = { true },
     /** Asked before every request: true when the user skipped the ladder. */
     private val skip: () -> Boolean = { false },
+    private val addressing: BusAddressing = BusAddressing.Can11Bit,
 ) {
-    private class Target(val requestId: Int, val responseId: Int, val label: String) {
+    private class Target(val requestId: Int, val responseId: Int, val label: String, val fromProbe: Boolean = false) {
         var stopped = false
     }
+
+    private val didAnswers = LinkedHashMap<Int, LinkedHashMap<String, DidAnswer>>()
 
     private val guard = LadderGuard(
         link,
@@ -168,7 +177,7 @@ internal class LearningLadder(
     val requestsSent: Int get() = guard.sent
 
     suspend fun run(): LadderResult {
-        for (ecu in units) known[ecu.requestCanId] = Target(ecu.requestCanId, ecu.responseCanId, ecu.requestId)
+        for (ecu in units) known[ecu.requestCanId] = Target(ecu.requestCanId, ecu.responseCanId, ecu.requestId, fromProbe = true)
         total = timeSource.markNow()
         var baselineFaults = baseline
         try {
@@ -216,7 +225,7 @@ internal class LearningLadder(
                 }
             }
             note("complete: ${level.name}, $answers answers, ${guard.sent} requests, ${total.elapsedNow().inWholeSeconds} s")
-            return LadderResult.Complete(level, answers)
+            return LadderResult.Complete(level, answers, buildScanResult(ScanOutcome.COMPLETED))
         } catch (e: LevelAborted) {
             // From outside a level (the first check, the fault reading): a ladder-wide rule.
             note("aborted at ${level.name}: ${e.reason}")
@@ -228,7 +237,45 @@ internal class LearningLadder(
 
     private suspend fun stopped(at: LadderLevel, reason: String): LadderResult {
         note("stopped at ${at.name}: $reason")
-        return LadderResult.Stopped(at, reason, answers)
+        return LadderResult.Stopped(at, reason, answers, buildScanResult(ScanOutcome.STOPPED, reason))
+    }
+
+    private fun buildScanResult(outcome: ScanOutcome, detail: String? = null): ScanResult {
+        val scanEcus = known.values.map { target ->
+            val probeEcu = units.firstOrNull { it.requestCanId == target.requestId }
+            ScanEcu(
+                requestId = target.label,
+                responseId = addressing.formatId(target.responseId),
+                foundBy = if (target.fromProbe) "probe" else "discovery",
+                name = probeEcu?.name,
+            )
+        }
+        val sweeps = didAnswers.entries.mapNotNull { (reqId, didMap) ->
+            if (didMap.isEmpty()) return@mapNotNull null
+            val label = known[reqId]?.label ?: addressing.formatId(reqId)
+            SweepResult(
+                requestId = label,
+                label = label,
+                planned = didMap.size,
+                asked = didMap.size,
+                positive = didMap.values.toList(),
+            )
+        }
+        return ScanResult(
+            outcome = outcome,
+            detail = detail,
+            durationMs = total.elapsedNow().inWholeMilliseconds,
+            stagesDone = listOfNotNull(
+                if (level >= LadderLevel.L1) "L1" else null,
+                if (level >= LadderLevel.L2) "L2" else null,
+                if (level >= LadderLevel.L3) "L3" else null,
+            ),
+            ecus = scanEcus,
+            sweeps = sweeps,
+            probeEcus = units.map { ecu ->
+                ecu.copy(vin = ecu.vin?.let { v -> v.take(3) + "*".repeat((v.length - 3).coerceAtLeast(0)) })
+            },
+        )
     }
 
     private suspend fun runLevel(level: LadderLevel) {
@@ -275,15 +322,20 @@ internal class LearningLadder(
 
     private suspend fun discovery() {
         setupReceive()
-        val ids = (REQUEST_FIRST..REQUEST_LAST).filter { it != FUNCTIONAL && it !in OBD_RESPONSES }
+        val ids = if (addressing.extendedIds) {
+            (0x00..0xFF).map { BusAddressing.Can29Bit.physicalRequestId(it) }
+        } else {
+            (REQUEST_FIRST..REQUEST_LAST).filter { it != FUNCTIONAL && it !in OBD_RESPONSES }
+        }
         val box = timeSource.markNow()
         var found = 0
         for ((index, id) in ids.withIndex()) {
+            val label = addressing.formatId(id)
             if (box.elapsedNow() >= config.l2Box) {
-                note("L2: the time box of ${config.l2Box} is used at ${hex3(id)}")
+                note("L2: the time box of ${config.l2Box} is used at $label")
                 break
             }
-            progress(LadderLevel.L2, hex3(id), index, ids.size, config.l2Box - box.elapsedNow())
+            progress(LadderLevel.L2, label, index, ids.size, config.l2Box - box.elapsedNow())
             // A known unit is not asked again, and nothing is sent to an identifier a known unit answers from: nothing listens there.
             if (id in known || known.values.any { it.responseId == id }) continue
             // One frame is enough to know something answers, so flow control is not set up for an id that may not exist.
@@ -291,22 +343,25 @@ internal class LearningLadder(
             val responder = first.respondingIds.firstOrNull() ?: first.messages.firstOrNull()?.sourceId ?: continue
             if (known.values.any { it.responseId == responder }) continue
             // The answer must be this request's: ask once more, whole, and take the unit only when its reply names F190 (or refuses service 22).
-            selectFlowControl(id)
+            selectFlowControl(id, responder)
             delay(MULTI_FRAME_SETTLE)
             val whole = send(id, readDid(DID_VIN), null) ?: continue
             val own = whole.messages.filter { it.sourceId == responder }
             val positive = own.filterIsInstance<DiagnosticResponse.Positive>().firstOrNull { it.service == SERVICE_READ_DATA && it.data.matches(DID_VIN) }
             val refused = own.filterIsInstance<DiagnosticResponse.Negative>().firstOrNull { it.service == SERVICE_READ_DATA }
             if (positive == null && refused == null) {
-                note("L2: ${hex3(id)}: a reply from ${hex3(responder)} was not the answer to F190 and is dropped")
+                note("L2: $label: a reply from ${addressing.formatId(responder)} was not the answer to F190 and is dropped")
                 continue
             }
-            known[id] = Target(id, responder, hex3(id))
+            known[id] = Target(id, responder, label)
             found++
-            note("L2: a unit answers ${hex3(id)} from ${hex3(responder)}" + (positive?.let { " (F190, ${it.data.size - 2} bytes)" } ?: " (refuses F190)"))
+            note(
+                "L2: a unit answers $label from ${addressing.formatId(responder)}" +
+                    (positive?.let { " (F190, ${it.data.size - 2} bytes)" } ?: " (refuses F190)"),
+            )
             answers++
         }
-        note("L2: $found more units found; ${known.size} in all: ${known.keys.sorted().joinToString(" ") { hex3(it) }}")
+        note("L2: $found more units found; ${known.size} in all: ${known.keys.sorted().joinToString(" ") { addressing.formatId(it) }}")
     }
 
     private fun ByteArray.matches(did: Int): Boolean =
@@ -375,7 +430,7 @@ internal class LearningLadder(
 
     /** One `22 <did>` to [unit]; a positive answer is recorded (identifier and length, never the value). */
     private suspend fun ask(unit: Target, did: Int): Answer {
-        selectFlowControl(unit.requestId)
+        selectFlowControl(unit.requestId, unit.responseId)
         var response = send(unit.requestId, readDid(did), 1)
         var own = response?.messages?.filter { it.sourceId == unit.responseId }.orEmpty()
         val cut = response != null && own.isEmpty() && unit.responseId in response.respondingIds
@@ -389,7 +444,14 @@ internal class LearningLadder(
         val positive = own.filterIsInstance<DiagnosticResponse.Positive>().firstOrNull { it.service == SERVICE_READ_DATA && it.data.matches(did) }
         if (positive != null) {
             answers++
-            note("${level.name} ${unit.label} ${hex4(did)} -> ${positive.data.size - 2} bytes")
+            val didHex = hex4(did)
+            val dataHex = if (did == DID_VIN) {
+                ""
+            } else {
+                positive.data.drop(2).joinToString("") { (it.toInt() and 0xFF).toString(16).uppercase().padStart(2, '0') }
+            }
+            didAnswers.getOrPut(unit.requestId) { LinkedHashMap() }[didHex] = DidAnswer(did = didHex, hex = dataHex)
+            note("${level.name} ${unit.label} $didHex -> ${positive.data.size - 2} bytes")
             return Answer.Positive
         }
         val negative = own.filterIsInstance<DiagnosticResponse.Negative>().firstOrNull { it.service == SERVICE_READ_DATA }
@@ -453,7 +515,7 @@ internal class LearningLadder(
         note("probing the bus again after the errors")
         restoreAdapter()
         return try {
-            CapabilityProbe(guard, timeSource).run { }.ecus.isNotEmpty()
+            CapabilityProbe(guard, timeSource, CapabilityProbe.Config(addressing = addressing)).run { }.ecus.isNotEmpty()
         } catch (e: LevelAborted) {
             false
         } catch (e: CancellationException) {
@@ -470,31 +532,29 @@ internal class LearningLadder(
 
     // The adapter ---------------------------------------------------------------------------------------------
 
-    /** Listen to every 7xx identifier, so a unit that answers from an identifier that is not 7E8..7EF is heard. */
+    /** Listen to every diagnostic identifier, so a unit that answers outside standard OBD range is heard. */
     private suspend fun setupReceive() {
         if (wideReceive) return
-        if (adapterOk("ATCM$WIDE_MASK") &&
-            adapterOk("ATCF$WIDE_MASK")
-        ) {
+        if (addressing.wideFilterCommands.all { adapterOk(it) }) {
             wideReceive = true
         } else {
-            note("the adapter does not take ATCF/ATCM: only units answering from 7E8..7EF are heard")
+            note("the adapter does not take ATCF/ATCM: only standard OBD units are heard")
         }
     }
 
-    private suspend fun selectFlowControl(requestId: Int) {
-        if (requestId in OBD_REQUESTS) {
+    private suspend fun selectFlowControl(requestId: Int, responseId: Int) {
+        if (!addressing.extendedIds && requestId in OBD_REQUESTS) {
             if (customFlowControl != null && adapterOk("ATFCSM0")) customFlowControl = null
         } else if (customFlowControl != requestId) {
-            if (adapterOk("ATFCSH${hex3(requestId)}") && adapterOk("ATFCSD$CLEAR_TO_SEND") && adapterOk("ATFCSM1")) customFlowControl = requestId
+            val cmds = addressing.flowControlCommands(requestId, responseId).filterNot { it.startsWith("ATCRA") }
+            if (cmds.all { adapterOk(it) }) customFlowControl = requestId
         }
     }
 
     /** The ordinary OBD receive filter and automatic flow control, as an init script leaves them. */
     private suspend fun restoreAdapter() {
         if (wideReceive) {
-            adapterOk("ATCM$STANDARD_MASK")
-            adapterOk("ATCF$STANDARD_FILTER")
+            for (cmd in addressing.defaultFilterCommands) adapterOk(cmd)
             wideReceive = false
         }
         if (customFlowControl != null) {

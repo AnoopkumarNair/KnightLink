@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/mahindra/xuv3xo/2024",
+  "kind": "vehicle",
+  "title": "Mahindra XUV 3XO (2024+)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Mahindra",
+    "model": "XUV3XO",
+    "yearFrom": 2024,
+    "engine": "1.2L TCMPFi / mStallion TGDi Petrol / 1.5L CRDe Diesel",
+    "wmi": "MA1",
+    "tankCapacityL": 42,
+    "driveModes": ["ZIP", "ZAP", "ZOOM"]
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8" }
+  ],
+  "parameters": []
+}

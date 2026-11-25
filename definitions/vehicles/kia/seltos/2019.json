@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/kia/seltos/2019",
+  "kind": "vehicle",
+  "title": "Kia Seltos India SP2i (2019+)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Kia",
+    "model": "Seltos",
+    "yearFrom": 2019,
+    "engine": "1.5L MPi Petrol / 1.5L T-GDi / 1.5L CRDi Diesel",
+    "wmi": "MZB",
+    "tankCapacityL": 47,
+    "driveModes": ["ECO", "NORMAL", "SPORT"]
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8" }
+  ],
+  "parameters": []
+}

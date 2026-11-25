@@ -88,6 +88,10 @@ data class UiState(
     val clusterDeepCheck: Boolean = true,
     /** The estimated odometer of the digital twin; see [OdometerEstimateUi]. */
     val odometerEstimate: OdometerEstimateUi = OdometerEstimateUi.Unavailable,
+    /** True once enough parked + drive data has been gathered to export a digital twin bundle. */
+    val twinReady: Boolean = false,
+    /** Drive mode labels supported by this car (from its vehicle definition); empty when the car has none. */
+    val driveModes: List<String> = emptyList(),
     /** An error nothing else handled in this run (class and message), for a plain line on screen; null when there was none. */
     val internalError: String? = null,
 ) {
@@ -96,8 +100,13 @@ data class UiState(
      * (it ended early, was skipped, or never ran on this connection). Not after it completed: a unit left then is one that did not answer.
      */
     val canRunParkedCheckAgain: Boolean
-        get() = connection == ConnectionStatus.Live && knownVehicle && parkedCheckPending > 0 && bodyScan !is BodyScanProgress.Running &&
-            bodyScan !is BodyScanProgress.Complete && bodyResult !is BodyScanProgress.Complete && captureMode == CaptureMode.ACTIVE
+        get() = connection == ConnectionStatus.Live &&
+            knownVehicle &&
+            parkedCheckPending > 0 &&
+            bodyScan !is BodyScanProgress.Running &&
+            bodyScan !is BodyScanProgress.Complete &&
+            bodyResult !is BodyScanProgress.Complete &&
+            captureMode == CaptureMode.ACTIVE
 
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle
@@ -188,7 +197,12 @@ sealed interface BodyScanProgress {
      * The parked stage ended before every unit was done, [ended] says why (and [speedKmh] for confirmed movement). Only [mayDrive] outcomes
      * (the time cap, the user's skip) tell the driver they can drive; the others say the scan stopped early and why.
      */
-    data class Partial(val answered: Int, val ended: BodyOutcome = BodyOutcome.TIME_CAP, val speedKmh: Int? = null, val auto: Boolean = false) : BodyScanProgress {
+    data class Partial(
+        val answered: Int,
+        val ended: BodyOutcome = BodyOutcome.TIME_CAP,
+        val speedKmh: Int? = null,
+        val auto: Boolean = false,
+    ) : BodyScanProgress {
         val mayDrive: Boolean get() = ended == BodyOutcome.TIME_CAP || ended == BodyOutcome.SKIPPED || ended == BodyOutcome.COMPLETED
     }
 
@@ -219,11 +233,12 @@ fun BodyScanState.toProgress(): BodyScanProgress = when (this) {
     is BodyScanState.Skipped -> BodyScanProgress.Skipped(moving, retried)
 }
 
-/** The drive modes of the car; [tag] is what goes into the recording (see ExternalSamples.modeLine). */
-enum class DriveMode(val tag: String) {
-    ECO("ECO"),
-    CITY("CITY"),
-    SPORT("SPORT"),
+/** Standard drive mode tags; vehicle definitions declare their own [driveModes] list. */
+object DriveMode {
+    const val ECO: String = "ECO"
+    const val CITY: String = "CITY"
+    const val SPORT: String = "SPORT"
+    val DEFAULT: List<String> = listOf(ECO, CITY, SPORT)
 }
 
 /**
@@ -231,7 +246,7 @@ enum class DriveMode(val tag: String) {
  * @property tankLitres the tank's size, to turn a rise in percent into litres
  */
 data class DriveSummary(
-    val mode: DriveMode?,
+    val mode: String?,
     val lastFill: FuelFillSummary?,
     val fillCount: Int,
 )
@@ -243,7 +258,7 @@ data class FuelFillSummary(val atMs: Long, val fromPercent: Int, val toPercent: 
 const val TANK_LITRES = 50.0
 
 /** The refuels and the mode as the screen shows them; null when there is nothing to show yet. */
-fun driveSummary(fills: List<knightlink.core.runtime.FuelFill>, mode: DriveMode?, tankLitres: Double = TANK_LITRES): DriveSummary? {
+fun driveSummary(fills: List<knightlink.core.runtime.FuelFill>, mode: String?, tankLitres: Double = TANK_LITRES): DriveSummary? {
     if (fills.isEmpty() && mode == null) return null
     val last = fills.lastOrNull()?.let {
         FuelFillSummary(it.atMs, round(it.fromPercent).toInt(), round(it.toPercent).toInt(), round(it.litres(tankLitres)).toInt())

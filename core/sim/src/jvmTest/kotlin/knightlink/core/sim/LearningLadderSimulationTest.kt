@@ -278,13 +278,13 @@ class LearningLadderSimulationTest {
     }
 
     @Test
-    fun theLadderStopsWhenTheEngineStartsOrStops() = runTest {
-        val vehicle = VirtualVehicle(listOf(engine()))
+    fun theLadderStopsWhenTheEngineStops() = runTest {
+        val vehicle = VirtualVehicle(listOf(engine().also { it.set("010C", "1AF8") }))
         val rig = rig(vehicle, level = LadderLevel.L2)
         rig.session.start()
         backgroundScope.launch {
             delay(14.seconds)
-            vehicle.ecu(0x7E0).set("010C", "1AF8")
+            vehicle.ecu(0x7E0).set("010C", "0000")
         }
         run(3.minutes)
         val state = assertIs<LadderState.Stopped>(rig.session.ladder.value)

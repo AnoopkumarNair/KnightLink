@@ -236,12 +236,21 @@ public class BodyUnitReader(
         sinceSpeedCheck = 0
         stoppedAtKmh = null
         var outcome = BodyOutcome.COMPLETED
+        val unitTotals = units.associate { it.progressKey to it.groups().sumOf { g -> g.size } }
+        val overallTotal = units.sumOf { unitTotals[it.progressKey] ?: 0 }.coerceAtLeast(1)
         try {
             if (limits.watchSpeed) checkSpeed()
             for (check in units) {
                 if (progress[check.progressKey]?.done == true) continue
                 try {
-                    readUnit(check, progress)
+                    val completedBefore = units.takeWhile { it !== check }.sumOf { u ->
+                        val t = unitTotals[u.progressKey] ?: 0
+                        val p = progress[u.progressKey]
+                        if (p?.done == true) t else (p?.asked ?: 0).coerceAtMost(t)
+                    }
+                    readUnit(check, progress) { label, pos, _ ->
+                        onProgress(label, (completedBefore + pos).coerceAtMost(overallTotal), overallTotal)
+                    }
                 } catch (e: Interrupted) {
                     outcome = e.outcome
                     break
@@ -278,7 +287,11 @@ public class BodyUnitReader(
 
     // One unit ------------------------------------------------------------------------------------------------
 
-    private suspend fun readUnit(check: CandidateCheck, progress: MutableMap<String, BodyUnitProgress>) {
+    private suspend fun readUnit(
+        check: CandidateCheck,
+        progress: MutableMap<String, BodyUnitProgress>,
+        reportProgress: (label: String, done: Int, total: Int) -> Unit = onProgress,
+    ) {
         val key = check.progressKey
         val groups = check.groups()
         val total = groups.sumOf { it.size }
@@ -292,7 +305,7 @@ public class BodyUnitReader(
             throw AdapterException("the adapter did not take the receive setup for $key")
         }
         if (!check.extended) {
-            readDids(check, progress, key, tag, base, groups, total)
+            readDids(check, progress, key, tag, base, groups, total, reportProgress)
             return
         }
         // The extended session: 10 03 first, 3E 00 while it lasts (see [ask]), and 10 01 afterwards whatever happens, a lost link included
@@ -300,7 +313,7 @@ public class BodyUnitReader(
         sessionMaybeOpen = true
         try {
             if (!openExtended(check, progress, key, tag, base)) return
-            readDids(check, progress, key, tag, base, groups, total)
+            readDids(check, progress, key, tag, base, groups, total, reportProgress)
         } finally {
             closeExtended(check, tag)
         }
@@ -311,7 +324,13 @@ public class BodyUnitReader(
      * attempt of the extended pass, which is then left for this run; a refusal of the service itself (not supported, not in this session,
      * security) finishes it for good, "not now" and silence only after [MAX_TRANSIENT_ATTEMPTS] or [MAX_SILENT_ATTEMPTS] runs.
      */
-    private suspend fun openExtended(check: CandidateCheck, progress: MutableMap<String, BodyUnitProgress>, key: String, tag: String, base: BodyUnitProgress): Boolean {
+    private suspend fun openExtended(
+        check: CandidateCheck,
+        progress: MutableMap<String, BodyUnitProgress>,
+        key: String,
+        tag: String,
+        base: BodyUnitProgress,
+    ): Boolean {
         val answer = ask(check, byteArrayOf(0x10, 0x03), 1, 0x10)
         val text = "$tag: 10 03 (extended session) -> ${describe(answer, whole = true)}"
         note(SessionEvents.SESSION, text)
@@ -362,6 +381,7 @@ public class BodyUnitReader(
         base: BodyUnitProgress,
         groups: List<List<Int>>,
         total: Int,
+        reportProgress: (label: String, done: Int, total: Int) -> Unit,
     ) {
         // Replies of any kind show that the unit is there; only definitive ones (a value, or a refusal that is about the request itself) finish it.
         var heard = 0
@@ -409,7 +429,7 @@ public class BodyUnitReader(
                     stopReason = "no answer to $asked requests: absent"
                     break@groupLoop
                 }
-                onProgress(check.label, position, total)
+                reportProgress(check.label, position, total)
                 var answer = askDid(check, did)
                 asked++
                 // The default session is requested only when a plain request has failed with a refusal, and then once per unit: it makes the unit
@@ -585,7 +605,10 @@ public class BodyUnitReader(
         limits.maxRequests?.let { if (requests >= it) throw Interrupted(BodyOutcome.BUDGET) }
         limits.maxTime?.let { cap -> if (started!!.elapsedNow() >= cap) throw Interrupted(BodyOutcome.TIME_CAP) }
         if (limits.watchSpeed &&
-            (++sinceSpeedCheck >= config.speedCheckEvery || (lastSpeedCheck?.elapsedNow() ?: Duration.ZERO) >= (limits.speedCheckInterval ?: config.speedCheckInterval))
+            (
+                ++sinceSpeedCheck >= config.speedCheckEvery ||
+                    (lastSpeedCheck?.elapsedNow() ?: Duration.ZERO) >= (limits.speedCheckInterval ?: config.speedCheckInterval)
+                )
         ) {
             checkSpeed()
         }

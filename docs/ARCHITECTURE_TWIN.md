@@ -57,3 +57,10 @@ Twin API with typed queries, AI tool-calling over it (on-device or remote), comm
 
 ## Risks
 Scope creep into the twin before data collection works; mitigate by building the twin as a thin typed store over what is already collected, gate each stage with the Harrier replay and the simulator, and keep add-ons out of Part 1 until the flow is solid.
+
+## Offline Sync & Scaling Across Cars
+To scale beyond the first few cars without needing live internet in the garage or hardcoding models:
+1. **Pre-seeded candidate layer (`definitions/vehicles/<brand>/<model>/<year>.json`)**: Baseline specs (WMI, make, model, years, tank capacity, fuel density, drive modes, standard ECU IDs) are organized by `brand / model / year` and bundled in the app. Candidate definitions without a verified `probeFingerprint` still trigger `LearningLadder` on first connect so the car's actual ECUs, PIDs, and DIDs are captured as the delta.
+2. **On-device twin export (`FindingsExport`)**: Once parked scan + drive data are gathered, the app notifies the user (`twinReady`) and exports a scrubbed `knightlink-findings.zip` containing `capabilities.json`, `twin-definition.json` (ready-to-edit `DefinitionFile` skeleton), `scan-result.json`, and `recording-scrubbed.jsonl`.
+3. **Offline pack sync (Part 2)**: Each definition file is a standalone versioned JSON pack (`schemaVersion`). A local `packs/` override directory in app-private storage (checked by `DefinitionStore` before bundled APK assets) lets new or updated vehicle packs be sideloaded or synced when online—zero app update required for new cars.
+4. **Community delta promotion**: When 2+ scrubbed exports for the same `(WMI, probeFingerprint)` agree on a DID's byte length and behavior, the delta is promoted from `inferred` -> `community` -> `verified` in the hierarchy (`make -> model -> variant`).

@@ -17,7 +17,8 @@
       { "requestId": "7E4", "pids": 11 }
     ],
     "tankCapacityL": 50,
-    "fuelDensityKgPerL": 0.832
+    "fuelDensityKgPerL": 0.832,
+    "driveModes": ["ECO", "CITY", "SPORT"]
   },
   "ecus": [
     { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8",

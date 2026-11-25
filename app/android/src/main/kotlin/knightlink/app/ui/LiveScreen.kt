@@ -75,7 +75,7 @@ fun LiveScreen(state: UiState, modifier: Modifier = Modifier, actions: Connectio
         }
         KlCard { OdometerEstimateRow(state.odometerEstimate) }
         if (actions != null) {
-            if (state.knownVehicle) DriveModeCard(state.drive, recording = state.isActive, onMode = actions.onDriveMode)
+            if (state.driveModes.isNotEmpty()) DriveModeCard(state.driveModes, state.drive, recording = state.isActive, onMode = actions.onDriveMode)
             DriveReadingsCard(state.dashboard, actions.onDashboard)
         }
     }

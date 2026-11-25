@@ -44,6 +44,8 @@ class DefinitionResolver(
         val info = store.vehicleInfo(id) ?: return null
         val wmi = info.wmi ?: return null
         if (!vin.startsWith(wmi, ignoreCase = true)) return null
+        // Candidate definitions without a verified probe fingerprint stay as candidates so LearningLadder still collects the car's delta.
+        if (info.probeFingerprint.isEmpty()) return null
         // The manufacturer code only pre-selects: another model of the make (a car with other units) is an unknown car.
         for (unit in info.probeFingerprint) {
             val found = report.ecus.firstOrNull { it.requestId.equals(unit.requestId, ignoreCase = true) }

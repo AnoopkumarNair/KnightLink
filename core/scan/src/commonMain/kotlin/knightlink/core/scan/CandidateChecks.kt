@@ -103,7 +103,9 @@ public data class CandidateChecks(
             require(check.requestId.length == 3 && unit != null && unit in 0x700..0x7FF) { "$id: '${check.requestId}' is not a request id from 700 to 7FF" }
             require(check.label.isNotBlank()) { "$id: ${check.requestId} has no label" }
             require(check.session == null || check.session == EXTENDED_SESSION) { "$id: session '${check.session}' is not known" }
-            require(!check.extended || check.requestId.equals(EXTENDED_UNIT, ignoreCase = true)) { "$id: only $EXTENDED_UNIT may be asked in the extended session" }
+            require(!check.extended || check.requestId.equals(EXTENDED_UNIT, ignoreCase = true)) {
+                "$id: only $EXTENDED_UNIT may be asked in the extended session"
+            }
             check.dids.forEach { require(it.length == 4 && it.toIntOrNull(16) != null) { "$id: '$it' is not a four-digit identifier" } }
             check.ranges.forEach { range ->
                 require(range.from.length == 4 && range.to.length == 4 && range.from.toIntOrNull(16) != null && range.to.toIntOrNull(16) != null) {

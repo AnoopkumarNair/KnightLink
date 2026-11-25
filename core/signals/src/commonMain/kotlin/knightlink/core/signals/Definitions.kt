@@ -88,6 +88,8 @@ public data class VehicleInfo(
     val wmi: String? = null,
     val tankCapacityL: Double? = null,
     val fuelDensityKgPerL: Double? = null,
+    /** Drive mode labels supported by this vehicle (e.g. ["ECO", "CITY", "SPORT"]). Empty when the car has none. */
+    val driveModes: List<String> = emptyList(),
     /**
      * What the standard probe of this very car showed: each listed unit answered with exactly that many supported PIDs. The manufacturer code
      * only pre-selects; the car must also look like this one (another model of the make has other units). Empty for no requirement.

@@ -256,7 +256,7 @@ class UnknownCarSimulationTest {
         assertEquals(CannotReadReason.NoResponse, state.reason)
         // Several protocols were tried, none answered, and nothing but the negotiation's own requests went to the car.
         assertTrue(rig.adapter.received.any { it == "ATSP0" })
-        assertTrue(rig.adapter.received.none { it.startsWith("ATSH") && it != "ATSH7DF" })
+        assertTrue(rig.adapter.received.none { it.startsWith("ATSH") && it != "ATSH7DF" && it != "ATSHDB33F1" })
 
         vehicle.awake = true
         assertTrue(rig.session.retry())
@@ -305,23 +305,15 @@ class UnknownCarSimulationTest {
     // (e) -----------------------------------------------------------------------------------------------------
 
     @Test
-    fun aCarOn29BitCanIsDetectedRecordedAndNotPolled() = runTest {
+    fun aCarOn29BitCanIsDetectedAndLockedForProbing() = runTest {
         for (code in listOf('7', '9')) {
             val rig = rig(petrol(), VirtualElm327.Config(responseDelay = 45.milliseconds, carProtocol = code, searchDelay = 2.seconds))
             rig.session.start()
             run(40.seconds)
-            val state = assertIs<SessionState.CannotReadVehicle>(rig.session.state.value)
-            val reason = assertIs<CannotReadReason.UnsupportedProtocol>(state.reason)
-            assertTrue("29 bit" in reason.protocolName, reason.protocolName)
-            assertEquals("A$code", rig.session.facts.value.dpn)
-            // A 29-bit or K-line trial is not given the functional header of 11-bit CAN.
-            val received = rig.adapter.received
-            for ((index, command) in received.withIndex()) {
-                if (command == "ATTP7" || command == "ATTP9") {
-                    assertTrue(received.drop(index + 1).takeWhile { !it.startsWith("ATTP") }.none { it.startsWith("ATSH") }, "no ATSH in a $command trial")
-                }
-            }
-            assertTrue(rig.adapter.received.none { it.startsWith("ATSH") && it != "ATSH7DF" }, "nothing is asked of the units over a bus the app cannot read")
+            val dpn = rig.session.facts.value.dpn
+            assertTrue(dpn == "$code" || dpn == "A$code", "expected $code or A$code, got $dpn")
+            assertTrue(rig.session.facts.value.protocol?.isReadable == true, "29-bit CAN protocol $code should be readable")
+            assertTrue(rig.adapter.received.any { it == "ATSP$code" }, "expected ATSP$code lock")
             rig.session.stop()
         }
     }

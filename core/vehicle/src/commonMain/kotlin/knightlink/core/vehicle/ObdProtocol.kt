@@ -30,8 +30,12 @@ public enum class ObdProtocol(
     USER2_CAN('C', "USER2 CAN (11 bit ID, 50 kbaud)", isCan = true, has11BitIds = true),
     ;
 
-    /** Whether the app's request path can talk over this protocol. Only the two standard 11-bit CAN protocols. */
-    public val isReadable: Boolean get() = this == CAN_11_500 || this == CAN_11_250
+    /** Whether the app's request path can talk over this protocol (11-bit and 29-bit ISO 15765-4 CAN). */
+    public val isReadable: Boolean get() = this == CAN_11_500 || this == CAN_11_250 || this == CAN_29_500 || this == CAN_29_250
+
+    /** The CAN addressing scheme for this protocol. */
+    public val addressing: knightlink.core.protocol.BusAddressing
+        get() = if (has11BitIds) knightlink.core.protocol.BusAddressing.Can11Bit else knightlink.core.protocol.BusAddressing.Can29Bit
 
     /** The command that selects this protocol and nothing else. */
     public val selectCommand: String get() = "ATSP$code"

@@ -4,6 +4,7 @@ import knightlink.core.common.SessionEventSink
 import knightlink.core.common.SessionEvents
 import knightlink.core.common.emit
 import knightlink.core.common.toHex
+import knightlink.core.protocol.BusAddressing
 import knightlink.core.protocol.DiagnosticLink
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmLine
@@ -175,11 +176,26 @@ public class Elm327Driver(
 
     private val framer = ElmStreamFramer()
     private val framerLock = Mutex()
-    private val decoder = ElmResponseDecoder(extendedIds)
-    private val parser = ElmLineParser(extendedIds)
+
+    @Volatile
+    private var addressing: BusAddressing = if (extendedIds) BusAddressing.Can29Bit else BusAddressing.Can11Bit
+
+    @Volatile
+    private var decoder = ElmResponseDecoder(extendedIds)
+
+    @Volatile
+    private var parser = ElmLineParser(extendedIds)
     private val responses = Channel<List<String>>(Channel.UNLIMITED)
     private val lock = Mutex()
     private var currentHeader: Int? = null
+
+    /** Switches CAN addressing (11-bit vs 29-bit) after protocol negotiation locks the bus protocol. */
+    public fun setAddressing(addressing: BusAddressing) {
+        this.addressing = addressing
+        this.decoder = ElmResponseDecoder(addressing.extendedIds)
+        this.parser = ElmLineParser(addressing.extendedIds)
+        this.currentHeader = null
+    }
 
     // What the init script switched on, so that a reply can be recognised as coming from an adapter that has forgotten it.
     private var activeScript: List<String>? = null
@@ -292,7 +308,6 @@ public class Elm327Driver(
             note(SessionEvents.INIT_STEP, "refused (read-only): $reason")
             throw ReadOnlyViolationException("Refused to send a request: $reason")
         }
-        require(!extendedIds) { "29-bit header selection is not implemented yet" }
         require(expectedResponses == null || expectedResponses in 1..15) { "expectedResponses must be 1..15" }
         val first = attempt(requestId, payload, expectedResponses, timeout)
         if (first.response != null) return@withLock first.response
@@ -486,10 +501,11 @@ public class Elm327Driver(
     private suspend fun attempt(requestId: Int, payload: ByteArray, expectedResponses: Int?, timeout: Duration): Attempt {
         // A session request always gets its header sent right before it, whatever was cached: it must reach exactly this unit.
         if (currentHeader != requestId || payload.firstOrNull() == SESSION_CONTROL_SERVICE) {
-            val header = requestId.toString(16).uppercase().padStart(3, '0')
-            val reply = exchange("ATSH$header", timeout)
-            resetHint(reply, diagnostic = false)?.let { return Attempt(null, it) }
-            if (reply.lines.none { it.compact() == "OK" }) throw AdapterException("Adapter refused header $header: ${reply.lines}")
+            for (cmd in addressing.selectHeaderCommands(requestId)) {
+                val reply = exchange(cmd, timeout)
+                resetHint(reply, diagnostic = false)?.let { return Attempt(null, it) }
+                if (reply.lines.none { it.compact() == "OK" }) throw AdapterException("Adapter refused header $cmd: ${reply.lines}")
+            }
             currentHeader = requestId
         }
         val suffix = expectedResponses?.toString(16)?.uppercase().orEmpty()

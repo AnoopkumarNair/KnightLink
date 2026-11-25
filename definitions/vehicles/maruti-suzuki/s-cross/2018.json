@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/maruti-suzuki/s-cross/2018",
+  "kind": "vehicle",
+  "title": "Maruti Suzuki S-Cross India (2015-2022)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Maruti Suzuki",
+    "model": "S-Cross",
+    "yearFrom": 2015,
+    "yearTo": 2022,
+    "engine": "1.3L DDiS / 1.5L K15B Smart Hybrid",
+    "wmi": "MA3",
+    "tankCapacityL": 48,
+    "driveModes": []
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8" }
+  ],
+  "parameters": []
+}

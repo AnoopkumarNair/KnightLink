@@ -70,7 +70,12 @@ fun SettingsScreen(
                 Switch(checked = state.deepScan, onCheckedChange = actions.onDeepScan)
             }
             SettingSwitch(stringResource(R.string.auto_body_label), stringResource(R.string.auto_body_hint), state.autoBodyCheck, actions.onAutoBodyCheck)
-            SettingSwitch(stringResource(R.string.cluster_deep_label), stringResource(R.string.cluster_deep_hint), state.clusterDeepCheck, actions.onClusterDeepCheck)
+            SettingSwitch(
+                stringResource(R.string.cluster_deep_label),
+                stringResource(R.string.cluster_deep_hint),
+                state.clusterDeepCheck,
+                actions.onClusterDeepCheck,
+            )
         }
 
         KlSectionTitle(stringResource(R.string.settings_sharing))

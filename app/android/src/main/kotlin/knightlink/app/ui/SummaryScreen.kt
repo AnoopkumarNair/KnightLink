@@ -87,6 +87,12 @@ fun SummaryScreen(state: UiState, app: AppActions, onRequestShare: () -> Unit, m
         CoverageCard(coverage)
         FuelPriceCard(state.fuelPrice, app.onFuelPrice)
         state.driveTruth?.let { DriveTruthCard(it, app.onShareText) }
+        if (state.twinReady) {
+            KlCard {
+                KlSectionTitle(stringResource(R.string.twin_ready_title))
+                Text(stringResource(R.string.twin_ready_body), style = MaterialTheme.typography.bodyMedium, color = KlColors.OnSurfaceMuted)
+            }
+        }
         PrimaryButton(stringResource(R.string.findings_button), onRequestShare)
     }
 }

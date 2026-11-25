@@ -80,18 +80,29 @@ public object ReadOnlyPolicy {
     /** The request identifiers of the engine-bay units (7E0-7E7), the functional address (7DF) and the response identifiers (7E8-7EF): not body units. */
     private val obdIds = 0x7DF..0x7EF
 
-    /** The request identifiers a diagnostic request may go to: the 11-bit diagnostic block, 700-7FF. */
+    /** The request identifiers a diagnostic request may go to: 11-bit 700-7FF or 29-bit ISO 15765-4 normal fixed (`18DAxxF1` / `18DB33F1`). */
     private val diagnosticIds = 0x700..0x7FF
+
+    private fun isExtendedDiagnosticId(requestId: Int): Boolean =
+        requestId == 0x18DB33F1 || (requestId and 0xFFFF00FF.toInt()) == 0x18DA00F1
 
     /** Why a diagnostic request may not be sent to [requestId], or null when it may. */
     public fun requestIdViolation(requestId: Int): String? =
-        if (requestId in diagnosticIds) null else "request identifier ${requestId.toString(16).uppercase()} is outside the diagnostic block 700-7FF"
+        if (requestId in diagnosticIds || isExtendedDiagnosticId(requestId)) {
+            null
+        } else {
+            "request identifier ${requestId.toString(16).uppercase()} is outside the diagnostic block 700-7FF or 18DAxxF1"
+        }
 
     /**
-     * Whether [requestId] is a body unit: in the diagnostic block 700-7FF but not an OBD identifier (7DF-7EF). Only to those may the default
-     * session be requested.
+     * Whether [requestId] is a body unit: in the diagnostic block 700-7FF outside OBD (7DF-7EF), or a 29-bit physical unit outside
+     * standard powertrain addresses (0x10..0x1F). Only to those may the default session be requested.
      */
-    public fun isBodyUnit(requestId: Int): Boolean = requestId in diagnosticIds && requestId !in obdIds
+    public fun isBodyUnit(requestId: Int): Boolean = when {
+        requestId in diagnosticIds && requestId !in obdIds -> true
+        (requestId and 0xFFFF00FF.toInt()) == 0x18DA00F1 -> ((requestId ushr 8) and 0xFF) !in 0x10..0x1F
+        else -> false
+    }
 
     // ISO 14229-1 ReadDTCInformation report sub-functions; every one of them only reports.
     private val readDtcSubFunctions = (0x01..0x15).toSet() + setOf(0x16, 0x17, 0x18, 0x19, 0x1A, 0x42, 0x55, 0x56)
@@ -100,7 +111,7 @@ public object ReadOnlyPolicy {
     private val atAllowed = listOf(
         "Z", "D", "WS", "I", "@1", "@2", "RV", "DP", "DPN", "IGN",
         "E0", "E1", "L0", "L1", "S0", "S1", "H0", "H1", "M0", "M1", "AL", "NL",
-        "SP", "TP", "AT0", "AT1", "AT2", "ST", "SH", "CRA", "AR", "CAF0", "CAF1", "CFC0", "CFC1", "CEA", "R0", "R1",
+        "SP", "TP", "CP", "AT0", "AT1", "AT2", "ST", "SH", "CRA", "AR", "CAF0", "CAF1", "CFC0", "CFC1", "CEA", "R0", "R1",
         "D0", "D1", "V0", "V1",
         "CF", "CM", "FCSH", "FCSD", "FCSM",
     )
@@ -155,8 +166,16 @@ public object ReadOnlyPolicy {
             "FCSM" -> argument == "0" || argument == "1"
             // One receive address, or none to go back to the automatic one.
             "CRA" -> argument.isEmpty() || argument.length == 3 || argument.length == 8
-            // The request header: the functional address, an engine-bay unit or a body unit, three digits; never a response id or a 29-bit header.
-            "SH" -> argument.length == 3 && argument.toInt(16).let { it == 0x7DF || it in 0x7E0..0x7E7 || isBodyUnit(it) }
+            // CAN priority byte for 29-bit ISO 15765-4 normal fixed addressing (18 = priority 6).
+            "CP" -> argument == "18"
+            // The request header: 3 hex digits (11-bit: 7DF, 7E0-7E7, or body unit), 6 hex digits (29-bit ATSH lower 24 bits: DB33F1 / DAxxF1),
+            // or 8 hex digits (18DB33F1 / 18DAxxF1). Never a response id.
+            "SH" -> when (argument.length) {
+                3 -> argument.toInt(16).let { it == 0x7DF || it in 0x7E0..0x7E7 || isBodyUnit(it) }
+                6 -> argument == "DB33F1" || (argument.startsWith("DA") && argument.endsWith("F1"))
+                8 -> argument == "18DB33F1" || (argument.startsWith("18DA") && argument.endsWith("F1"))
+                else -> false
+            }
             else -> true
         }
         return if (shape) null else "adapter command AT$rest has an argument that is not allowed for $match"

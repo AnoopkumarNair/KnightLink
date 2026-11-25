@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/hyundai/verna/2020",
+  "kind": "vehicle",
+  "title": "Hyundai Verna India (2020+)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Hyundai",
+    "model": "Verna",
+    "yearFrom": 2020,
+    "engine": "1.5L MPi Petrol / 1.5L Turbo GDi Petrol",
+    "fuel": "petrol",
+    "wmi": "MAL",
+    "tankCapacityL": 45,
+    "fuelDensityKgPerL": 0.745,
+    "driveModes": ["ECO", "NORMAL", "SPORT"]
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8" }
+  ],
+  "parameters": []
+}

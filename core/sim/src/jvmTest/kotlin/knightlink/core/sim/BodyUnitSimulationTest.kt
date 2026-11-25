@@ -257,7 +257,12 @@ class BodyUnitSimulationTest {
 
         val asked = rig.adapter.received.count { it.startsWith("22F") }
         assertTrue(asked in 1..300, "stopped early, not after all 512: $asked")
-        assertTrue(rig.events.of(SessionEvents.BODY_SCAN).any { it.startsWith("the car is moving (20 then 20 km/h") }, rig.events.of(SessionEvents.BODY_SCAN).toString())
+        assertTrue(
+            rig.events.of(SessionEvents.BODY_SCAN).any {
+                it.startsWith("the car is moving (20 then 20 km/h")
+            },
+            rig.events.of(SessionEvents.BODY_SCAN).toString(),
+        )
         val partial = assertIs<BodyScanState.Partial>(rig.session.bodyScan.value)
         assertEquals(BodyOutcome.MOVING, partial.ended, "the screen says why the stage ended, not \"you can drive\"")
         assertEquals(20, partial.speedKmh)
@@ -487,7 +492,12 @@ class BodyUnitSimulationTest {
         run(40.seconds)
         assertIs<SessionState.Polling>(second.session.state.value)
         assertTrue(second.adapter.received.none { it == "ATCRA708" }, "checked again: ${second.adapter.received.filter { it.startsWith("ATCRA") }}")
-        assertTrue(second.events.of(SessionEvents.BODY_SCAN).none { it.startsWith("parked stage: ") && it.contains("2 body units") }, second.events.of(SessionEvents.BODY_SCAN).toString())
+        assertTrue(
+            second.events.of(SessionEvents.BODY_SCAN).none {
+                it.startsWith("parked stage: ") && it.contains("2 body units")
+            },
+            second.events.of(SessionEvents.BODY_SCAN).toString(),
+        )
     }
 
     @Test

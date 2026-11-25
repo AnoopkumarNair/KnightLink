@@ -58,7 +58,10 @@ class VehicleIdentityTest {
         assertNull(ObdProtocol.fromDpn("A0"))
         assertNull(ObdProtocol.fromDpn("?"))
         assertNull(ObdProtocol.fromDpn(null))
-        assertEquals(listOf(ObdProtocol.CAN_11_500, ObdProtocol.CAN_11_250), ObdProtocol.entries.filter { it.isReadable })
+        assertEquals(
+            listOf(ObdProtocol.CAN_11_500, ObdProtocol.CAN_29_500, ObdProtocol.CAN_11_250, ObdProtocol.CAN_29_250),
+            ObdProtocol.entries.filter { it.isReadable },
+        )
         assertEquals("ATSP6", ObdProtocol.CAN_11_500.selectCommand)
         assertEquals(
             listOf(ObdProtocol.CAN_11_500, ObdProtocol.CAN_11_250, ObdProtocol.CAN_29_500, ObdProtocol.CAN_29_250),

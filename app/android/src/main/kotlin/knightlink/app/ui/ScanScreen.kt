@@ -144,9 +144,17 @@ fun ScanScreen(
 
         CarCard(state, editing, { editing = it }, app)
 
+        if (state.twinReady) {
+            KlCard {
+                KlSectionTitle(stringResource(R.string.twin_ready_title))
+                Text(stringResource(R.string.twin_ready_body), style = MaterialTheme.typography.bodyMedium, color = KlColors.OnSurfaceMuted)
+                PrimaryButton(stringResource(R.string.twin_ready_export), app.onShareFindings)
+            }
+        }
+
         state.driveTruth?.let { DriveTruthCard(it, app.onShareText) }
 
-        if (!idle && state.knownVehicle) DriveModeCard(state.drive, recording = true, onMode = actions.onDriveMode)
+        if (!idle && state.driveModes.isNotEmpty()) DriveModeCard(state.driveModes, state.drive, recording = true, onMode = actions.onDriveMode)
         DriveReadingsCard(state.dashboard, actions.onDashboard)
 
         if (!idle) {
@@ -284,6 +292,7 @@ private fun CarProfileForm(
     var fuel by rememberSaveable { mutableStateOf(initial?.fuelType?.tag) }
     var gearbox by rememberSaveable { mutableStateOf(initial?.transmission?.tag) }
     var odometer by rememberSaveable { mutableStateOf(initial?.odometerKm?.toString().orEmpty()) }
+    var tank by rememberSaveable { mutableStateOf(initial?.tankCapacityL?.toInt()?.toString().orEmpty()) }
     Column(verticalArrangement = Arrangement.spacedBy(KlSpacing.M)) {
         KlTextField(make, { make = it }, stringResource(R.string.car_make))
         if (models.isNotEmpty()) {
@@ -309,6 +318,7 @@ private fun CarProfileForm(
             }
         }
         KlTextField(odometer, { odometer = it.filter(Char::isDigit).take(ODOMETER_DIGITS) }, stringResource(R.string.car_odometer), number = true)
+        KlTextField(tank, { tank = it.filter { c -> c.isDigit() || c == '.' }.take(TANK_DIGITS) }, stringResource(R.string.car_tank_litres), number = true)
         PrimaryButton(
             stringResource(R.string.car_save),
             {
@@ -321,6 +331,7 @@ private fun CarProfileForm(
                         transmission = Transmission.fromTag(gearbox),
                         odometerKm = odometer.toLongOrNull(),
                         odometerAtMs = if (odometer.isBlank()) 0 else app.now(),
+                        tankCapacityL = tank.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 },
                     ),
                 )
             },
@@ -331,3 +342,4 @@ private fun CarProfileForm(
 }
 
 private const val ODOMETER_DIGITS = 7
+private const val TANK_DIGITS = 5

@@ -175,3 +175,26 @@ How it works now: `BleAdvertisementListener` runs a balanced-mode scan with one 
 - **Hardening**: the parked body scan can be skipped (`VehicleSession.skipBodyScan`, `BodyOutcome.SKIPPED`, `Limits.skip`; the Skip button of the health check ends whichever parked work runs; the rest of the units is asked in the background as after the time cap). The findings zip is made by `FindingsExport.write`, which refuses (throws, writes nothing) when the report's VIN or its part after the manufacturer code is in any entry; the recording is scrubbed (VIN), GPS lines are dropped, and the dashboard odometer and range lines and events and the tyre sensor lines are left out; the consent text and the README inside the zip list exactly what it holds (a test reads the consent strings). The fuel price field takes only plain positive numbers up to 1000 (digits with one point or comma; no `5f`, `1e2`, `NaN`).
 - **Known gaps**: the learning ladder's "Flagged" can only happen parked, before a drive, so it is not an event of the drive; a price typed after the drive does not change that drive's report; hybrid and CNG cars are treated as diesel (no air-flow fuel); the UI's "report ready" can wait if the guided drive stage ends (60 s, rpm 0) while the reducer has not seen the engine off; nothing here has been driven on the real car yet (tests use fake readings).
 - **Environment**: drive C: is full (about 88 MB free). Build with everything on D: `export GRADLE_USER_HOME=D:/gh-ui-agent/gradle TEMP=D:/gradle-tmp TMP=D:/gradle-tmp ANDROID_USER_HOME=D:/gh-ui-agent/android`, `ANDROID_HOME` as in `local.properties`, JDK 21 from `Eclipse Adoptium`, then `./gradlew ktlintFormat check :app:android:assembleDebug -q --no-daemon`. Never write large files to C:.
+
+## Status Update (2026-11-25)
+
+- **Protocol & 29-bit CAN support:** Added `BusAddressing` (`Can11Bit` and `Can29Bit` ISO 15765-4 normal fixed addressing: `18DB33F1` functional, `18DA<ecu>F1` request, `18DAF1<ecu>` response) in `core/protocol/BusAddressing.kt`. Updated `ObdProtocol` (`CAN_29_500`, `CAN_29_250` `isReadable = true`), `ReadOnlyPolicy` (`ATCP18`, 6/8-digit `ATSH`, `18DAxxF1` / `18DB33F1`), `Elm327Driver.setAddressing()`, `ProtocolNegotiator`, `CapabilityProbe`, `LearningLadder`, and `VehicleSession`.
+- **Unified scanning & Twin export:**
+  - `LadderGuard` no longer aborts when the engine is started (`false -> true`) while parked; it updates the baseline.
+  - `LearningLadder` now builds a VIN-masked `ScanResult` and populates `discoveryItems` so unknown cars automatically poll discovered `22 xxxx` DIDs while driving.
+  - `FindingsExport` now generates `twin-definition.json` (`vehicles/<brand>/<model>/<year>`) inside `knightlink-findings.zip`.
+  - `SessionController.findingsInput()` persists `lastFindings` across disconnect so **Share this car's findings** works offline.
+  - `UiState.twinReady` triggers after 45 s of `DRIVING` (or `ENDED` / `driveTruth`) and posts a notification + **Export digital twin** card.
+- **Pre-seeded candidate vehicle DB (`definitions/vehicles/<brand>/<model>/<year>.json`):**
+  - Added candidate definitions (`probeFingerprint` empty so `LearningLadder` still runs on first connect) for: Mahindra Thar Roxx (`2024`, 57 L), Mahindra XUV 3XO (`2024`, 42 L), Mahindra XUV300 (`2019`, 42 L), Kia Seltos (`2019`, 47 L), Hyundai Verna (`2020`, 45 L), Ford EcoSport (`2018`, 52 L), Renault Duster (`2015`, 50 L), Maruti Suzuki S-Cross (`2018`, 48 L).
+  - Added `VehicleInfo.driveModes` (data-driven `FlowRow` chips in `DriveModeCard`, hidden when empty) and optional `tankCapacityL` in `CarProfileForm`.
+- **Session & UI hardening (from 2026-11-25 Harrier run `20261125T134622.933Z.jsonl.gz`):**
+  - `SessionService` auto-disconnects BLE after 2 min of `VehicleAsleep` so the Vgate iCar Pro 2S can sleep.
+  - `BodyUnitReader` now reports overall `done / total` across all pending body units so the progress bar moves monotonically.
+  - Real Harrier run proved `700` extended (`10 03`) refuses all 860 candidate DIDs (saved `done` in `VehicleMemory`) and captured `701` `19 02 FF` + `F180`/`F181`/`F184`; 5 remaining Harrier body units will finish automatically on future drives.
+- **Device & test state:** `./gradlew jvmTest :app:android:testDebugUnitTest :app:android:assembleDebug :tools:archtest:test --no-daemon -q` passes; updated debug APK installed in-place on S25 Ultra (`RZCY11YWNXP`).
+- **Next for app dev (new session):**
+  1. Implement the persistent **Car Twin** store + typed `Twin API` (`docs/ARCHITECTURE_TWIN.md`).
+  2. Add **AI Mode selector** (`No AI` / `Local AI` / `Cloud AI` / `Hybrid AI`), **KnightPack** shared `knightpack-events.json` mapping (`PhraseKeys` <-> `car_dialogue.json`), and sideload picker for `D:\Projects\KnightPack Studio`.
+  3. Add **Offline pack sync** (`files/packs/` override in `DefinitionStore`), **Expense/Fuel ledger**, and **Trend alerts** (DPF soot, 12V cranking/resting voltage, alternator, cooling).
+  4. Note one pre-existing ktlint line-length warning in `app/android/src/test/.../DashboardReadingsTest.kt:58`.

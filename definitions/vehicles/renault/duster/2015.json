@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/renault/duster/2015",
+  "kind": "vehicle",
+  "title": "Renault Duster Classic India (2012-2022)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Renault",
+    "model": "Duster",
+    "yearFrom": 2012,
+    "yearTo": 2022,
+    "engine": "1.5L dCi Diesel / 1.5L H4K Petrol / 1.3L Turbo",
+    "wmi": "MEE",
+    "tankCapacityL": 50,
+    "driveModes": []
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8" }
+  ],
+  "parameters": []
+}

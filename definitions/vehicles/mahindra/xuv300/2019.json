@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/mahindra/xuv300/2019",
+  "kind": "vehicle",
+  "title": "Mahindra XUV300 (2019-2024)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Mahindra",
+    "model": "XUV300",
+    "yearFrom": 2019,
+    "yearTo": 2024,
+    "engine": "1.2L Turbo Petrol / 1.5L CRDe Diesel",
+    "wmi": "MA1",
+    "tankCapacityL": 42,
+    "driveModes": ["ZIP", "ZAP", "ZOOM"]
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8" }
+  ],
+  "parameters": []
+}

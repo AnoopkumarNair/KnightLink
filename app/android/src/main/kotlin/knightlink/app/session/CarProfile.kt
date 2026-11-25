@@ -42,6 +42,7 @@ data class CarProfile(
     val transmission: Transmission? = null,
     val odometerKm: Long? = null,
     val odometerAtMs: Long = 0,
+    val tankCapacityL: Double? = null,
 ) {
     /** The name to greet the car by: the nickname, else make and model. */
     val displayName: String
@@ -81,6 +82,7 @@ class CarProfileStore(private val store: StringStore) {
             transmission = Transmission.fromTag(store.get(field(key, GEARBOX))),
             odometerKm = store.get(field(key, ODOMETER))?.toLongOrNull(),
             odometerAtMs = store.get(field(key, ODOMETER_AT))?.toLongOrNull() ?: 0,
+            tankCapacityL = store.get(field(key, TANK_L))?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 },
         )
     }
 
@@ -92,6 +94,7 @@ class CarProfileStore(private val store: StringStore) {
         store.put(field(key, GEARBOX), profile.transmission?.tag)
         store.put(field(key, ODOMETER), profile.odometerKm?.toString())
         store.put(field(key, ODOMETER_AT), profile.odometerAtMs.takeIf { it > 0 }?.toString())
+        store.put(field(key, TANK_L), profile.tankCapacityL?.takeIf { it.isFinite() && it > 0.0 }?.toString())
     }
 
     private fun field(key: String, name: String) = "car.$key.$name"
@@ -104,6 +107,7 @@ class CarProfileStore(private val store: StringStore) {
         const val GEARBOX = "gearbox"
         const val ODOMETER = "odometer"
         const val ODOMETER_AT = "odometer_at"
+        const val TANK_L = "tank_l"
     }
 }
 

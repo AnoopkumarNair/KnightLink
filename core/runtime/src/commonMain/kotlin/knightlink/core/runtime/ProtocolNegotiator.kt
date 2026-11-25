@@ -273,8 +273,13 @@ public class ProtocolNegotiator(
 
     /** `0100` to the functional address: the header is set first, whatever an earlier session left (or a reset cleared) in the adapter. */
     private suspend fun askFunctional(timeout: Duration, setHeader: Boolean): List<String> {
-        // Only on 11-bit CAN, where the header is a three-digit identifier; on a K-line or a 29-bit bus (or while the adapter still searches) it is left alone.
-        if (setHeader) driver.command("ATSH7DF")
+        // On CAN protocols (11-bit or 29-bit) set the functional header explicitly; on K-line/J1850 or auto-search leave it alone.
+        val protocol = trying
+        if (setHeader && protocol != null && protocol.isCan) {
+            for (cmd in protocol.addressing.selectHeaderCommands(protocol.addressing.functionalRequestId)) {
+                driver.command(cmd)
+            }
+        }
         return driver.command("0100", timeout)
     }
 

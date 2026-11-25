@@ -1156,8 +1156,9 @@ public class VehicleSession(
                 }
             }
             observer.reset()
+            val addressing = connectionProtocol?.addressing ?: knightlink.core.protocol.BusAddressing.Can11Bit
             val probeStarted = timeSource.markNow()
-            val report = CapabilityProbe(observer, timeSource).run { stage ->
+            val report = CapabilityProbe(observer, timeSource, CapabilityProbe.Config(addressing = addressing)).run { stage ->
                 // Later probes run quietly: a status that flickers between "waiting" and "probing" every few seconds helps nobody.
                 if (first) setState(SessionState.Probing(stage))
             }.let { it.copy(adapter = it.adapter.copy(unsupportedCommands = driver.unsupportedCommands)) }
@@ -1202,9 +1203,18 @@ public class VehicleSession(
         }
     }
 
-    /** The request id of the engine control unit the probe expects to answer: the catalog's primary, or the usual 7E0 when a resolver picks the catalog. */
+    /** The request id of the engine control unit the probe expects to answer: the catalog's primary, or the default ECM id when a resolver picks the catalog. */
     private fun primaryRequestId(): Int? =
-        activeCatalog.ecus.firstOrNull { it.id == primaryEcu }?.requestCanId ?: if (config.resolver != null) DEFAULT_PRIMARY_REQUEST_ID else null
+        activeCatalog.ecus.firstOrNull { it.id == primaryEcu }?.requestCanId
+            ?: if (config.resolver != null) {
+                if (connectionProtocol?.addressing?.extendedIds == true) {
+                    knightlink.core.protocol.BusAddressing.Can29Bit.physicalRequestId(0x10)
+                } else {
+                    DEFAULT_PRIMARY_REQUEST_ID
+                }
+            } else {
+                null
+            }
 
     /** Whether the time to wait for a silent car is up. A car this session has read, with a definition, is waited for without limit. */
     private fun limitReached(emptyRounds: Int, waitStart: TimeMark): Boolean {
@@ -1245,6 +1255,7 @@ public class VehicleSession(
             val protocol = result.protocol
             if (protocol != null && protocol.isReadable) {
                 connectionProtocol = protocol
+                driver.setAddressing(protocol.addressing)
                 lockProtocol(driver, protocol)
             }
             _facts.value = _facts.value.copy(protocol = protocol, dpn = result.dpn, negotiationMs = result.elapsedMs)
@@ -1334,7 +1345,7 @@ public class VehicleSession(
         primaryEcu = config.primaryEcu?.takeIf { id -> resolved.catalog.ecus.any { it.id == id } } ?: resolved.catalog.ecus.firstOrNull()?.id
         vehicleKnown = resolved.known
         allowedLevel = resolved.allowedLevel
-        scanPlan = if (resolved.known) resolved.scanPlan else null
+        scanPlan = resolved.scanPlan ?: config.scanPlan
         candidateChecks = if (resolved.known) resolved.candidateChecks else null
         seedScan = if (resolved.known) resolved.seedScan else null
         resolvedModel = resolved.model
@@ -1515,6 +1526,12 @@ public class VehicleSession(
             return
         }
         ladderSkip = false
+        val addressing = connectionProtocol?.addressing ?: knightlink.core.protocol.BusAddressing.Can11Bit
+        val speedId = primaryRequestId() ?: if (addressing.extendedIds) {
+            knightlink.core.protocol.BusAddressing.Can29Bit.physicalRequestId(0x10)
+        } else {
+            DEFAULT_PRIMARY_REQUEST_ID
+        }
         val ladder = LearningLadder(
             link = driver,
             units = report.ecus,
@@ -1527,6 +1544,8 @@ public class VehicleSession(
             skip = { ladderSkip },
             publish = { _ladder.value = it },
             faultConfig = config.faultReader.copy(isLinkLoss = { it is AdapterDisconnectedException || it is TransportException }),
+            guardConfig = LadderGuard.Config(speedRequestId = speedId),
+            addressing = addressing,
         )
         val result = try {
             ladder.run()
@@ -1548,10 +1567,24 @@ public class VehicleSession(
             is LadderResult.Complete -> {
                 _ladder.value = LadderState.Complete(result.highest, result.answers)
                 ladderMemory = LadderMemory(units, result.highest.name, result.answers)
+                result.scanResult?.let { scan ->
+                    lastScan = scan
+                    _scan.value = ScanState.Finished(scan)
+                    rebuildDiscovery()
+                }
                 memoryDirty = true
                 saveMemory()
             }
-            is LadderResult.Stopped -> _ladder.value = LadderState.Stopped(result.level, result.reason, result.answers)
+            is LadderResult.Stopped -> {
+                _ladder.value = LadderState.Stopped(result.level, result.reason, result.answers)
+                result.scanResult?.takeIf { it.sweeps.isNotEmpty() || it.ecus.isNotEmpty() }?.let { scan ->
+                    lastScan = scan
+                    _scan.value = ScanState.Finished(scan)
+                    rebuildDiscovery()
+                    memoryDirty = true
+                    saveMemory()
+                }
+            }
             is LadderResult.Flagged -> {
                 _ladder.value = LadderState.Flagged(result.reason)
                 // What the ladder saw is shown with the other faults.
@@ -2071,7 +2104,14 @@ public class VehicleSession(
             if (!slicesHeld) {
                 slicesHeld = true
                 val kmh = _telemetry.value.value(SIGNAL_SPEED)?.toInt()
-                note(SessionEvents.BODY_SCAN, "background body check paused: the car moves" + (kmh?.let { " ($it km/h)" } ?: "") + "; polling keeps the adapter")
+                note(
+                    SessionEvents.BODY_SCAN,
+                    "background body check paused: the car moves" + (
+                        kmh?.let {
+                            " ($it km/h)"
+                        } ?: ""
+                        ) + "; polling keeps the adapter",
+                )
             }
             return true
         }

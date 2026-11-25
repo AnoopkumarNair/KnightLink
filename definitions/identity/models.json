@@ -59,7 +59,17 @@
     "Grand Vitara",
     "Fronx",
     "WagonR",
-    "Alto"
+    "Alto",
+    "S-Cross"
+   ]
+  },
+  {
+   "make": "Ford",
+   "models": [
+    "EcoSport",
+    "Endeavour",
+    "Figo",
+    "Aspire"
    ]
   },
   {
@@ -83,6 +93,7 @@
   {
    "make": "Renault",
    "models": [
+    "Duster",
     "Kwid",
     "Triber",
     "Kiger"

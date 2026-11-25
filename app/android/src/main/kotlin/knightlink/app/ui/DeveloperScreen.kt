@@ -99,7 +99,7 @@ class ConnectionActions(
     val backgroundAllowed: Boolean = true,
     val onAllowBackground: () -> Unit = {},
     /** The driver says the car is now in this drive mode; it is stamped into the recording. */
-    val onDriveMode: (DriveMode) -> Unit = {},
+    val onDriveMode: (String) -> Unit = {},
     /** True switches the session to passive capture (it only listens to the car's broadcast), false back to active polling. */
     val onPassiveCapture: (Boolean) -> Unit = {},
     /** The driver typed what the dashboard shows: odometer and range as text, and whether it is the end of the drive (else the start). */
@@ -236,7 +236,7 @@ private fun LazyListScope.summaryItems(
     }
     if (state.vehicle != null) {
         item(key = "drive", contentType = "card") {
-            DriveCard(state.drive, state.captureMode, state.connection, actions.onDriveMode, actions.onPassiveCapture)
+            DriveCard(state.driveModes, state.drive, state.captureMode, state.connection, actions.onDriveMode, actions.onPassiveCapture)
         }
     }
     // Always there, also with no connection or while it recovers: the end readings are typed when the car is off and the link is gone.
@@ -248,24 +248,27 @@ private fun LazyListScope.summaryItems(
 /** The drive mode buttons (tap when the car's mode changes, so the recording says which mode each stretch was driven in) and the last refuel. */
 @Composable
 private fun DriveCard(
+    modes: List<String>,
     drive: DriveSummary?,
     captureMode: CaptureMode,
     connection: ConnectionStatus,
-    onMode: (DriveMode) -> Unit,
+    onMode: (String) -> Unit,
     onPassiveCapture: (Boolean) -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.drive_title), style = MaterialTheme.typography.titleMedium)
-            Text(stringResource(R.string.drive_mode_hint), style = MaterialTheme.typography.bodySmall)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DriveMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = drive?.mode == mode,
-                        onClick = { onMode(mode) },
-                        label = { Text(stringResource(mode.labelRes()), modifier = Modifier.padding(vertical = 8.dp)) },
-                        modifier = Modifier.weight(1f),
-                    )
+            if (modes.isNotEmpty()) {
+                Text(stringResource(R.string.drive_mode_hint), style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    modes.forEach { mode ->
+                        FilterChip(
+                            selected = drive?.mode == mode,
+                            onClick = { onMode(mode) },
+                            label = { Text(mode.lowercase().replaceFirstChar { it.uppercase() }, modifier = Modifier.padding(vertical = 8.dp)) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
             val passive = captureMode == CaptureMode.PASSIVE
@@ -403,12 +406,6 @@ private fun BodyScanBanner(progress: BodyScanProgress) {
             }
         }
     }
-}
-
-private fun DriveMode.labelRes(): Int = when (this) {
-    DriveMode.ECO -> R.string.drive_mode_eco
-    DriveMode.CITY -> R.string.drive_mode_city
-    DriveMode.SPORT -> R.string.drive_mode_sport
 }
 
 /** A refuel's time in the phone's own style, or an empty text when the session had no clock. */

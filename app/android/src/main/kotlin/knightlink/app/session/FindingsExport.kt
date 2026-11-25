@@ -40,6 +40,7 @@ data class FindingsInput(
 
 object FindingsExport {
     const val CAPABILITIES_FILE = "capabilities.json"
+    const val DEFINITION_FILE = "twin-definition.json"
     const val RECORDING_FILE = "recording-scrubbed.jsonl"
     const val SCAN_FILE = "scan-result.json"
     const val README_FILE = "README.txt"
@@ -161,28 +162,85 @@ object FindingsExport {
         readings, and any clock time (times in the recording count from its start).
         """.trimIndent()
 
+    /** Generates a candidate vehicle definition JSON skeleton from the probed ECUs and identity (never includes a full VIN). */
+    fun twinDefinition(input: FindingsInput): String {
+        val report = input.report
+        val identity = input.identity
+        val wmi = report?.ecus?.firstNotNullOfOrNull { it.vin }?.take(WMI_LENGTH)
+        val makeSlug = identity?.make?.takeIf { it != UNKNOWN_MAKE }?.lowercase()?.filter { it.isLetterOrDigit() } ?: "unknown"
+        val modelSlug = identity?.model?.lowercase()?.replace(Regex("[^a-z0-9]+"), "-")?.trim('-')?.ifBlank { "vehicle" } ?: "vehicle"
+        val year = identity?.year ?: 2024
+        val doc = buildJsonObject {
+            put("schemaVersion", 1)
+            put("id", "vehicles/$makeSlug/$modelSlug/$year")
+            put("kind", "vehicle")
+            put(
+                "title",
+                listOfNotNull(
+                    identity?.make?.takeIf {
+                        it != UNKNOWN_MAKE
+                    },
+                    identity?.model,
+                    identity?.year?.toString(),
+                ).joinToString(" ").ifBlank { "Captured Vehicle" },
+            )
+            putJsonArray("extends") { add(JsonPrimitive("standard/sae-j1979-mode01")) }
+            putJsonObject("vehicle") {
+                put("make", identity?.make ?: UNKNOWN_MAKE)
+                put("model", identity?.model ?: "Unknown")
+                put("yearFrom", year)
+                wmi?.let { put("wmi", it) }
+                putJsonArray("probeFingerprint") {
+                    for (ecu in report?.ecus.orEmpty()) {
+                        add(
+                            buildJsonObject {
+                                put("requestId", ecu.requestId)
+                                put("pids", ecu.supportedPids.size)
+                            },
+                        )
+                    }
+                }
+            }
+            putJsonArray("ecus") {
+                for ((index, ecu) in report?.ecus.orEmpty().withIndex()) {
+                    add(
+                        buildJsonObject {
+                            put("id", "ecu_${index}_${ecu.requestId.lowercase()}")
+                            put("name", ecu.name ?: "ECU ${ecu.requestId}")
+                            put("requestId", ecu.requestId)
+                            put("responseId", ecu.responseId)
+                        },
+                    )
+                }
+            }
+            putJsonArray("parameters") { }
+        }
+        return json.encodeToString(JsonObject.serializer(), doc)
+    }
+
     /**
-     * Makes the findings file in one step: the capabilities, the scrubbed [recording] and [scanJson]. Refuses (throws) when the full VIN, or the
+     * Makes the findings file in one step: the capabilities, twin definition skeleton, the scrubbed [recording] and [scanJson]. Refuses (throws) when the full VIN, or the
      * part of it after the manufacturer code, is found in anything that would go into the file, whatever the scrubber did.
      *
      * @throws IllegalStateException when a VIN of the report is in the file's text
      */
     fun write(out: File, input: FindingsInput, recording: Recording?, scanJson: String?) {
         val capabilities = capabilities(input)
+        val definition = twinDefinition(input)
         val recordingText = recording?.let { scrubbedRecording(it).toText() }
         val vins = input.report?.ecus?.mapNotNull { it.vin }?.filter { it.length > WMI_LENGTH }.orEmpty()
-        for (text in listOfNotNull(capabilities, recordingText, scanJson, readme())) {
+        for (text in listOfNotNull(capabilities, definition, recordingText, scanJson, readme())) {
             for (vin in vins) {
                 check(!text.contains(vin) && !text.contains(vin.drop(WMI_LENGTH))) { "the VIN is in the findings file" }
             }
         }
-        writeZip(out, capabilities, recordingText, scanJson)
+        writeZip(out, capabilities, recordingText, scanJson, definition)
     }
 
     /**
-     * Writes the findings zip to [out] (replacing it): the capabilities, the README, and when given the scrubbed recording and the scan result.
+     * Writes the findings zip to [out] (replacing it): the capabilities, the README, and when given the scrubbed recording, the scan result, and the twin definition.
      */
-    fun writeZip(out: File, capabilities: String, scrubbedRecording: String?, scanJson: String?) {
+    fun writeZip(out: File, capabilities: String, scrubbedRecording: String?, scanJson: String?, definition: String? = null) {
         out.parentFile?.mkdirs()
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
             fun add(name: String, text: String) {
@@ -192,6 +250,7 @@ object FindingsExport {
             }
             add(README_FILE, readme())
             add(CAPABILITIES_FILE, capabilities)
+            definition?.let { add(DEFINITION_FILE, it) }
             scrubbedRecording?.let { add(RECORDING_FILE, it) }
             scanJson?.let { add(SCAN_FILE, it) }
         }

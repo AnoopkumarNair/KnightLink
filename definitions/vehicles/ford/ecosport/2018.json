@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/ford/ecosport/2018",
+  "kind": "vehicle",
+  "title": "Ford EcoSport India (2018-2021)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Ford",
+    "model": "EcoSport",
+    "yearFrom": 2018,
+    "yearTo": 2021,
+    "engine": "1.5L Ti-VCT Petrol / 1.5L TDCi Diesel",
+    "wmi": "MAJ",
+    "tankCapacityL": 52,
+    "driveModes": []
+  },
+  "ecus": [
+    { "id": "ecm", "name": "PCM - PowertrainControl", "requestId": "7E0", "responseId": "7E8" }
+  ],
+  "parameters": []
+}

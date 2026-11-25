@@ -13,9 +13,7 @@ import knightlink.core.signals.DefinitionFile
 import knightlink.core.signals.DefinitionJson
 import knightlink.core.signals.SignalCatalog
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -249,7 +247,10 @@ class ClusterExtendedSessionSimulationTest {
 
     @Test
     fun aClusterThatStopsAnsweringTesterPresentDoesNotHangTheStage() = runTest {
-        val rig = rig(candidates = checks("""{"from":"F000","to":"F4FF"}"""), setupCluster = { it.remove("3E00"); it.refuse("3E00", 0x11) })
+        val rig = rig(candidates = checks("""{"from":"F000","to":"F4FF"}"""), setupCluster = {
+            it.remove("3E00")
+            it.refuse("3E00", 0x11)
+        })
         rig.session.start()
         run(150.seconds)
         val notes = rig.events.of(SessionEvents.SESSION)

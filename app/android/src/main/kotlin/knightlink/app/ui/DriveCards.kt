@@ -2,6 +2,8 @@ package knightlink.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
@@ -106,7 +108,9 @@ private fun ReadingsEntry(
 @Composable
 private fun ReadingFields(odo: String, onOdo: (String) -> Unit, dte: String, onDte: (String) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(KlSpacing.S)) {
-        KlTextField(odo, { onOdo(it.filter(Char::isDigit).take(READING_DIGITS)) }, stringResource(R.string.dashboard_odometer), Modifier.weight(1f), number = true)
+        KlTextField(odo, {
+            onOdo(it.filter(Char::isDigit).take(READING_DIGITS))
+        }, stringResource(R.string.dashboard_odometer), Modifier.weight(1f), number = true)
         KlTextField(dte, { onDte(it.filter(Char::isDigit).take(READING_DIGITS)) }, stringResource(R.string.dashboard_range), Modifier.weight(1f), number = true)
     }
 }
@@ -115,7 +119,11 @@ private fun ReadingFields(odo: String, onOdo: (String) -> Unit, dte: String, onD
 private fun EndBelowStartWarning(odo: String, startOdometer: Long?) {
     val typed = DashboardReadings.parseKm(odo)
     if (startOdometer != null && typed != null && typed < startOdometer) {
-        Text(stringResource(R.string.readings_end_before_start, startOdometer.toString()), style = MaterialTheme.typography.bodySmall, color = KlColors.Attention)
+        Text(
+            stringResource(R.string.readings_end_before_start, startOdometer.toString()),
+            style = MaterialTheme.typography.bodySmall,
+            color = KlColors.Attention,
+        )
     }
 }
 
@@ -153,9 +161,11 @@ fun EndReadingsPrompt(dashboard: DashboardReadings, dialog: Boolean, onSave: (St
     }
 }
 
-/** Eco / City / Sport: a tap writes the mode into the drive's recording (the same `mode` line the Developer page writes). */
+/** Dynamic drive-mode selector from the car's definition; a tap writes the mode into the recording. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DriveModeCard(drive: DriveSummary?, recording: Boolean, onMode: (DriveMode) -> Unit) {
+fun DriveModeCard(modes: List<String>, drive: DriveSummary?, recording: Boolean, onMode: (String) -> Unit) {
+    if (modes.isEmpty()) return
     KlCard {
         KlSectionTitle(stringResource(R.string.mode_title))
         Text(
@@ -163,14 +173,13 @@ fun DriveModeCard(drive: DriveSummary?, recording: Boolean, onMode: (DriveMode) 
             style = MaterialTheme.typography.bodyMedium,
             color = KlColors.OnSurfaceMuted,
         )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(KlSpacing.S)) {
-            DriveMode.entries.forEach { mode ->
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(KlSpacing.S)) {
+            modes.forEach { mode ->
                 FilterChip(
                     selected = drive?.mode == mode,
                     onClick = { onMode(mode) },
                     enabled = recording,
-                    label = { Text(stringResource(mode.label())) },
-                    modifier = Modifier.weight(1f),
+                    label = { Text(mode.lowercase().replaceFirstChar { it.uppercase() }) },
                 )
             }
         }
@@ -211,12 +220,6 @@ fun ParkedCheckCard(state: UiState, onRunAgain: () -> Unit, onSkip: () -> Unit) 
             PrimaryButton(stringResource(R.string.parked_again_action), onRunAgain)
         }
     }
-}
-
-private fun DriveMode.label(): Int = when (this) {
-    DriveMode.ECO -> R.string.drive_mode_eco
-    DriveMode.CITY -> R.string.drive_mode_city
-    DriveMode.SPORT -> R.string.drive_mode_sport
 }
 
 private fun formatSavedAt(atMs: Long): String =

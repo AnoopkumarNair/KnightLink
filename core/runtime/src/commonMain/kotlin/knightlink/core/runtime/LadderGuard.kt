@@ -167,10 +167,15 @@ internal class LadderGuard(
             val speed = readSpeed() ?: throw LevelAborted(AbortScope.LADDER, "the car's speed can no longer be read")
             if (speed != 0) throw LevelAborted(AbortScope.LADDER, "the car moves ($speed km/h)")
             val running = engineRunning()
-            if (start.engineRunning != null && running != null && running != start.engineRunning) {
-                throw LevelAborted(AbortScope.LADDER, "the engine ${if (running) "started" else "stopped"}")
-            }
             val volts = readVolts()
+            if (start.engineRunning != null && running != null && running != start.engineRunning) {
+                if (!start.engineRunning && running) {
+                    // User started the engine to prepare for driving: keep scanning and update the baseline.
+                    baseline = Baseline(true, volts ?: start.volts)
+                } else {
+                    throw LevelAborted(AbortScope.LADDER, "the engine stopped")
+                }
+            }
             if (volts != null && start.volts != null && (volts < config.minVolts || start.volts - volts > config.maxDrop)) {
                 throw LevelAborted(AbortScope.LADDER, "the battery fell from ${start.volts} V to $volts V")
             }

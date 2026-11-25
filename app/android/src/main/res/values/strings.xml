@@ -368,6 +368,11 @@
     <string name="car_fuel">Fuel</string>
     <string name="car_gearbox">Gearbox</string>
     <string name="car_odometer">Odometer now (km)</string>
+    <string name="car_tank_litres">Tank capacity (litres, optional)</string>
+    <string name="twin_ready_title">Digital twin ready to export</string>
+    <string name="twin_ready_body">Parked scan and drive data are captured. Export the bundle to build or update this car\'s definition.</string>
+    <string name="twin_ready_export">Export digital twin</string>
+    <string name="twin_ready_notification">Enough drive data captured — you can park and export your digital twin</string>
     <string name="car_save">Save</string>
     <string name="car_cancel_edit">Cancel</string>
     <string name="fuel_petrol">Petrol</string>

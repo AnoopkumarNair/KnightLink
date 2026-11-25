@@ -57,7 +57,7 @@ class LadderGuardTest {
                 guard.request(0x7E0, payload.filterNot { it == ' ' }.chunked(2).map { it.toInt(16).toByte() }.toByteArray(), 1)
             }
         }
-        for (id in listOf(0x6FF, 0x800, 0x100, 0x18DB33F1)) {
+        for (id in listOf(0x6FF, 0x800, 0x100, 0x18DAF110)) {
             assertFailsWith<ReadOnlyViolationException>("id $id") {
                 guard.request(id, byteArrayOf(0x22, 0xF1.toByte(), 0x90.toByte()), 1)
             }
@@ -130,9 +130,10 @@ class LadderGuardTest {
         }
         speed = 0
         run {
+            rpm = 800
             val guard = guard(config)
             assertNull(guard.begin())
-            rpm = 800
+            rpm = 0
             val aborted = assertFailsWith<LevelAborted> { repeat(4) { guard.request(0x7E0, byteArrayOf(0x22, 0xF1.toByte(), it.toByte()), 1) } }
             assertEquals(AbortScope.LADDER, aborted.scope)
             assertTrue("engine" in aborted.reason)

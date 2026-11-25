@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "vehicles/mahindra/thar-roxx/2024",
+  "kind": "vehicle",
+  "title": "Mahindra Thar Roxx 2.2L mHawk Diesel AT (2024+)",
+  "extends": ["standard/sae-j1979-mode01"],
+  "vehicle": {
+    "make": "Mahindra",
+    "model": "Thar Roxx",
+    "yearFrom": 2024,
+    "engine": "2.2L mHawk CRDe diesel, 6-speed AT",
+    "fuel": "diesel",
+    "wmi": "MA1",
+    "tankCapacityL": 57,
+    "fuelDensityKgPerL": 0.832,
+    "driveModes": ["ZIP", "ZOOM", "SNOW", "SAND", "MUD"]
+  },
+  "ecus": [
+    { "id": "ecm", "name": "ECM - EngineControl", "requestId": "7E0", "responseId": "7E8",
+      "description": "Candidate standard OBD ECM; verify request/response IDs and DIDs on first car scan." }
+  ],
+  "parameters": []
+}

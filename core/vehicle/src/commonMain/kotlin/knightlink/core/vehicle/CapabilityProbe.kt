@@ -1,5 +1,6 @@
 package knightlink.core.vehicle
 
+import knightlink.core.protocol.BusAddressing
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmResponse
 import knightlink.core.protocol.ElmStatus
@@ -25,6 +26,8 @@ public class CapabilityProbe(
     public data class Config(
         /** How many `01 00` round trips to time against the first ECU. Zero skips the benchmark. */
         val benchmarkSamples: Int = DEFAULT_BENCHMARK_SAMPLES,
+        /** CAN addressing scheme (11-bit or 29-bit normal fixed). */
+        val addressing: BusAddressing = BusAddressing.Can11Bit,
     ) {
         init {
             require(benchmarkSamples >= 0) { "benchmarkSamples must not be negative" }
@@ -33,7 +36,7 @@ public class CapabilityProbe(
 
     /** An ECU found by the sweep, with the first support bitmap it sent (reused so `01 00` is not asked twice). */
     private class Found(val requestId: Int, val responseId: Int, val firstBitmap: ByteArray?) {
-        val label: String get() = requestId.toCanIdHex()
+        fun label(addressing: BusAddressing): String = addressing.formatId(requestId)
     }
 
     /** The first status word met that says the vehicle bus could not be reached; reset by every [run]. */
@@ -70,8 +73,8 @@ public class CapabilityProbe(
         onProgress(ProbeStage.DERIVED_FACTS)
         val ecus = found.mapIndexed { i, ecu ->
             EcuReport(
-                requestId = ecu.label,
-                responseId = ecu.responseId.toCanIdHex(),
+                requestId = ecu.label(config.addressing),
+                responseId = config.addressing.formatId(ecu.responseId),
                 name = info[i].name,
                 calibrationIds = info[i].calibrationIds,
                 supportedPids = supported[i].sorted().map { it.toPidHex() },
@@ -128,6 +131,7 @@ public class CapabilityProbe(
     // Stage 2 ----------------------------------------------------------------------------------------------
 
     private suspend fun sweep(warnings: MutableList<String>): List<Found> {
+        if (config.addressing.extendedIds) return sweepExtended(warnings)
         val found = ArrayList<Found>()
         var failures = 0
         var lastFailure: Exception? = null
@@ -140,7 +144,7 @@ public class CapabilityProbe(
                 // One address timing out must not hide the ECUs on the others.
                 failures++
                 lastFailure = e
-                warnings += "${requestId.toCanIdHex()}: request failed: ${e.message ?: e::class.simpleName}"
+                warnings += "${config.addressing.formatId(requestId)}: request failed: ${e.message ?: e::class.simpleName}"
                 continue
             }
             noteBusFault(response)
@@ -153,6 +157,48 @@ public class CapabilityProbe(
         return found
     }
 
+    private suspend fun sweepExtended(warnings: MutableList<String>): List<Found> {
+        val found = ArrayList<Found>()
+        val seen = HashSet<Int>()
+        try {
+            val response = link.request(config.addressing.functionalRequestId, payload(SERVICE_LIVE_DATA, 0x00), expectedResponses = null)
+            noteBusFault(response)
+            for (msg in response.messages.filterIsInstance<DiagnosticResponse.Positive>()) {
+                if (msg.service != SERVICE_LIVE_DATA || msg.data.firstOrNull()?.toInt()?.and(0xFF) != 0x00) continue
+                val reqId = config.addressing.requestIdForResponse(msg.sourceId) ?: continue
+                if (seen.add(reqId)) found += Found(reqId, msg.sourceId, msg.bitmap())
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            warnings += "${config.addressing.formatId(config.addressing.functionalRequestId)}: functional sweep failed: ${e.message ?: e::class.simpleName}"
+        }
+        if (found.isNotEmpty()) return found
+        // Fallback: probe common 29-bit OBD ECU addresses directly.
+        var failures = 0
+        var lastFailure: Exception? = null
+        for (ecuByte in STANDARD_29BIT_ECUS) {
+            val requestId = BusAddressing.Can29Bit.physicalRequestId(ecuByte)
+            val response = try {
+                link.request(requestId, payload(SERVICE_LIVE_DATA, 0x00), expectedResponses = 1)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failures++
+                lastFailure = e
+                warnings += "${config.addressing.formatId(requestId)}: request failed: ${e.message ?: e::class.simpleName}"
+                continue
+            }
+            noteBusFault(response)
+            val reply = response.positiveReply(SERVICE_LIVE_DATA, 0x00) ?: continue
+            if (seen.add(requestId)) found += Found(requestId, reply.sourceId, reply.bitmap())
+        }
+        if (found.isEmpty() && failures == STANDARD_29BIT_ECUS.size) {
+            throw ProbeException("Every request address failed; the adapter or the vehicle connection is not working", lastFailure)
+        }
+        return found
+    }
+
     // Stage 3 ----------------------------------------------------------------------------------------------
 
     /** Follows the "next range" bit from `01 00` upwards. A range that does not answer ends the chain, keeping what was read. */
@@ -160,14 +206,14 @@ public class CapabilityProbe(
         val supported = LinkedHashSet<Int>()
         var base = 0
         var bitmap = ecu.firstBitmap
-        if (bitmap == null) warnings += "${ecu.label}: the 01 00 reply was too short to hold a support bitmap"
+        if (bitmap == null) warnings += "${ecu.label(config.addressing)}: the 01 00 reply was too short to hold a support bitmap"
         while (bitmap != null) {
             val range = decodeSupportRange(base, bitmap)
             supported += range.pids
             if (!range.hasNext || base >= LAST_RANGE_BASE) break
             base += PIDS_PER_RANGE
             bitmap = ask(ecu, SERVICE_LIVE_DATA, base, warnings)?.bitmap()
-            if (bitmap == null) warnings += "${ecu.label}: no usable answer to 01 ${base.toPidHex()}; support map may be incomplete"
+            if (bitmap == null) warnings += "${ecu.label(config.addressing)}: no usable answer to 01 ${base.toPidHex()}; support map may be incomplete"
         }
         return supported
     }
@@ -212,7 +258,7 @@ public class CapabilityProbe(
             if (answered != null) roundTrips += elapsed
         }
         if (roundTrips.size < config.benchmarkSamples) {
-            warnings += "${ecu.label}: ${config.benchmarkSamples - roundTrips.size} of ${config.benchmarkSamples} benchmark requests were not answered"
+            warnings += "${ecu.label(config.addressing)}: ${config.benchmarkSamples - roundTrips.size} of ${config.benchmarkSamples} benchmark requests were not answered"
         }
         return roundTrips
     }
@@ -226,7 +272,7 @@ public class CapabilityProbe(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            warnings += "${ecu.label}: ${service.toPidHex()} ${pid.toPidHex()} failed: ${e.message ?: e::class.simpleName}"
+            warnings += "${ecu.label(config.addressing)}: ${service.toPidHex()} ${pid.toPidHex()} failed: ${e.message ?: e::class.simpleName}"
             return null
         }
         noteBusFault(response)
@@ -252,6 +298,9 @@ public class CapabilityProbe(
 
         /** Physical request ids of the first eight ECUs on an 11-bit OBD bus (replies come from id + 8). */
         val SWEEP_REQUEST_IDS = 0x7E0..0x7E7
+
+        /** Common 29-bit ISO 15765-4 OBD ECU target addresses (ECM, secondary ECM, TCM, ABS/chassis, hybrid/battery). */
+        val STANDARD_29BIT_ECUS = listOf(0x10, 0x11, 0x18, 0x1A, 0x1E)
 
         /** Start of the last range a service 01 bitmap can announce (`01 E0`). */
         const val LAST_RANGE_BASE = 0xE0

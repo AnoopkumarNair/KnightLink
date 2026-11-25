@@ -123,8 +123,10 @@ class ReadOnlyGuardTest {
 
     @Test
     fun theRequestHeaderMayOnlyBeADiagnosticRequestIdAndTheProtocolCloseCommandIsNotAllowed() {
-        for (command in listOf("ATSH7E0", "ATSH7DF", "ATSH700", "ATSH7FF", "ATSH7E7")) assertNull(ReadOnlyPolicy.violation(command), command)
-        for (command in listOf("ATSH0C9", "ATSH7E8", "ATSH7EF", "ATSH18DB33F1", "ATSH7E", "ATSH6FF", "ATCP18", "ATCP")) {
+        for (command in listOf("ATSH7E0", "ATSH7DF", "ATSH700", "ATSH7FF", "ATSH7E7", "ATSH18DB33F1", "ATSHDB33F1", "ATSHDA10F1", "ATCP18")) {
+            assertNull(ReadOnlyPolicy.violation(command), command)
+        }
+        for (command in listOf("ATSH0C9", "ATSH7E8", "ATSH7EF", "ATSH18DAF110", "ATSH7E", "ATSH6FF", "ATCP19", "ATCP")) {
             assertNotNull(ReadOnlyPolicy.violation(command), command)
         }
     }

@@ -340,6 +340,21 @@ class SessionService : Service() {
         scope.launch { announcer.collect(controller.uiState.map { it.connection }.distinctUntilChanged()) }
         scope.launch { announceBodyScan() }
         scope.launch { announceDrive() }
+        scope.launch { announceTwinReady() }
+    }
+
+    /** Notifies the driver once per session when parked + drive data is sufficient to export the digital twin bundle. */
+    private suspend fun announceTwinReady() {
+        var wasReady = false
+        controller.uiState.map { it.twinReady }.distinctUntilChanged().collect { ready ->
+            val becameReady = !wasReady && ready
+            wasReady = ready
+            if (!becameReady) return@collect
+            val text = applicationContext.getString(R.string.twin_ready_notification)
+            connectionLog.app(text)
+            if (!closed) notifications.postScanDone(text)
+            if (voiceSettings.settings.value.spokenStatus) speaker.speak(statusUtterance(text))
+        }
     }
 
     /**
@@ -397,6 +412,22 @@ class SessionService : Service() {
         scope.launch {
             statuses.filter { it == ConnectionStatus.Idle }.collect { if (sawActive) shutDown() }
         }
+        // Release the BLE adapter after 2 minutes of ignition-off sleep so the adapter can enter its own low-power sleep.
+        scope.launch {
+            var asleepJob: kotlinx.coroutines.Job? = null
+            statuses.collect { status ->
+                asleepJob?.cancel()
+                asleepJob = if (status is ConnectionStatus.VehicleAsleep) {
+                    scope.launch {
+                        delay(ASLEEP_DISCONNECT_MS)
+                        connectionLog.app("auto-disconnecting after ${ASLEEP_DISCONNECT_MS / 1000}s with ignition off")
+                        controller.disconnect()
+                    }
+                } else {
+                    null
+                }
+            }
+        }
     }
 
     private fun shutDown() {
@@ -439,6 +470,7 @@ class SessionService : Service() {
         private const val WAKE_LOCK_CEILING_MS = 12L * 60 * 60 * 1000
         private const val SPEECH_SETTLE_MS = 300L
         private const val SPEECH_GRACE_MS = 6000L
+        private const val ASLEEP_DISCONNECT_MS = 120_000L
 
         fun startDemoIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_START_DEMO)
 
