@@ -7,6 +7,8 @@ import knightlink.core.common.hexToBytes
 import knightlink.core.protocol.DiagnosticResponse
 import knightlink.core.protocol.ElmStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
@@ -493,5 +495,64 @@ class Elm327DriverRobustnessTest {
         val driver = driverWith(model, events = SessionEventSink { throw IllegalStateException("disk full") })
         driver.initialize(script)
         assertIs<DiagnosticResponse.Positive>(driver.request(0x7E0, rpmRequest, 1).messages.single())
+    }
+
+    // A caller cancelled while it waited ----------------------------------------------------------------------
+
+    @Test
+    fun aCommandCancelledWhileWaitingHasItsLateReplyAwaitedAndDroppedBeforeTheNextGoesOut() = runTest {
+        var rpmCalls = 0
+        lateinit var adapter: FakeAdapter
+        adapter = FakeAdapter({ currentTime }) { command ->
+            when (command) {
+                "ATSH7E0" -> reply("OK")
+                // The first request's answer comes late, after its caller has given up on it.
+                "010C1" -> if (++rpmCalls == 1) later(backgroundScope, 300) { reply("7E804410C0C7C") } else reply("7E804410C1000")
+                "ATCRA708" -> reply("OK")
+                else -> reply("?")
+            }
+        }
+        val driver = Elm327Driver(adapter, backgroundScope)
+
+        val cancelled = backgroundScope.async { driver.request(0x7E0, rpmRequest, 1) }
+        advanceTimeBy(100)
+        cancelled.cancel()
+        advanceTimeBy(1)
+
+        val setup = driver.command("ATCRA708")
+        assertEquals(listOf("OK"), setup, "the late reply is not taken for this command's")
+        // Sent only once the adapter had finished the abandoned command: no STOPPED, no resend.
+        assertEquals(listOf("ATSH7E0", "010C1", "ATCRA708"), adapter.written)
+        assertTrue(adapter.writtenAt[2] >= 300, "sent after the late reply: ${adapter.writtenAt}")
+        assertEquals(0, driver.stats.resends)
+
+        val next = driver.request(0x7E0, rpmRequest, 1)
+        val answer = assertIs<DiagnosticResponse.Positive>(next.messages.single())
+        assertEquals(listOf(0x10, 0x00), answer.data.map { it.toInt() and 0xFF }.takeLast(2), "its own reply, not the late one")
+    }
+
+    @Test
+    fun anAbandonedCommandWhoseReplyNeverEndsDelaysTheNextOnlyBrieflyAndOnce() = runTest {
+        var silent = true
+        val adapter = FakeAdapter({ currentTime }) { command ->
+            when (command) {
+                "ATSH7E0" -> reply("OK")
+                "010C1" -> if (silent) silent = false else reply("7E804410C0C7C")
+                else -> reply("OK")
+            }
+        }
+        val driver = Elm327Driver(adapter, backgroundScope, config = Elm327Driver.Config(abandonedReplyWait = 500.milliseconds))
+        val cancelled = backgroundScope.async { driver.request(0x7E0, rpmRequest, 1) }
+        advanceTimeBy(100)
+        cancelled.cancel()
+        advanceTimeBy(1)
+
+        val before = currentTime
+        assertEquals(listOf("OK"), driver.command("ATCRA708"))
+        assertEquals(500L, currentTime - before)
+        assertEquals(1, driver.stats.abandonedNotSettled)
+        val after = currentTime
+        assertEquals(listOf("OK"), driver.command("ATAR"))
+        assertEquals(0L, currentTime - after, "only the command right after the abandoned one waits")
     }
 }

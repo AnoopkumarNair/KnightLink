@@ -131,18 +131,31 @@ public sealed interface BodyScanState {
 
     /**
      * The parked stage is asking the units: [label] is the unit now, [done] of [total] identifiers of all units are done, and about [secondsLeft]
-     * seconds remain (never more than what is left of the time cap).
+     * seconds remain (never more than what is left of the time cap). [auto]: the session started it by itself because the car stood still
+     * (see [VehicleSession.Config.bodyAutoStageAfter]); it is shown low-key and never announced.
      */
-    public data class Running(val label: String, val done: Int, val total: Int, val secondsLeft: Int) : BodyScanState
+    public data class Running(val label: String, val done: Int, val total: Int, val secondsLeft: Int, val auto: Boolean = false) : BodyScanState
 
-    /** The parked stage finished every unit: [answered] data identifiers answered. The user may drive. */
-    public data class Complete(val answered: Int) : BodyScanState
+    /** The parked stage finished every unit: [answered] data identifiers answered. The user may drive. [auto] as in [Running]. */
+    public data class Complete(val answered: Int, val auto: Boolean = false) : BodyScanState
 
-    /** The time cap or movement ended the parked stage before every unit was done; the rest is asked in the background. The user may drive. */
-    public data class Partial(val answered: Int) : BodyScanState
+    /**
+     * The parked stage ended before every unit was done; the rest is asked in the background. [ended] says why: the time cap
+     * ([BodyOutcome.TIME_CAP], the user may drive), confirmed movement ([BodyOutcome.MOVING], at [speedKmh]), an unreadable speed
+     * ([BodyOutcome.SPEED_UNKNOWN]), an adapter failure or a lost link ([BodyOutcome.FAILED]), or the user's skip ([BodyOutcome.SKIPPED]). Only the time cap and the skip are "you can drive".
+     */
+    public data class Partial(
+        val answered: Int,
+        val ended: BodyOutcome = BodyOutcome.TIME_CAP,
+        val speedKmh: Int? = null,
+        val auto: Boolean = false,
+    ) : BodyScanState
 
-    /** There was no parked stage (the car [moving], or its speed cannot be read, [reason] in words); the units are asked in the background, a few requests at a time. */
-    public data class Skipped(val moving: Boolean, val reason: String) : BodyScanState
+    /**
+     * There was no parked stage (the car [moving], or its speed cannot be read, [reason] in words); the units are asked in the background, a few requests at a time.
+     * [retried]: the user asked for it again, and the speed still could not be read after several tries (about ten seconds).
+     */
+    public data class Skipped(val moving: Boolean, val reason: String, val retried: Boolean = false) : BodyScanState
 }
 
 /** Why a session cannot read the car in front of it, as a screen shows it. */

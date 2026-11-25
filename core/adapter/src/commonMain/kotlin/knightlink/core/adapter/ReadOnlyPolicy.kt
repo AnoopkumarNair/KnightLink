@@ -13,11 +13,17 @@ package knightlink.core.adapter
  *   request identifier from 700 to 7DE or 7F0 to 7FF, outside the engine-bay addresses; see [isBodyUnit]). Not "nothing": it makes the unit
  *   start its default session afresh, which ends an extended or programming session another tool may have opened on it. A unit is in the
  *   default session at power-up, so there it only confirms it; some units answer identifiers only after one, as the commercial scanners send one.
+ * - Also allowed, for one unit only: the extended session (`10 03`) and TesterPresent (`3E 00`, exactly these bytes) addressed to the
+ *   instrument cluster at [EXTENDED_SESSION_UNIT] (700, answering from 708), so that its identifiers can be read with service 22 in that
+ *   session (added 2026-11-25, with the user's approval). Neither writes anything: the extended session only widens what the unit answers,
+ *   ends by itself after a few seconds without TesterPresent, and the app always sends `10 01` afterwards. No other unit, no other
+ *   sub-function, and still no 27 (security access), so nothing that needs a key can follow. The session layer allows it only in the
+ *   parked stage with the speed read 0; this gate cannot know the speed and checks only the address.
  * - Every diagnostic request goes to a request identifier from 700 to 7FF ([requestIdViolation]): never to the low identifiers that carry the
  *   car's own broadcast, whatever a data file says.
  * - Refused, among others: 04 (clear codes), 08 (control of on-board systems), UDS 10 with any other sub-function (02 programming,
- *   03 extended) or to an engine-bay unit, 11 (ECU reset), 14 (clear DTC information), 27 (security access), 28 (communication control),
- *   2E (write data), 2F (I/O control), 31 (routine control), 34–37 (download/upload), 3D (write memory), 3E (tester present),
+ *   03 extended except as above) or to an engine-bay unit, 11 (ECU reset), 14 (clear DTC information), 27 (security access), 28 (communication control),
+ *   2E (write data), 2F (I/O control), 31 (routine control), 34–37 (download/upload), 3D (write memory), 3E (tester present, except as above),
  *   85 (DTC setting control).
  *
  * Adapter commands (`AT…`): an allowlist of commands that only affect the adapter's volatile state or read it. That includes the
@@ -66,6 +72,10 @@ public object ReadOnlyPolicy {
     private val readServices = setOf(0x01, 0x02, 0x03, 0x06, 0x07, 0x09, 0x0A, 0x22)
     private const val UDS_READ_DTC_INFORMATION = 0x19
     private const val UDS_SESSION_CONTROL = 0x10
+    private const val UDS_TESTER_PRESENT = 0x3E
+
+    /** The one unit that may be put in the extended session (`10 03`) and kept there (`3E 00`): the instrument cluster. */
+    public const val EXTENDED_SESSION_UNIT: Int = 0x700
 
     /** The request identifiers of the engine-bay units (7E0-7E7), the functional address (7DF) and the response identifiers (7E8-7EF): not body units. */
     private val obdIds = 0x7DF..0x7EF
@@ -113,11 +123,14 @@ public object ReadOnlyPolicy {
         val service = hex.substring(0, 2).toInt(16)
         if (service in readServices) return null
         if (service == UDS_SESSION_CONTROL) {
-            return if (hex == "1001" && requestId != null && isBodyUnit(requestId)) {
-                null
-            } else {
-                "only the default session (10 01) of a body unit may be requested, nothing else of service 10: $compact"
+            return when {
+                hex == "1001" && requestId != null && isBodyUnit(requestId) -> null
+                hex == "1003" && requestId == EXTENDED_SESSION_UNIT -> null
+                else -> "only the default session (10 01) of a body unit, or the extended session (10 03) of the instrument cluster, may be requested: $compact"
             }
+        }
+        if (service == UDS_TESTER_PRESENT) {
+            return if (hex == "3E00" && requestId == EXTENDED_SESSION_UNIT) null else "TesterPresent only as 3E 00 to the instrument cluster: $compact"
         }
         if (service == UDS_READ_DTC_INFORMATION) {
             if (hex.length < 4) return "ReadDTCInformation without a sub-function: $compact"

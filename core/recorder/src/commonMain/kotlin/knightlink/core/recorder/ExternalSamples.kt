@@ -93,6 +93,22 @@ public object ExternalSamples {
     private fun dashboardLine(tag: String, km: Long?, end: Boolean): String =
         "$tag " + (km?.takeIf { it in 0..MAX_KM }?.toString() ?: MISSING) + " " + if (end) END_WORD else START_WORD
 
+    /** The estimated odometer (see the runtime's OdometerEstimator), written every few seconds: `odoest 85571.2`. */
+    public const val ODOMETER_ESTIMATE: String = "odoest"
+
+    /** The estimate's summary at the end of a link: `odoest-final 85593.4 scale 1.0000 km 29.40`. */
+    public const val ODOMETER_ESTIMATE_FINAL: String = "odoest-final"
+
+    /** `odoest <km>` with one decimal; `odoest -` when there is no estimate (no start reading) or the value is not a number. */
+    public fun odometerEstimateLine(km: Double?): String = "$ODOMETER_ESTIMATE " + estimateText(km, 1)
+
+    /** `odoest-final <km> scale <x> km <distance>`. */
+    public fun odometerEstimateFinalLine(km: Double?, scale: Double, distanceKm: Double): String =
+        "$ODOMETER_ESTIMATE_FINAL " + estimateText(km, 1) + " scale " + estimateText(scale, 4) + " km " + estimateText(distanceKm, 2)
+
+    private fun estimateText(value: Double?, decimals: Int): String =
+        value?.takeIf { it.isFinite() && it >= 0.0 && it <= MAX_KM }?.let { fixed(it, decimals) } ?: MISSING
+
     private const val PASSIVE_WORD = "passive"
     private const val ACTIVE_WORD = "active"
 

@@ -1,5 +1,7 @@
 package knightlink.core.runtime
 
+import knightlink.core.adapter.AdapterDisconnectedException
+import knightlink.core.adapter.AdapterException
 import knightlink.core.adapter.AdapterTimeoutException
 import knightlink.core.adapter.Elm327Driver
 import knightlink.core.adapter.ReadOnlyPolicy
@@ -14,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -67,6 +70,9 @@ public enum class BodyOutcome {
 
     /** The user chose to skip the rest of the parked stage. */
     SKIPPED,
+
+    /** The adapter failed or the link was lost (set by the session, never returned by [BodyUnitReader.run]). */
+    FAILED,
 }
 
 /**
@@ -98,6 +104,9 @@ public class BodyUnitReader(
      * @property absentAfter requests to a unit without any reply after which it is taken to be absent
      * @property silentRunLimit consecutive unanswered identifiers after which the rest of a group is skipped
      * @property conditionsRunLimit consecutive "not now" refusals after which a unit is not asked any more
+     * @property movingKmh while watching the speed, the car counts as moving only at this speed or above (a creeping automatic, or one noisy
+     *   reading, shows a few km/h while the car stands: on 2026-11-24 one read of 3 km/h ended a parked stage 21 s in, the car stood still)
+     * @property movingConfirmAfter a speed at or above [movingKmh] is read again after this long; only a second such reading stops the run
      */
     public data class Config(
         val requestsPerSecond: Double = DEFAULT_REQUESTS_PER_SECOND,
@@ -108,6 +117,8 @@ public class BodyUnitReader(
         val absentAfter: Int = 12,
         val silentRunLimit: Int = 48,
         val conditionsRunLimit: Int = 5,
+        val movingKmh: Int = DEFAULT_MOVING_KMH,
+        val movingConfirmAfter: Duration = 1500.milliseconds,
     ) {
         init {
             require(requestsPerSecond > 0.0) { "requestsPerSecond must be positive" }
@@ -122,12 +133,15 @@ public class BodyUnitReader(
      * @property maxTime longest this run takes; null for no limit
      * @property watchSpeed read the speed first and while running, and stop when it is not 0
      * @property skip asked before every request; true ends the run there ([BodyOutcome.SKIPPED]), which is the user's "skip"
+     * @property speedCheckInterval longest time between two readings of the speed in this run; null for [Config.speedCheckInterval] (an
+     *   automatic stage at a red light reads it more often, so that it gives the adapter back soon after the car moves off)
      */
     public class Limits(
         public val maxRequests: Int? = null,
         public val maxTime: Duration? = null,
         public val watchSpeed: Boolean = false,
         public val skip: () -> Boolean = { false },
+        public val speedCheckInterval: Duration? = null,
     )
 
     private class Interrupted(val outcome: BodyOutcome) : Exception()
@@ -153,6 +167,20 @@ public class BodyUnitReader(
     private val sessionRequested = HashSet<Int>()
     private val plainTried = HashSet<Int>()
     private var failures = 0
+
+    // The extended session of the cluster: whether 10 03 was sent (so 10 01 must follow), whether it is open, when 3E 00 was last sent.
+    private var sessionMaybeOpen = false
+    private var extendedFor: Int? = null
+    private var lastTesterPresent: TimeMark? = null
+    private var testerPresentFailed = false
+
+    /** How many `3E 00` this reader sent. For tests and logs. */
+    public var testerPresentSent: Int = 0
+        private set
+
+    /** The confirmed speed that ended the last run with [BodyOutcome.MOVING]; null otherwise. */
+    public var stoppedAtKmh: Int? = null
+        private set
 
     // Per run
     private var started: TimeMark? = null
@@ -206,11 +234,12 @@ public class BodyUnitReader(
         requests = 0
         lastSpeedCheck = null
         sinceSpeedCheck = 0
+        stoppedAtKmh = null
         var outcome = BodyOutcome.COMPLETED
         try {
             if (limits.watchSpeed) checkSpeed()
             for (check in units) {
-                if (progress[check.requestId]?.done == true) continue
+                if (progress[check.progressKey]?.done == true) continue
                 try {
                     readUnit(check, progress)
                 } catch (e: Interrupted) {
@@ -250,18 +279,90 @@ public class BodyUnitReader(
     // One unit ------------------------------------------------------------------------------------------------
 
     private suspend fun readUnit(check: CandidateCheck, progress: MutableMap<String, BodyUnitProgress>) {
-        val key = check.requestId
+        val key = check.progressKey
         val groups = check.groups()
         val total = groups.sumOf { it.size }
         val base = (progress[key] ?: BodyUnitProgress()).let { if (it.asked > total) it.copy(asked = 0) else it }.copy(total = total)
         progress[key] = base
-        val tag = "$key ${check.label}"
+        val tag = "${check.requestId} ${check.label}"
         if (!prepare(check)) {
+            // The adapter's trouble, not the unit's: it costs none of the unit's attempts (three such hiccups used to finish a unit for good,
+            // unasked). The run ends here; the caller counts the failure and tries again later.
             note(SessionEvents.BODY_SCAN, "$tag: the adapter did not take the receive setup; not asked")
-            val attempts = base.attempts + 1
-            progress[key] = base.copy(attempts = attempts, done = attempts >= MAX_SILENT_ATTEMPTS)
+            throw AdapterException("the adapter did not take the receive setup for $key")
+        }
+        if (!check.extended) {
+            readDids(check, progress, key, tag, base, groups, total)
             return
         }
+        // The extended session: 10 03 first, 3E 00 while it lasts (see [ask]), and 10 01 afterwards whatever happens, a lost link included
+        // (best effort then). Nothing is assumed about the session across runs: every run opens it afresh and closes it.
+        sessionMaybeOpen = true
+        try {
+            if (!openExtended(check, progress, key, tag, base)) return
+            readDids(check, progress, key, tag, base, groups, total)
+        } finally {
+            closeExtended(check, tag)
+        }
+    }
+
+    /**
+     * `10 03` to the cluster. A positive reply opens the session (true). A refusal or no reply is logged with its code and counted as an
+     * attempt of the extended pass, which is then left for this run; a refusal of the service itself (not supported, not in this session,
+     * security) finishes it for good, "not now" and silence only after [MAX_TRANSIENT_ATTEMPTS] or [MAX_SILENT_ATTEMPTS] runs.
+     */
+    private suspend fun openExtended(check: CandidateCheck, progress: MutableMap<String, BodyUnitProgress>, key: String, tag: String, base: BodyUnitProgress): Boolean {
+        val answer = ask(check, byteArrayOf(0x10, 0x03), 1, 0x10)
+        val text = "$tag: 10 03 (extended session) -> ${describe(answer, whole = true)}"
+        note(SessionEvents.SESSION, text)
+        note(SessionEvents.BODY_SCAN, text)
+        if (answer is Answer.Positive) {
+            extendedFor = check.requestCanId
+            lastTesterPresent = timeSource.markNow()
+            return true
+        }
+        val attempts = base.attempts + 1
+        val done = when {
+            answer is Answer.Negative && (answer.code in REFUSALS || answer.code == NRC_SERVICE_NOT_SUPPORTED) -> true
+            answer is Answer.Negative -> attempts >= MAX_TRANSIENT_ATTEMPTS
+            else -> attempts >= MAX_SILENT_ATTEMPTS
+        }
+        progress[key] = base.copy(attempts = attempts, replies = base.replies + if (answer is Answer.Negative) 1 else 0, done = done)
+        note(SessionEvents.BODY_SCAN, "$tag: no extended session" + if (done) "; not asked again" else "; tried again in a later stage ($attempts so far)")
+        return false
+    }
+
+    /** `10 01` back to the default session, best effort and bounded: never thrown out of, never cancelled half-way. */
+    private suspend fun closeExtended(check: CandidateCheck, tag: String) {
+        if (!sessionMaybeOpen) return
+        sessionMaybeOpen = false
+        extendedFor = null
+        withContext(NonCancellable) {
+            val text = try {
+                withTimeoutOrNull(CLOSE_TIMEOUT) {
+                    if (listeningTo != check.responseCanId) listen(check.responseCanId)
+                    val response = driver.request(check.requestCanId, byteArrayOf(0x10, 0x01), 1)
+                    describe(answer(response, check.responseCanId, 0x10, null), whole = true)
+                } ?: "no reply in time"
+            } catch (e: CancellationException) {
+                "cancelled"
+            } catch (e: Exception) {
+                "failed: ${e.message ?: e::class.simpleName} (the unit leaves the extended session by itself within seconds)"
+            }
+            note(SessionEvents.SESSION, "$tag: 10 01 (back to the default session) -> $text")
+            note(SessionEvents.BODY_SCAN, "$tag: 10 01 (back to the default session) -> $text")
+        }
+    }
+
+    private suspend fun readDids(
+        check: CandidateCheck,
+        progress: MutableMap<String, BodyUnitProgress>,
+        key: String,
+        tag: String,
+        base: BodyUnitProgress,
+        groups: List<List<Int>>,
+        total: Int,
+    ) {
         // Replies of any kind show that the unit is there; only definitive ones (a value, or a refusal that is about the request itself) finish it.
         var heard = 0
         var definite = 0
@@ -269,7 +370,8 @@ public class BodyUnitReader(
         val positives = ArrayList<String>()
         var refused = 0
         var silent = 0
-        var faultsRead = base.faultsRead
+        // The extended pass does not ask the fault codes again: the default pass does.
+        var faultsRead = base.faultsRead || check.extended
 
         fun save(position: Int) {
             progress[key] = base.copy(
@@ -312,7 +414,7 @@ public class BodyUnitReader(
                 asked++
                 // The default session is requested only when a plain request has failed with a refusal, and then once per unit: it makes the unit
                 // start its default session afresh, which a unit that answers without it never needs.
-                if (plainTried.add(check.requestCanId) && answer is Answer.Negative && ReadOnlyPolicy.isBodyUnit(check.requestCanId)) {
+                if (!check.extended && plainTried.add(check.requestCanId) && answer is Answer.Negative && ReadOnlyPolicy.isBodyUnit(check.requestCanId)) {
                     service("10 01 (after ${hex4(did)} was refused with ${answer.code.toString(16).uppercase().padStart(2, '0')})", byteArrayOf(0x10, 0x01), 1)
                     sessionRequested.add(check.requestCanId)
                     answer = askDid(check, did)
@@ -325,6 +427,12 @@ public class BodyUnitReader(
                         silentRun = 0
                         conditionsRun = 0
                         positives += "${hex4(did)}(${answer.data.size})"
+                        // Every value in the connection log and the recording, so it can be matched offline against the dashboard (odometer, range).
+                        note(
+                            SessionEvents.BODY_SCAN,
+                            "$tag: 22 ${hex4(did)} -> positive, ${answer.data.size} data bytes: " +
+                                answer.data.take(MAX_LOGGED_DID_BYTES).toByteArray().toHex() + if (answer.data.size > MAX_LOGGED_DID_BYTES) " ..." else "",
+                        )
                     }
                     is Answer.Negative -> {
                         heard++
@@ -418,6 +526,7 @@ public class BodyUnitReader(
             flowFor = null
             prepare(check)
         }
+        if (extendedFor == check.requestCanId && (lastTesterPresent?.elapsedNow() ?: Duration.INFINITE) >= TESTER_PRESENT_EVERY) testerPresent(check)
         pace()
         requests++
         val response = try {
@@ -427,6 +536,22 @@ public class BodyUnitReader(
             null
         }
         return answer(response, check.responseCanId, service, did)
+    }
+
+    /** `3E 00`, which keeps the cluster in the extended session. A failure is logged (once per run) and costs nothing else. */
+    private suspend fun testerPresent(check: CandidateCheck) {
+        lastTesterPresent = timeSource.markNow()
+        pace()
+        val ok = try {
+            answer(driver.request(check.requestCanId, byteArrayOf(0x3E, 0x00), 1), check.responseCanId, 0x3E, null) is Answer.Positive
+        } catch (e: AdapterTimeoutException) {
+            false
+        }
+        testerPresentSent++
+        if (!ok && !testerPresentFailed) {
+            testerPresentFailed = true
+            note(SessionEvents.SESSION, "${hex3(check.requestCanId)}: 3E 00 (tester present) not answered; the session may end by itself")
+        }
     }
 
     /**
@@ -460,12 +585,16 @@ public class BodyUnitReader(
         limits.maxRequests?.let { if (requests >= it) throw Interrupted(BodyOutcome.BUDGET) }
         limits.maxTime?.let { cap -> if (started!!.elapsedNow() >= cap) throw Interrupted(BodyOutcome.TIME_CAP) }
         if (limits.watchSpeed &&
-            (++sinceSpeedCheck >= config.speedCheckEvery || (lastSpeedCheck?.elapsedNow() ?: Duration.ZERO) >= config.speedCheckInterval)
+            (++sinceSpeedCheck >= config.speedCheckEvery || (lastSpeedCheck?.elapsedNow() ?: Duration.ZERO) >= (limits.speedCheckInterval ?: config.speedCheckInterval))
         ) {
             checkSpeed()
         }
     }
 
+    /**
+     * Reads the speed; the run stops only when the car's movement is confirmed: a reading at or above [Config.movingKmh], then, after
+     * [Config.movingConfirmAfter], a second one. A lower reading (a creep, noise) or one not confirmed is noted and the run goes on.
+     */
     private suspend fun checkSpeed() {
         val speed = readSpeed()
         sinceSpeedCheck = 0
@@ -474,9 +603,25 @@ public class BodyUnitReader(
             note(SessionEvents.BODY_SCAN, "the speed cannot be read; stopping")
             throw Interrupted(BodyOutcome.SPEED_UNKNOWN)
         }
-        if (speed != 0) {
-            note(SessionEvents.BODY_SCAN, "the car is moving ($speed km/h); stopping")
-            throw Interrupted(BodyOutcome.MOVING)
+        if (speed == 0) return
+        if (speed < config.movingKmh) {
+            note(SessionEvents.BODY_SCAN, "the speed read $speed km/h, below ${config.movingKmh}: taken as standing (a creep or noise); carrying on")
+            return
+        }
+        delay(config.movingConfirmAfter)
+        val again = readSpeed()
+        lastSpeedCheck = timeSource.markNow()
+        when {
+            again == null -> {
+                note(SessionEvents.BODY_SCAN, "the speed read $speed km/h, then could not be read; stopping")
+                throw Interrupted(BodyOutcome.SPEED_UNKNOWN)
+            }
+            again >= config.movingKmh -> {
+                note(SessionEvents.BODY_SCAN, "the car is moving ($speed then $again km/h, ${config.movingConfirmAfter} apart); stopping")
+                stoppedAtKmh = again
+                throw Interrupted(BodyOutcome.MOVING)
+            }
+            else -> note(SessionEvents.BODY_SCAN, "the speed read $speed km/h once, then $again km/h: not confirmed; carrying on")
         }
     }
 
@@ -499,29 +644,40 @@ public class BodyUnitReader(
     private suspend fun listen(id: Int): Boolean {
         if (listeningTo == id) return true
         adapterChanged = true
-        val ok = if (!craUnavailable && setup("ATCRA${hex3(id)}")) {
-            true
-        } else {
-            craUnavailable = true
-            setup("ATCM$EXACT_MASK") && setup("ATCF${hex3(id)}")
+        val cra = if (craUnavailable) null else setupReply("ATCRA${hex3(id)}")
+        // Only an adapter that does not know the command (`?`) gets the mask and filter from now on; no answer, or an empty or garbled one (a
+        // reply cut short, say), is a hiccup, not a missing command, and the next try uses ATCRA again.
+        if (cra != null && cra.isUnknownCommand()) craUnavailable = true
+        val ok = when {
+            craUnavailable -> setup("ATCM$EXACT_MASK") && setup("ATCF${hex3(id)}")
+            else -> cra?.isOk() == true
         }
         listeningTo = if (ok) id else null
         return ok
     }
 
     /** One adapter command; true when the adapter said OK. Written as a [SessionEvents.BODY_SETUP] event with the answer. */
-    private suspend fun setup(command: String): Boolean {
+    private suspend fun setup(command: String): Boolean = setupReply(command)?.isOk() == true
+
+    /** As [setup], but the reply lines; null when the command failed (no reply in time, say). */
+    private suspend fun setupReply(command: String): List<String>? {
         val reply = try {
             driver.command(command)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: AdapterDisconnectedException) {
+            throw e
         } catch (e: Exception) {
             note(SessionEvents.BODY_SETUP, "$command -> failed: ${e.message ?: e::class.simpleName}")
-            return false
+            return null
         }
         note(SessionEvents.BODY_SETUP, "$command -> ${reply.joinToString(" ").take(MAX_LOGGED_REPLY)}")
-        return reply.any { it.trim().equals("OK", ignoreCase = true) }
+        return reply
     }
+
+    private fun List<String>.isOk(): Boolean = any { it.trim().equals("OK", ignoreCase = true) }
+
+    private fun List<String>.isUnknownCommand(): Boolean = any { it.trim() == "?" }
 
     private fun hex3(id: Int): String = id.toString(16).uppercase().padStart(3, '0')
 
@@ -545,6 +701,9 @@ public class BodyUnitReader(
         /** About the pace of the full scan. */
         public const val DEFAULT_REQUESTS_PER_SECOND: Double = 16.0
 
+        /** The speed from which the parked stage takes the car to be moving (once confirmed). */
+        public const val DEFAULT_MOVING_KMH: Int = 5
+
         private const val MILLIS_PER_SECOND = 1000.0
         private const val SPEED_TRIES = 3
         private const val PID_SPEED: Byte = 0x0D
@@ -552,10 +711,17 @@ public class BodyUnitReader(
         private const val MAX_FAILURES_IN_A_ROW = 3
         private const val MAX_LISTED = 24
         private const val MAX_LOGGED_BYTES = 24
+        private const val MAX_LOGGED_DID_BYTES = 64
         private const val MAX_LOGGED_REPLY = 40
         private const val NRC_SERVICE_NOT_SUPPORTED = 0x11
         private val REFUSALS = setOf(0x10, 0x12, 0x13, 0x14, 0x24, 0x25, 0x31, 0x33, 0x7E, 0x7F)
         private const val CLEAR_TO_SEND = "300000"
+
+        /** `3E 00` this often while the extended session is open (units drop it after about five seconds without a request). */
+        private val TESTER_PRESENT_EVERY = 2.seconds
+
+        /** The longest the `10 01` that ends the extended session may take (a lost link must not hold the stage). */
+        private val CLOSE_TIMEOUT = 3.seconds
         private const val STANDARD_MASK = "7F8"
         private const val STANDARD_FILTER = "7E8"
         private const val EXACT_MASK = "7FF"

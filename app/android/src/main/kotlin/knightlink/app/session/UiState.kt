@@ -1,6 +1,7 @@
 package knightlink.app.session
 
 import knightlink.app.data.DashboardReadings
+import knightlink.core.runtime.BodyOutcome
 import knightlink.core.runtime.BodyScanState
 import knightlink.core.runtime.CannotReadReason
 import knightlink.core.runtime.CaptureMode
@@ -79,7 +80,25 @@ data class UiState(
     val ladderResult: LadderProgress = LadderProgress.Idle,
     /** How the parked scan of the other units last ended on this connection; [BodyScanProgress.Idle] before it has. */
     val bodyResult: BodyScanProgress = BodyScanProgress.Idle,
+    /** How many of the car's other units still have identifiers to ask (the parked check can be run again while this is above 0). */
+    val parkedCheckPending: Int = 0,
+    /** The switch "check other units automatically when stopped": the parked check starts by itself after the car has stood still a few seconds. */
+    val autoBodyCheck: Boolean = true,
+    /** The switch "deeper check of the instrument cluster": the cluster is also read in its extended diagnostic session (parked only). */
+    val clusterDeepCheck: Boolean = true,
+    /** The estimated odometer of the digital twin; see [OdometerEstimateUi]. */
+    val odometerEstimate: OdometerEstimateUi = OdometerEstimateUi.Unavailable,
+    /** An error nothing else handled in this run (class and message), for a plain line on screen; null when there was none. */
+    val internalError: String? = null,
 ) {
+    /**
+     * Whether "Run the parked check again" is offered: the car is connected and polled, the check is not running, and units are still pending
+     * (it ended early, was skipped, or never ran on this connection). Not after it completed: a unit left then is one that did not answer.
+     */
+    val canRunParkedCheckAgain: Boolean
+        get() = connection == ConnectionStatus.Live && knownVehicle && parkedCheckPending > 0 && bodyScan !is BodyScanProgress.Running &&
+            bodyScan !is BodyScanProgress.Complete && bodyResult !is BodyScanProgress.Complete && captureMode == CaptureMode.ACTIVE
+
     /** True from the moment a connection is requested until it has been disconnected, failures included. */
     val isActive: Boolean get() = connection != ConnectionStatus.Idle
 
@@ -158,27 +177,46 @@ sealed interface BodyScanProgress {
     data object Idle : BodyScanProgress
 
     /** [done] of [total] identifiers asked, about [secondsLeft] seconds to go; [fraction] is for a progress bar. */
-    data class Running(val label: String, val done: Int, val total: Int, val secondsLeft: Int) : BodyScanProgress {
+    /** [auto]: started by itself while the car stood still; shown as one low-key line, never announced. */
+    data class Running(val label: String, val done: Int, val total: Int, val secondsLeft: Int, val auto: Boolean = false) : BodyScanProgress {
         val fraction: Float get() = if (total <= 0) 0f else (done.toFloat() / total).coerceIn(0f, 1f)
     }
 
-    data class Complete(val answered: Int) : BodyScanProgress
+    data class Complete(val answered: Int, val auto: Boolean = false) : BodyScanProgress
 
-    data class Partial(val answered: Int) : BodyScanProgress
+    /**
+     * The parked stage ended before every unit was done, [ended] says why (and [speedKmh] for confirmed movement). Only [mayDrive] outcomes
+     * (the time cap, the user's skip) tell the driver they can drive; the others say the scan stopped early and why.
+     */
+    data class Partial(val answered: Int, val ended: BodyOutcome = BodyOutcome.TIME_CAP, val speedKmh: Int? = null, val auto: Boolean = false) : BodyScanProgress {
+        val mayDrive: Boolean get() = ended == BodyOutcome.TIME_CAP || ended == BodyOutcome.SKIPPED || ended == BodyOutcome.COMPLETED
+    }
 
     /** [moving] is true when the car moves, false when its speed could not be read. */
-    data class Skipped(val moving: Boolean) : BodyScanProgress
+    data class Skipped(val moving: Boolean, val retried: Boolean = false) : BodyScanProgress
 
     /** True for the three that tell the driver the scan is over (or will not run now): shown for a while, then gone. */
     val isOutcome: Boolean get() = this is Complete || this is Partial || this is Skipped
+
+    /** Started by itself while the car stood still: silent, and its outcome is not shown as a banner. */
+    val isAuto: Boolean get() = (this as? Running)?.auto == true || (this as? Complete)?.auto == true || (this as? Partial)?.auto == true
+}
+
+/** The estimated odometer as the Live screen shows it. */
+sealed interface OdometerEstimateUi {
+    /** No start odometer was typed for this drive (or nothing is connected): the screen says "estimate unavailable". */
+    data object Unavailable : OdometerEstimateUi
+
+    /** [km] now; [distanceKm] integrated since the link came up; [calibrated] when a scale from an earlier drive's readings applies. */
+    data class Known(val km: Double, val distanceKm: Double, val calibrated: Boolean) : OdometerEstimateUi
 }
 
 fun BodyScanState.toProgress(): BodyScanProgress = when (this) {
     BodyScanState.Idle -> BodyScanProgress.Idle
-    is BodyScanState.Running -> BodyScanProgress.Running(label, done, total, secondsLeft)
-    is BodyScanState.Complete -> BodyScanProgress.Complete(answered)
-    is BodyScanState.Partial -> BodyScanProgress.Partial(answered)
-    is BodyScanState.Skipped -> BodyScanProgress.Skipped(moving)
+    is BodyScanState.Running -> BodyScanProgress.Running(label, done, total, secondsLeft, auto)
+    is BodyScanState.Complete -> BodyScanProgress.Complete(answered, auto)
+    is BodyScanState.Partial -> BodyScanProgress.Partial(answered, ended, speedKmh, auto)
+    is BodyScanState.Skipped -> BodyScanProgress.Skipped(moving, retried)
 }
 
 /** The drive modes of the car; [tag] is what goes into the recording (see ExternalSamples.modeLine). */

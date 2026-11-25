@@ -84,6 +84,26 @@ fun ScanScreen(
     val flow = remember(state) { guidedFlow(state) }
     val idle = !state.isActive
     var editing by rememberSaveable { mutableStateOf(false) }
+    // The end readings: asked for in a dialog on Disconnect, and in a card once the drive is over, while the drive's start has no end yet.
+    var askEndOnDisconnect by rememberSaveable { mutableStateOf(false) }
+    var endPromptSkippedAt by rememberSaveable { mutableStateOf<Long?>(null) }
+    val needsEnd = state.dashboard.needsEnd(app.now())
+    if (askEndOnDisconnect) {
+        EndReadingsPrompt(
+            state.dashboard,
+            dialog = true,
+            onSave = { odo, dte ->
+                askEndOnDisconnect = false
+                actions.onDashboard(odo, dte, true)
+                actions.onDisconnect()
+            },
+            onSkip = {
+                askEndOnDisconnect = false
+                endPromptSkippedAt = state.dashboard.startSavedAtMs
+                actions.onDisconnect()
+            },
+        )
+    }
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(KlSpacing.Gutter),
         verticalArrangement = Arrangement.spacedBy(KlSpacing.L),
@@ -97,6 +117,17 @@ fun ScanScreen(
         )
 
         if (flow.canDriveNow) DriveNowCard()
+
+        if (idle && needsEnd && endPromptSkippedAt != state.dashboard.startSavedAtMs) {
+            EndReadingsPrompt(
+                state.dashboard,
+                dialog = false,
+                onSave = { odo, dte -> actions.onDashboard(odo, dte, true) },
+                onSkip = { endPromptSkippedAt = state.dashboard.startSavedAtMs },
+            )
+        }
+
+        if (!idle) ParkedCheckCard(state, actions.onRunParkedCheckAgain, actions.onSkipLadder)
 
         if (idle) {
             IdleActions(lastAdapter, actions, app.demo)
@@ -115,8 +146,14 @@ fun ScanScreen(
 
         state.driveTruth?.let { DriveTruthCard(it, app.onShareText) }
 
+        if (!idle && state.knownVehicle) DriveModeCard(state.drive, recording = true, onMode = actions.onDriveMode)
+        DriveReadingsCard(state.dashboard, actions.onDashboard)
+
         if (!idle) {
-            SecondaryButton(stringResource(R.string.action_disconnect), actions.onDisconnect)
+            SecondaryButton(
+                stringResource(R.string.action_disconnect),
+                { if (needsEnd && app.demo?.active != true) askEndOnDisconnect = true else actions.onDisconnect() },
+            )
         }
         app.demo?.takeIf { it.active }?.let {
             SecondaryButton(stringResource(R.string.demo_drive_leave), it.onLeave)

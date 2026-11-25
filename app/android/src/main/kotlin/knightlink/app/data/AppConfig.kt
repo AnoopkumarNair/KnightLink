@@ -66,8 +66,76 @@ data class DashboardReadings(
     val rangeStartKm: Long? = null,
     val odometerEndKm: Long? = null,
     val rangeEndKm: Long? = null,
+    /** When the start readings were last saved (wall clock, ms since the epoch); null when unknown (saved by an older build). */
+    val startSavedAtMs: Long? = null,
+    /** When the end readings were last saved; as [startSavedAtMs]. */
+    val endSavedAtMs: Long? = null,
 ) {
+    val hasStart: Boolean get() = odometerStartKm != null || rangeStartKm != null
+    val hasEnd: Boolean get() = odometerEndKm != null || rangeEndKm != null
+
+    /**
+     * Whether the start readings belong to the drive under way at [nowMs]: saved by this build, not closed by end readings saved after them,
+     * and not older than [maxAgeMs]. Readings of an earlier drive must not be stamped into the recording of a later one.
+     */
+    fun startIsCurrent(nowMs: Long, maxAgeMs: Long = CURRENT_DRIVE_MAX_AGE_MS): Boolean {
+        val at = startSavedAtMs ?: return false
+        if (!hasStart) return false
+        val closed = endSavedAtMs?.let { it >= at } == true && hasEnd
+        return !closed && nowMs - at in 0..maxAgeMs
+    }
+
+    /**
+     * Whether the end readings belong to the same drive as the start readings: saved after them (or no start at all), and not an odometer below
+     * the start's. End readings of an earlier drive are neither shown nor taken as this drive's.
+     */
+    val endIsCurrent: Boolean
+        get() {
+            if (!hasEnd) return false
+            if (!hasStart) return true
+            val start = startSavedAtMs
+            val end = endSavedAtMs
+            if (start != null && (end == null || end < start)) return false
+            val odoStart = odometerStartKm
+            val odoEnd = odometerEndKm
+            return odoStart == null || odoEnd == null || odoEnd >= odoStart
+        }
+
+    /** True when the drive under way at [nowMs] has start readings and no end readings yet: the driver is asked for them when it ends. */
+    fun needsEnd(nowMs: Long): Boolean = startIsCurrent(nowMs) && !endIsCurrent
+
+    /**
+     * The start readings [odo] and [dte] saved at [nowMs]. When they start a new drive (the start held is not current), the previous drive's
+     * readings, its end ones included, are dropped, so a stale end below the new start is never shown or recorded. Within the same drive they
+     * correct the start (an empty field keeps what was there).
+     */
+    fun withStart(odo: Long?, dte: Long?, nowMs: Long): DashboardReadings {
+        if (odo == null && dte == null) return this
+        if (!startIsCurrent(nowMs)) return DashboardReadings(odometerStartKm = odo, rangeStartKm = dte, startSavedAtMs = nowMs)
+        val updated = copy(odometerStartKm = odo ?: odometerStartKm, rangeStartKm = dte ?: rangeStartKm, startSavedAtMs = nowMs)
+        // A corrected start above the end held means that end is not this drive's.
+        return if (updated.hasEnd && !updated.copy(endSavedAtMs = nowMs).endIsCurrent) {
+            updated.copy(odometerEndKm = null, rangeEndKm = null, endSavedAtMs = null)
+        } else {
+            updated
+        }
+    }
+
+    /** The end readings [odo] and [dte] saved at [nowMs]; an empty field keeps this drive's value, never an earlier drive's. */
+    fun withEnd(odo: Long?, dte: Long?, nowMs: Long): DashboardReadings {
+        if (odo == null && dte == null) return this
+        val keep = endIsCurrent
+        return copy(
+            odometerEndKm = odo ?: odometerEndKm.takeIf { keep },
+            rangeEndKm = dte ?: rangeEndKm.takeIf { keep },
+            endSavedAtMs = nowMs,
+        )
+    }
+
     companion object {
+        /** Start readings older than this are taken to be of an earlier drive. */
+        const val CURRENT_DRIVE_MAX_AGE_MS: Long = 12L * 60 * 60 * 1000
+
         /** Whole kilometres from what the driver typed; null for nothing, text that is not a number, or a number no dashboard shows. */
         fun parseKm(text: String): Long? = text.trim().takeIf { it.isNotEmpty() && it.length <= MAX_DIGITS && it.all { c -> c in '0'..'9' } }
             ?.toLongOrNull()?.takeIf { it <= ExternalSamples.MAX_KM }
@@ -83,6 +151,8 @@ class DashboardStore(private val store: StringStore) {
         DashboardReadings.parseKm(store.get(DTE_START).orEmpty()),
         DashboardReadings.parseKm(store.get(ODO_END).orEmpty()),
         DashboardReadings.parseKm(store.get(DTE_END).orEmpty()),
+        store.get(START_AT)?.toLongOrNull(),
+        store.get(END_AT)?.toLongOrNull(),
     )
 
     fun save(readings: DashboardReadings) {
@@ -90,9 +160,13 @@ class DashboardStore(private val store: StringStore) {
         store.put(DTE_START, readings.rangeStartKm?.toString())
         store.put(ODO_END, readings.odometerEndKm?.toString())
         store.put(DTE_END, readings.rangeEndKm?.toString())
+        store.put(START_AT, readings.startSavedAtMs?.toString())
+        store.put(END_AT, readings.endSavedAtMs?.toString())
     }
 
     private companion object {
+        const val START_AT = "dashboard_start_at"
+        const val END_AT = "dashboard_end_at"
         const val ODO_START = "dashboard_odo_start"
         const val DTE_START = "dashboard_dte_start"
         const val ODO_END = "dashboard_odo_end"

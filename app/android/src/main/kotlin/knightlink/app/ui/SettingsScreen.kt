@@ -69,6 +69,8 @@ fun SettingsScreen(
                 }
                 Switch(checked = state.deepScan, onCheckedChange = actions.onDeepScan)
             }
+            SettingSwitch(stringResource(R.string.auto_body_label), stringResource(R.string.auto_body_hint), state.autoBodyCheck, actions.onAutoBodyCheck)
+            SettingSwitch(stringResource(R.string.cluster_deep_label), stringResource(R.string.cluster_deep_hint), state.clusterDeepCheck, actions.onClusterDeepCheck)
         }
 
         KlSectionTitle(stringResource(R.string.settings_sharing))
@@ -120,4 +122,20 @@ fun FindingsConsentDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = KlSpacing.Touch)) { Text(stringResource(R.string.cancel)) } },
     )
+}
+
+/** One switch with its label and a line that says what it does. The switch is a toggle: a double tap only switches it back. */
+@Composable
+private fun SettingSwitch(label: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = KlSpacing.Touch),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(KlSpacing.M),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = KlColors.OnSurface)
+            Text(hint, style = MaterialTheme.typography.bodyMedium, color = KlColors.OnSurfaceMuted)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
 }

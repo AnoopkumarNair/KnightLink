@@ -15,6 +15,7 @@ import knightlink.core.recorder.RecordingHeader
 import knightlink.core.recorder.RecordingTransport
 import knightlink.core.runtime.CaptureMode
 import knightlink.core.runtime.LadderConfig
+import knightlink.core.runtime.OdometerEstimator
 import knightlink.core.runtime.ProtocolMemoryStore
 import knightlink.core.runtime.ProtocolNegotiator
 import knightlink.core.runtime.ReadLimits
@@ -61,6 +62,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -117,9 +120,61 @@ class SessionController(
     private val currentYear: () -> Int = { java.time.Year.now().value },
     /** Where the deep scan switch is kept between runs; null keeps it for this run only. */
     private val settings: StringStore? = null,
+    /** The wall clock (ms since the epoch): when the dashboard readings were saved, to tell one drive's from the next. */
+    private val wallClock: () -> Long = System::currentTimeMillis,
 ) {
     /** The deep scan switch (levels L3 and L4 of the learning ladder on an unknown car): on unless the user turned it off. */
     private val deepScan = MutableStateFlow(settings?.get(DEEP_SCAN_KEY) != "off")
+
+    /** "Check other units automatically when stopped": on unless the user turned it off. */
+    private val autoBodyCheck = MutableStateFlow(readSetting(AUTO_BODY_KEY) != "off")
+
+    /** "Deeper check of the instrument cluster" (its extended session, parked only): on unless the user turned it off. */
+    private val clusterDeepCheck = MutableStateFlow(readSetting(CLUSTER_DEEP_KEY) != "off")
+
+    /** The odometer scale calibrated from an earlier drive's start and end readings; 1 until there is one (or what is kept is unusable). */
+    @Volatile
+    private var odometerScale: Double = readSetting(ODO_SCALE_KEY)?.toDoubleOrNull()
+        ?.takeIf { it.isFinite() && it in OdometerEstimator.MIN_SCALE..OdometerEstimator.MAX_SCALE } ?: 1.0
+    private var odometerCalibrated = odometerScale != 1.0
+
+    /** What the screen shows with no connection: the kept dashboard readings and switches. */
+    private fun idleState(): UiState = UiState.IDLE.copy(
+        dashboard = dashboard.value,
+        deepScan = deepScan.value,
+        autoBodyCheck = autoBodyCheck.value,
+        clusterDeepCheck = clusterDeepCheck.value,
+    )
+
+    /**
+     * The last resort for a run's coroutines: an exception nothing else caught is written to the connection log (class and message) and said on
+     * screen in plain words, instead of ending the app. The run's other coroutines go on (its scope is a supervisor).
+     */
+    private val lastResort = kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        val text = "${e::class.simpleName}: ${e.message ?: "no message"}"
+        try {
+            connectionLog?.app("unexpected error: $text")
+        } catch (_: Exception) {
+            // Nothing more can be done for the log.
+        }
+        _uiState.update { it.copy(internalError = text) }
+    }
+
+    /** A setting that cannot be read is the default, never a crash. */
+    private fun readSetting(key: String): String? = try {
+        settings?.get(key)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** A setting that cannot be written costs only that it is not kept; logged. */
+    private fun writeSetting(key: String, value: String?) {
+        try {
+            settings?.put(key, value)
+        } catch (e: Exception) {
+            connectionLog?.app("setting $key could not be kept: ${e.message ?: e::class.simpleName}")
+        }
+    }
 
     /** The cars this phone has met, and the fuel price the driver typed; both live in [settings] (null keeps nothing). */
     private val garage: CarProfileStore? = settings?.let(::CarProfileStore)
@@ -147,6 +202,15 @@ class SessionController(
 
         /** Whether the drive mode has been written into the recording of the link that is polling now (every link opens a new recording). */
         var modeStamped = false
+
+        /** The distance driven in this run, from the polled speed (and the phone's GPS in gaps); read by the screen and written into the recording. */
+        val odometer = OdometerEstimator()
+
+        /** The time (of the speed reading) last fed to [odometer], so one reading is not counted twice. */
+        var odometerFedAt: kotlin.time.Duration? = null
+
+        /** When the last `odoest` line was written (ms since the run started); null before the first. */
+        var odometerLineAtMs: Long? = null
 
         /** What the tyre sensor capture shows now; set while it runs. */
         @Volatile
@@ -217,8 +281,16 @@ class SessionController(
 
     private val lock = Any()
     private var current: Run? = null
-    private val _uiState = MutableStateFlow(UiState.IDLE)
-    private val dashboard = MutableStateFlow(dashboardStore?.load() ?: DashboardReadings())
+    private val dashboard = MutableStateFlow(loadDashboard())
+    private val _uiState = MutableStateFlow(idleState())
+
+    /** What was kept; a store that cannot be read is no reason not to start. */
+    private fun loadDashboard(): DashboardReadings = try {
+        dashboardStore?.load()
+    } catch (e: Exception) {
+        connectionLog?.app("dashboard readings could not be read: ${e.message ?: e::class.simpleName}")
+        null
+    } ?: DashboardReadings()
 
     /** The drive mode the driver last said in this run; forgotten when a run starts. */
     @Volatile
@@ -238,13 +310,13 @@ class SessionController(
             if (current != null) {
                 null
             } else {
-                Run(CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job])), { fuelPrice.value }).also { current = it }
+                Run(CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]) + lastResort), { fuelPrice.value }).also { current = it }
             }
         } ?: return false
         driveMode = null
         driveTruth.value = null
         connectionLog?.app("connect requested: ${target.describe()}")
-        _uiState.value = UiState(ConnectionStatus.Connecting(1), vehicle = null, liveValues = emptyList())
+        _uiState.value = UiState(ConnectionStatus.Connecting(1), vehicle = null, liveValues = emptyList(), dashboard = dashboard.value)
         run.scope.launch { start(run, target) }
         return true
     }
@@ -256,6 +328,15 @@ class SessionController(
     suspend fun disconnect() {
         val run = synchronized(lock) { current } ?: return
         withContext(NonCancellable) {
+            // The estimate's summary goes into the recording before it is closed; a failure costs only that line.
+            try {
+                val estimate = odometerEstimate(run)
+                run.mark?.invoke(
+                    ExternalSamples.odometerEstimateFinalLine((estimate as? OdometerEstimateUi.Known)?.km, odometerScale, run.odometer.distanceKm),
+                )
+            } catch (e: Exception) {
+                connectionLog?.app("odometer estimate summary not recorded: ${e.message ?: e::class.simpleName}")
+            }
             keepUnfinishedDrive(run)
             run.stopSamples?.invoke()
             // The session first: it waits for its own teardown, so the stream is closed when this returns.
@@ -268,7 +349,7 @@ class SessionController(
             // slot is freed, so it cannot overwrite the "Connecting" of a connect that slips in right after.
             synchronized(lock) {
                 if (current === run) {
-                    _uiState.value = UiState.IDLE
+                    _uiState.value = idleState()
                     current = null
                 }
             }
@@ -311,12 +392,20 @@ class SessionController(
             run.events = setup.events
             run.identityData = IdentityData(setup.wmi, setup.models)
             tyres = setup.tyres
-            VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events)
+            VehicleSession(setup.transport, setup.initScript, setup.catalog, run.scope, timeSource, setup.config, setup.events).also {
+                it.setAutoBodyStage(autoBodyCheck.value)
+                it.setClusterExtended(clusterDeepCheck.value)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             connectionLog?.app("could not start the session: ${e.message ?: e::class.simpleName}")
-            _uiState.value = UiState(ConnectionStatus.Failed(e.message ?: e::class.simpleName ?: "unknown error"), vehicle = null, liveValues = emptyList())
+            _uiState.value = UiState(
+                ConnectionStatus.Failed(e.message ?: e::class.simpleName ?: "unknown error"),
+                vehicle = null,
+                liveValues = emptyList(),
+                dashboard = dashboard.value,
+            )
             return
         }
         // A disconnect that arrived while the definitions were loading must not start a session.
@@ -336,6 +425,13 @@ class SessionController(
     private suspend fun feedReadings(run: Run, session: VehicleSession, started: TimeMark) {
         session.telemetry.collect { snapshot ->
             try {
+                // Each new speed reading once, at its own time: the distance of the digital twin's odometer.
+                snapshot.reading("vehicle.speed")?.let { speed ->
+                    if (speed.at != run.odometerFedAt) {
+                        run.odometerFedAt = speed.at
+                        run.odometer.addSpeed(speed.reading.signal.value, speed.at.inWholeMilliseconds)
+                    }
+                }
                 run.driveFeed.accept(snapshot, started.elapsedNow().inWholeMilliseconds)
             } catch (e: CancellationException) {
                 throw e
@@ -395,6 +491,9 @@ class SessionController(
     /** A position line of the phone goes to the Drive Truth feed too, on the session's clock; a line that does not parse is ignored. */
     private fun feedGps(run: Run, started: TimeMark, line: String) {
         val fix = ExternalSamples.parseGps(0, line) ?: return
+        val lat = fix.latitude
+        val lon = fix.longitude
+        if (lat != null && lon != null) run.odometer.addGps(lat, lon, fix.accuracyM, started.elapsedNow().inWholeMilliseconds)
         run.driveFeed.addGps(
             started.elapsedNow().inWholeMilliseconds,
             GpsFix(
@@ -430,18 +529,59 @@ class SessionController(
     fun markDashboard(odometer: String, range: String, end: Boolean): Boolean {
         val odo = DashboardReadings.parseKm(odometer)
         val dte = DashboardReadings.parseKm(range)
-        val before = dashboard.value
-        val updated = if (end) {
-            before.copy(odometerEndKm = odo ?: before.odometerEndKm, rangeEndKm = dte ?: before.rangeEndKm)
-        } else {
-            before.copy(odometerStartKm = odo ?: before.odometerStartKm, rangeStartKm = dte ?: before.rangeStartKm)
+        val now = wallClock()
+        // A start for a new drive drops the previous drive's end readings (see DashboardReadings.withStart).
+        val updated = dashboard.updateAndGet { before -> if (end) before.withEnd(odo, dte, now) else before.withStart(odo, dte, now) }
+        // Shown at once, whatever the link is doing (also with no connection at all): the screen confirms what was kept.
+        _uiState.update { it.copy(dashboard = updated) }
+        try {
+            dashboardStore?.save(updated)
+        } catch (e: Exception) {
+            connectionLog?.app("dashboard readings could not be kept: ${e.message ?: e::class.simpleName}")
         }
-        dashboard.value = updated
-        dashboardStore?.save(updated)
-        val run = synchronized(lock) { current } ?: return false
+        val run = synchronized(lock) { current }
+        if (end && odo != null && run != null) calibrateOdometer(run, updated)
+        run ?: return false
         val mark = run.mark ?: return false
         run.scope.launch { stampDashboard(run, mark, odo, dte, end) }
         return true
+    }
+
+    /** The end odometer was typed: the scale that makes this run's integrated distance match the dashboard, kept for later drives when it is sensible. */
+    private fun calibrateOdometer(run: Run, readings: DashboardReadings) {
+        if (!readings.endIsCurrent) return
+        val scale = OdometerEstimator.calibrate(readings.odometerStartKm?.toDouble(), readings.odometerEndKm?.toDouble(), run.odometer.distanceKm)
+        if (scale == null) {
+            connectionLog?.app("odometer scale not changed: start ${readings.odometerStartKm}, end ${readings.odometerEndKm}, integrated ${"%.2f".format(run.odometer.distanceKm)} km")
+            return
+        }
+        odometerScale = scale
+        odometerCalibrated = true
+        writeSetting(ODO_SCALE_KEY, scale.toString())
+        connectionLog?.app("odometer scale calibrated: ${"%.4f".format(scale)}")
+    }
+
+    /** The estimated odometer now: only with a start reading of this drive. */
+    private fun odometerEstimate(run: Run): OdometerEstimateUi {
+        val saved = dashboard.value
+        val start = saved.odometerStartKm?.takeIf { saved.startIsCurrent(wallClock()) }?.toDouble()
+        val km = run.odometer.odometerKm(start, odometerScale) ?: return OdometerEstimateUi.Unavailable
+        return OdometerEstimateUi.Known(km, run.odometer.distanceKm, odometerCalibrated)
+    }
+
+    /** Writes `odoest` into the recording every [ODO_LINE_INTERVAL_MS] while polling. Never throws. */
+    private suspend fun stampOdometer(run: Run, nowMs: Long, estimate: OdometerEstimateUi) {
+        val known = estimate as? OdometerEstimateUi.Known ?: return
+        val last = run.odometerLineAtMs
+        if (last != null && nowMs - last < ODO_LINE_INTERVAL_MS) return
+        run.odometerLineAtMs = nowMs
+        try {
+            run.mark?.invoke(ExternalSamples.odometerEstimateLine(known.km))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            connectionLog?.app("odometer estimate not recorded: ${e.message ?: e::class.simpleName}")
+        }
     }
 
     private suspend fun stampDashboard(run: Run, mark: suspend (String) -> Unit, odo: Long?, dte: Long?, end: Boolean) {
@@ -495,6 +635,26 @@ class SessionController(
         connectionLog?.app("deep scan ${if (enabled) "on" else "off"}")
     }
 
+    /** Switches "check other units automatically when stopped" (kept on this phone; applies to the running session at once). */
+    fun setAutoBodyCheck(enabled: Boolean) {
+        if (autoBodyCheck.value == enabled) return
+        autoBodyCheck.value = enabled
+        writeSetting(AUTO_BODY_KEY, if (enabled) "on" else "off")
+        _uiState.update { it.copy(autoBodyCheck = enabled) }
+        synchronized(lock) { current }?.session?.setAutoBodyStage(enabled)
+        connectionLog?.app("automatic check of other units when stopped ${if (enabled) "on" else "off"}")
+    }
+
+    /** Switches "deeper check of the instrument cluster" (kept on this phone; from the next parked stage). */
+    fun setClusterDeepCheck(enabled: Boolean) {
+        if (clusterDeepCheck.value == enabled) return
+        clusterDeepCheck.value = enabled
+        writeSetting(CLUSTER_DEEP_KEY, if (enabled) "on" else "off")
+        _uiState.update { it.copy(clusterDeepCheck = enabled) }
+        synchronized(lock) { current }?.session?.setClusterExtended(enabled)
+        connectionLog?.app("deeper check of the instrument cluster ${if (enabled) "on" else "off"}")
+    }
+
     /** Ends the learning ladder that runs now; the adapter is put back and polling goes on. */
     fun skipLadder() {
         synchronized(lock) { current }?.session?.skipLadder()
@@ -507,6 +667,17 @@ class SessionController(
         session.skipLadder()
         session.skipBodyScan()
         connectionLog?.app("parked work skipped by the user")
+    }
+
+    /**
+     * "Run the parked check again": the parked stage of the body-unit check runs once more at the next safe moment (speed 0, same time cap,
+     * only what is still pending is asked). False when it cannot now (see [knightlink.core.runtime.VehicleSession.restartBodyStage]).
+     */
+    fun restartParkedCheck(): Boolean {
+        val session = synchronized(lock) { current }?.session ?: return false
+        val accepted = session.restartBodyStage()
+        connectionLog?.app("parked check again: ${if (accepted) "requested" else "not possible now"}")
+        return accepted
     }
 
     /** "Scan again": runs the learning ladder once more on this car (it is otherwise run once per car and set of units). False when it cannot now. */
@@ -727,7 +898,10 @@ class SessionController(
                 if (!run.dashboardStamped) {
                     run.dashboardStamped = true
                     val saved = dashboard.value
-                    run.mark?.let { mark -> stampDashboard(run, mark, saved.odometerStartKm, saved.rangeStartKm, end = false) }
+                    // Only readings of this drive: the ones of an earlier drive (closed, or long ago) would mislabel this recording.
+                    if (saved.startIsCurrent(wallClock())) {
+                        run.mark?.let { mark -> stampDashboard(run, mark, saved.odometerStartKm, saved.rangeStartKm, end = false) }
+                    }
                 }
             } else {
                 run.modeStamped = false
@@ -755,6 +929,8 @@ class SessionController(
             val shownBody = session.bodyScan.value.toProgress()
             if (shownBody.isOutcome) run.bodyResult = shownBody
             val liveNow = liveValues(session.telemetry.value, started.elapsedNow(), staleAfter, periods)
+            val odometer = odometerEstimate(run)
+            if (state is SessionState.Polling) stampOdometer(run, started.elapsedNow().inWholeMilliseconds, odometer)
             val stage = run.driveTracker.update(
                 started.elapsedNow().inWholeMilliseconds,
                 liveNow.freshNumber("vehicle.speed"),
@@ -797,6 +973,11 @@ class SessionController(
                 driveTruth = driveTruth.value ?: lastDriveToShow(run, key, stage),
                 ladderResult = run.ladderResult,
                 bodyResult = run.bodyResult,
+                parkedCheckPending = session.bodyPendingUnits.value,
+                autoBodyCheck = autoBodyCheck.value,
+                clusterDeepCheck = clusterDeepCheck.value,
+                odometerEstimate = odometer,
+                internalError = _uiState.value.internalError,
             )
         }
     }
@@ -868,6 +1049,8 @@ class SessionController(
 
     /** The scan of the other units as the screen shows it: the outcome stays for [BODY_OUTCOME_HOLD] and then the banner goes. */
     private fun bodyScanProgress(run: Run, progress: BodyScanProgress): BodyScanProgress {
+        // A check that started by itself ends silently: no banner for how it ended.
+        if (progress.isOutcome && progress.isAuto) return BodyScanProgress.Idle
         if (!progress.isOutcome) {
             run.bodyOutcomeSince = null
             return progress
@@ -893,6 +1076,10 @@ class SessionController(
         private const val VIN_MIN_FOR_TAIL = 17
         const val SCAN_RESULT_SUFFIX = ".scan.json"
         private const val DEEP_SCAN_KEY = "deep_scan"
+        private const val AUTO_BODY_KEY = "auto_body_check"
+        private const val CLUSTER_DEEP_KEY = "cluster_deep_check"
+        private const val ODO_SCALE_KEY = "odometer_scale"
+        private const val ODO_LINE_INTERVAL_MS = 10_000L
         val BODY_OUTCOME_HOLD: Duration = 90.seconds
         val DEFAULT_UI_REFRESH: Duration = 250.milliseconds
         val DEFAULT_STALE_AFTER: Duration = 5.seconds

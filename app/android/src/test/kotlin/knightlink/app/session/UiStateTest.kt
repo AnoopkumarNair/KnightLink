@@ -237,6 +237,14 @@ class UiStateTest {
 
         assertEquals(BodyScanProgress.Complete(7), BodyScanState.Complete(7).toProgress())
         assertEquals(BodyScanProgress.Partial(3), BodyScanState.Partial(3).toProgress())
+        // Why the stage ended reaches the screen; only the time cap and the user's skip say "you can drive".
+        val moving = BodyScanState.Partial(3, knightlink.core.runtime.BodyOutcome.MOVING, 12).toProgress()
+        assertEquals(BodyScanProgress.Partial(3, knightlink.core.runtime.BodyOutcome.MOVING, 12), moving)
+        kotlin.test.assertFalse((moving as BodyScanProgress.Partial).mayDrive)
+        kotlin.test.assertFalse(BodyScanProgress.Partial(3, knightlink.core.runtime.BodyOutcome.SPEED_UNKNOWN).mayDrive)
+        kotlin.test.assertFalse(BodyScanProgress.Partial(3, knightlink.core.runtime.BodyOutcome.FAILED).mayDrive)
+        kotlin.test.assertTrue(BodyScanProgress.Partial(3, knightlink.core.runtime.BodyOutcome.TIME_CAP).mayDrive)
+        kotlin.test.assertTrue(BodyScanProgress.Partial(3, knightlink.core.runtime.BodyOutcome.SKIPPED).mayDrive)
         assertEquals(BodyScanProgress.Skipped(moving = true), BodyScanState.Skipped(true, "the car moves (40 km/h)").toProgress())
         assertEquals(BodyScanProgress.Skipped(moving = false), BodyScanState.Skipped(false, "the speed cannot be read").toProgress())
         for (outcome in listOf(BodyScanProgress.Complete(0), BodyScanProgress.Partial(0), BodyScanProgress.Skipped(true))) assertTrue(outcome.isOutcome)
@@ -250,5 +258,50 @@ class UiStateTest {
         assertEquals(310L, DashboardReadings.parseKm(" 310 "))
         assertEquals(0L, DashboardReadings.parseKm("0"))
         for (bad in listOf("", "  ", "12.5", "-3", "12 345", "abc", "99999999", "12345678901234567890")) assertEquals(null, DashboardReadings.parseKm(bad), bad)
+    }
+
+    @Test
+    fun theParkedCheckCanBeRunAgainOnlyWhenConnectedNotRunningAndUnitsArePending() {
+        val live = UiState(ConnectionStatus.Live, vehicle = null, liveValues = emptyList(), parkedCheckPending = 2)
+        assertTrue(live.copy(bodyScan = BodyScanProgress.Partial(3, knightlink.core.runtime.BodyOutcome.SPEED_UNKNOWN)).canRunParkedCheckAgain)
+        assertTrue(live.copy(bodyScan = BodyScanProgress.Skipped(moving = false)).canRunParkedCheckAgain)
+        assertTrue(live.canRunParkedCheckAgain, "idle with units pending (the banner has gone)")
+        assertFalse(live.copy(bodyScan = BodyScanProgress.Running("cluster", 1, 10, 30)).canRunParkedCheckAgain, "not while it runs")
+        assertFalse(live.copy(parkedCheckPending = 0).canRunParkedCheckAgain, "nothing left")
+        assertFalse(live.copy(connection = ConnectionStatus.Idle).canRunParkedCheckAgain, "not connected")
+        assertFalse(live.copy(captureMode = CaptureMode.PASSIVE).canRunParkedCheckAgain, "only listening")
+        assertFalse(live.copy(knownVehicle = false).canRunParkedCheckAgain)
+        assertFalse(live.copy(bodyResult = BodyScanProgress.Complete(2)).canRunParkedCheckAgain, "it completed")
+    }
+
+    @Test
+    fun aSkipAfterRetriesSaysSo() {
+        assertEquals(BodyScanProgress.Skipped(moving = false, retried = true), BodyScanState.Skipped(false, "x", retried = true).toProgress())
+        assertEquals(BodyScanProgress.Skipped(moving = true), BodyScanState.Skipped(true, "x").toProgress())
+    }
+
+    @Test
+    fun anAutomaticStageIsMarkedAutoAllTheWayToTheScreen() {
+        val running = BodyScanState.Running("instrument cluster", 10, 100, 30, auto = true).toProgress()
+        assertEquals(BodyScanProgress.Running("instrument cluster", 10, 100, 30, auto = true), running)
+        assertTrue(running.isAuto)
+        assertTrue(BodyScanState.Partial(3, knightlink.core.runtime.BodyOutcome.MOVING, 20, auto = true).toProgress().isAuto)
+        assertTrue(BodyScanState.Complete(3, auto = true).toProgress().isAuto)
+        assertFalse(BodyScanState.Running("x", 1, 2, 3).toProgress().isAuto, "the parked stage at the start is announced as before")
+        assertFalse(BodyScanState.Partial(3).toProgress().isAuto)
+    }
+
+    @Test
+    fun theSwitchesDefaultToOnAndTheOdometerEstimateToUnavailable() {
+        assertTrue(UiState.IDLE.autoBodyCheck)
+        assertTrue(UiState.IDLE.clusterDeepCheck)
+        assertEquals(OdometerEstimateUi.Unavailable, UiState.IDLE.odometerEstimate)
+    }
+
+    @Test
+    fun theParkedCheckCanBeRunAgainWhileAnAutomaticStageIsNotRunning() {
+        val live = UiState.IDLE.copy(connection = ConnectionStatus.Live, parkedCheckPending = 1)
+        assertTrue(live.canRunParkedCheckAgain)
+        assertFalse(live.copy(bodyScan = BodyScanProgress.Running("x", 1, 2, 3, auto = true)).canRunParkedCheckAgain, "not while one runs")
     }
 }

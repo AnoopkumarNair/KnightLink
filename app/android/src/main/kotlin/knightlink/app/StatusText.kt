@@ -1,13 +1,30 @@
 package knightlink.app
 
 import android.content.res.Resources
+import knightlink.app.session.BodyScanProgress
 import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.ScanStatus
+import knightlink.core.runtime.BodyOutcome
 import knightlink.core.runtime.CannotReadReason
 import knightlink.core.scan.ScanOutcome
 import knightlink.core.scan.ScanStage
 import knightlink.core.vehicle.FuelMethod
 import knightlink.core.vehicle.ProbeStage
+
+/**
+ * The parked scan's early end in plain words: [spoken] for the voice and the notification, else for the screen. "You can drive" only when the
+ * stage really ended (the time cap or the user's skip); otherwise it says the scan stopped early and why (on 2026-11-24 it said "you can drive"
+ * after a single speed reading of 3 km/h ended the stage 21 s in).
+ */
+fun BodyScanProgress.Partial.text(resources: Resources, spoken: Boolean = false): String = when (ended) {
+    BodyOutcome.MOVING -> speedKmh?.let { resources.getString(if (spoken) R.string.bodyscan_spoken_partial_moving else R.string.bodyscan_partial_moving, it) }
+        ?: resources.getString(if (spoken) R.string.bodyscan_spoken_partial_moving_unknown else R.string.bodyscan_partial_moving_unknown)
+    BodyOutcome.SPEED_UNKNOWN -> resources.getString(if (spoken) R.string.bodyscan_spoken_partial_speed_unknown else R.string.bodyscan_partial_speed_unknown)
+    BodyOutcome.FAILED -> resources.getString(if (spoken) R.string.bodyscan_spoken_partial_failed else R.string.bodyscan_partial_failed)
+    BodyOutcome.SKIPPED -> resources.getString(if (spoken) R.string.bodyscan_spoken_partial_skipped else R.string.bodyscan_partial_skipped)
+    BodyOutcome.TIME_CAP, BodyOutcome.BUDGET, BodyOutcome.COMPLETED ->
+        resources.getString(if (spoken) R.string.bodyscan_spoken_partial else R.string.bodyscan_partial)
+}
 
 /** The connection in plain words, for the screen and for the notification. */
 fun ConnectionStatus.text(resources: Resources): String = when (this) {

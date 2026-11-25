@@ -104,7 +104,7 @@ fun HomeScreen(
                 Tab.SCAN -> ScanScreen(state, lastAdapter, actions, app, content)
                 Tab.CAR -> SummaryScreen(state, app, requestShare, content)
                 Tab.FAULTS -> FaultsScreen(state, actions.onRefreshFaults, content)
-                Tab.LIVE -> LiveScreen(state, content)
+                Tab.LIVE -> LiveScreen(state, content, actions)
             }
             Page.SETTINGS -> SettingsScreen(state, actions, app, driveData, voice, talk, requestShare, { page = Page.DEVELOPER }, content)
             Page.DEVELOPER ->

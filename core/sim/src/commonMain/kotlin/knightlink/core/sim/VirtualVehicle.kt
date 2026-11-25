@@ -41,6 +41,21 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
     public var needsDefaultSession: Boolean = false
     private var sessionRequested = false
 
+    /** Whether the unit is in its extended session: `10 03` answered positively put it there, `10 01` ends it. */
+    public var inExtendedSession: Boolean = false
+        private set
+
+    /** How often the unit entered the extended session. */
+    public var extendedSessions: Int = 0
+        private set
+
+    private val extendedReplies = HashMap<String, ByteArray>()
+
+    /** Makes [request] answer with [data] only while the unit is in its extended session (set a reply of `1003` to let it enter one). */
+    public fun setExtended(request: String, data: String) {
+        extendedReplies[request.filterNot { it.isWhitespace() }.uppercase()] = data.hexToBytes()
+    }
+
     private val refusals = HashMap<String, Int>()
     private val rawReplies = HashMap<String, ByteArray>()
 
@@ -74,6 +89,12 @@ public class VirtualEcu(public val requestId: Int, public val responseId: Int) {
         refusesEverythingWith?.let { return byteArrayOf(NEGATIVE, service.toByte(), it.toByte()) }
         val positive = byteArrayOf((service + POSITIVE_OFFSET).toByte()) + request.copyOfRange(1, request.size)
         if (request.toHex() == "1001" && replies.containsKey("1001")) sessionRequested = true
+        if (request.toHex() == "1001") inExtendedSession = false
+        if (request.toHex() == "1003" && replies.containsKey("1003") && !refusals.containsKey("1003")) {
+            inExtendedSession = true
+            extendedSessions++
+        }
+        if (inExtendedSession) extendedReplies[request.toHex()]?.let { return positive + it }
         if (service == 0x22 && needsDefaultSession && !sessionRequested) return byteArrayOf(NEGATIVE, service.toByte(), NRC_NOT_IN_SESSION)
         rawReplies[request.toHex()]?.let { return it }
         refusals[request.toHex()]?.let { return byteArrayOf(NEGATIVE, service.toByte(), it.toByte()) }

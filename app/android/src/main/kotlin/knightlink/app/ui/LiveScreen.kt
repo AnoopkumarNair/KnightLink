@@ -16,6 +16,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import knightlink.app.R
 import knightlink.app.session.LiveValue
+import knightlink.app.session.OdometerEstimateUi
 import knightlink.app.session.UiState
 import knightlink.app.ui.design.BigFigure
 import knightlink.app.ui.design.EmptyState
@@ -41,10 +42,15 @@ private val EXTRA_SLOTS = listOf(
 )
 
 @Composable
-fun LiveScreen(state: UiState, modifier: Modifier = Modifier) {
+fun LiveScreen(state: UiState, modifier: Modifier = Modifier, actions: ConnectionActions? = null) {
     if (!state.isActive || (state.liveValues.isEmpty() && state.vehicle == null)) {
-        Column(modifier.fillMaxSize().padding(KlSpacing.Gutter)) {
+        Column(
+            modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(KlSpacing.Gutter),
+            verticalArrangement = Arrangement.spacedBy(KlSpacing.L),
+        ) {
             EmptyState(stringResource(R.string.live_empty_title), stringResource(R.string.live_empty_body))
+            // The end readings are typed with the car off and the link gone: the card stays here too.
+            actions?.let { DriveReadingsCard(state.dashboard, it.onDashboard) }
         }
         return
     }
@@ -53,6 +59,9 @@ fun LiveScreen(state: UiState, modifier: Modifier = Modifier) {
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(KlSpacing.Gutter),
         verticalArrangement = Arrangement.spacedBy(KlSpacing.L),
     ) {
+        state.internalError?.let {
+            Text(stringResource(R.string.internal_error, it), style = MaterialTheme.typography.bodyMedium, color = KlColors.Attention)
+        }
         if (state.captureMode == CaptureMode.PASSIVE) {
             Text(
                 stringResource(R.string.capture_live_paused),
@@ -63,6 +72,11 @@ fun LiveScreen(state: UiState, modifier: Modifier = Modifier) {
         }
         for (slot in CORE_SLOTS + EXTRA_SLOTS.filter { it.signalId in byId }) {
             KlCard { Figure(slot, byId[slot.signalId], probed = state.vehicle != null) }
+        }
+        KlCard { OdometerEstimateRow(state.odometerEstimate) }
+        if (actions != null) {
+            if (state.knownVehicle) DriveModeCard(state.drive, recording = state.isActive, onMode = actions.onDriveMode)
+            DriveReadingsCard(state.dashboard, actions.onDashboard)
         }
     }
 }
@@ -81,5 +95,28 @@ private fun Figure(slot: LiveSlot, value: LiveValue?, probed: Boolean) {
         // Before the probe has finished a missing value only means "not yet", so nothing claims the car lacks it.
         probed -> BigFigure(label, null, "", stringResource(R.string.live_method_missing))
         else -> BigFigure(label, null, "", stringResource(R.string.live_empty_title))
+    }
+}
+
+/** The digital twin's odometer: the start reading plus the distance driven, or why there is none. */
+@Composable
+private fun OdometerEstimateRow(estimate: OdometerEstimateUi) {
+    Text(stringResource(R.string.odometer_estimate_label), style = MaterialTheme.typography.labelLarge, color = KlColors.OnSurfaceMuted)
+    when (estimate) {
+        OdometerEstimateUi.Unavailable -> Text(
+            stringResource(R.string.odometer_estimate_unavailable),
+            style = MaterialTheme.typography.bodyMedium,
+            color = KlColors.OnSurfaceMuted,
+        )
+        is OdometerEstimateUi.Known -> {
+            Text(
+                stringResource(R.string.odometer_estimate_value, "%.1f".format(estimate.km), "%.1f".format(estimate.distanceKm)),
+                style = MaterialTheme.typography.titleLarge,
+                color = KlColors.OnSurface,
+            )
+            if (estimate.calibrated) {
+                Text(stringResource(R.string.odometer_estimate_calibrated), style = MaterialTheme.typography.bodySmall, color = KlColors.OnSurfaceMuted)
+            }
+        }
     }
 }

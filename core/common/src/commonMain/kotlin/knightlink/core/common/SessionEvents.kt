@@ -111,6 +111,12 @@ public object SessionEvents {
      */
     public const val BODY_SCAN: String = "body-scan"
 
+    /**
+     * The extended diagnostic session of the instrument cluster (see `BodyUnitReader`): `10 03` and its answer (positive or the refusal code),
+     * a `3E 00` that went unanswered, and the `10 01` that always ends it.
+     */
+    public const val SESSION: String = "session"
+
     /** The battery voltage the adapter read (`ATRV`) once at the start of a connection. */
     public const val BATTERY: String = "battery"
 

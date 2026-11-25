@@ -461,7 +461,7 @@ class VehicleSessionSimulationTest {
 
     @Test
     fun theCandidateCheckAsksEachIdentifierOnceForAnAnsweringUnitAndNotAgainAfterAReconnect() = runTest {
-        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = candidates("7E1"))))
+        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = candidates("7E1"), bodyPauseWhileMoving = false)))
         rig.session.start()
         run(30.seconds)
         val first = rig.simulated.current!!.requests().filter { it.startsWith("221F1") }
@@ -485,7 +485,7 @@ class VehicleSessionSimulationTest {
         run(60.seconds)
         val baselineLive = baseline.simulated.current!!.requests().count { it.startsWith("01") }
 
-        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = wholeRange())))
+        val rig = rig(config = fastDpf(VehicleSession.Config(candidateChecks = wholeRange(), bodyPauseWhileMoving = false)))
         rig.session.start()
         run(60.seconds)
 

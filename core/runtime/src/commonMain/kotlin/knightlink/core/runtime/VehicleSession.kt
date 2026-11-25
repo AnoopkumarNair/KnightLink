@@ -184,6 +184,28 @@ public class VehicleSession(
         val bodyPacedEvery: Duration = 15.seconds,
         /** ... for at most this many requests (a pause of about a second, and under one request a second on average). */
         val bodyPacedRequests: Int = 10,
+        /**
+         * While the latest polled vehicle speed says the car moves (two readings in a row at or above [BodyUnitReader.Config.movingKmh]), no
+         * background body slice runs: polling keeps the adapter (on 2026-11-24 the slices held a 29-minute drive to about 5 requests a second,
+         * against 11 once they were over). Slices go on once the speed reads 0, or when it cannot be read. Nothing is lost: progress is kept.
+         */
+        val bodyPauseWhileMoving: Boolean = true,
+        /**
+         * The parked stage starts by itself when the polled speed has read 0 without a break for this long (stopped at a light, in traffic, or
+         * parked with the engine on) and body units are still pending; null never. Same rules as [restartBodyStage]: the speed is read first and
+         * must be 0, confirmed movement ends it at once, progress carries on, the time cap applies. Silent: shown low-key, never announced.
+         * Switched at run time with [setAutoBodyStage].
+         */
+        val bodyAutoStageAfter: Duration? = 8.seconds,
+        /** After an automatic stage that did not finish every unit, no new one starts for this long. */
+        val bodyAutoStageCooldown: Duration = 60.seconds,
+        /** While an automatic stage runs, the speed is read at least this often (so the adapter is given back soon after the car moves off). */
+        val bodyAutoSpeedCheck: Duration = 1500.milliseconds,
+        /**
+         * Whether the candidate file's extended-session pass of the instrument cluster (`10 03`, `3E 00`, then `10 01`; see [BodyUnitReader]) is
+         * asked. Only ever in a parked stage (the speed read 0 and watched), never in a background slice. Switched with [setClusterExtended].
+         */
+        val bodyExtendedSession: Boolean = true,
         /** How passive capture listens: slice length, identifier groups, limits (see [setCaptureMode]). */
         val capture: PassiveCapture.Config = PassiveCapture.Config(),
         /**
@@ -244,6 +266,8 @@ public class VehicleSession(
             require(asleepAfter > Duration.ZERO) { "asleepAfter must be positive" }
             require(asleepProbeInterval > Duration.ZERO) { "asleepProbeInterval must be positive" }
             require(bodyStageCap > Duration.ZERO && bodyPacedEvery > Duration.ZERO && bodyPacedRequests >= 1) { "the body check's limits must be positive" }
+            require(bodyAutoStageAfter == null || bodyAutoStageAfter > Duration.ZERO) { "bodyAutoStageAfter must be positive" }
+            require(bodyAutoSpeedCheck > Duration.ZERO && !bodyAutoStageCooldown.isNegative()) { "the automatic body stage's limits must be positive" }
         }
     }
 
@@ -267,6 +291,9 @@ public class VehicleSession(
     @Volatile
     private var bodySkip = false
     private val ladderRequests = Channel<Unit>(Channel.CONFLATED)
+
+    /** "Run the parked check again" ([restartBodyStage]): taken at the next boundary between two stretches of polling. */
+    private val bodyRequests = Channel<Unit>(Channel.CONFLATED)
     private var scanPlan: DidSweepPlan? = config.scanPlan
     private var candidateChecks: CandidateChecks? = config.candidateChecks
     private var seedScan: ScanResult? = config.seedScan
@@ -324,6 +351,9 @@ public class VehicleSession(
     private var bodyPrepared = false
     private var bodyUnits: List<CandidateCheck> = emptyList()
     private var bodyCheckId: String = config.candidateChecks?.id.orEmpty()
+
+    /** The body-check progress the vehicle's memory held, kept until the check's id is known (see [applyCandidates]). */
+    private var storedBody: BodyCheckMemory? = null
     private val bodyProgress = LinkedHashMap<String, BodyUnitProgress>()
 
     /** Set per connection: the parked stage did not finish, so the rest is asked a few at a time between stretches of polling. */
@@ -331,7 +361,26 @@ public class VehicleSession(
     private var bodyReader: BodyUnitReader? = null
     private var bodyFailures = 0
     private var bodyGaveUp = false
+
+    /** Moving or standing, from the polled speed (see [Config.bodyPauseWhileMoving] and [Config.bodyAutoStageAfter]). */
+    private val motion = MotionWatch(config.body.movingKmh)
+
+    @Volatile
+    private var autoBodyOn = config.bodyAutoStageAfter != null
+
+    @Volatile
+    private var extendedOn = config.bodyExtendedSession
+
+    /** When the last automatic stage ended without finishing; none starts again before [Config.bodyAutoStageCooldown] has passed. */
+    private var autoStageEndedEarly: TimeMark? = null
+
+    /** The background slices are held because the car moves; logged once when it starts and once when it ends. */
+    private var slicesHeld = false
+
+    /** The driver skipped a stage on this connection: no automatic one until the next connection or a stage the driver asks for. */
+    private var autoSuppressed = false
     private val _bodyScan = MutableStateFlow<BodyScanState>(BodyScanState.Idle)
+    private val _bodyPending = MutableStateFlow(0)
     private val _ladder = MutableStateFlow<LadderState>(LadderState.Idle)
 
     /** What polling asks beyond the vehicle's own signals: the discovery identifiers. */
@@ -385,6 +434,9 @@ public class VehicleSession(
      * (the time cap or movement ended it; the rest is asked in the background), or skipped (the car moves or its speed is unknown).
      */
     public val bodyScan: StateFlow<BodyScanState> = _bodyScan.asStateFlow()
+
+    /** How many body units still have identifiers to ask (0 when none, or when this car is not checked); see [restartBodyStage]. */
+    public val bodyPendingUnits: StateFlow<Int> = _bodyPending.asStateFlow()
 
     /** The learning ladder of a car without a definition: which level runs and how far it is, and how it ended (see [LadderState]). */
     public val ladder: StateFlow<LadderState> = _ladder.asStateFlow()
@@ -601,6 +653,7 @@ public class VehicleSession(
         scanRequests.tryReceive()
         faultRequests.tryReceive()
         ladderRequests.tryReceive()
+        bodyRequests.tryReceive()
         retryRequests.tryReceive()
         connectionProtocol = null
         if (_captureMode.value == CaptureMode.PASSIVE) {
@@ -713,6 +766,7 @@ public class VehicleSession(
         gearRevisionSaved = gear.revision
         fuel = FuelTracker(stored.fuel)
         _fuelFills.value = stored.fuel.fills
+        storedBody = stored.body
         loadBodyProgress(stored.body)
         rebuildDiscovery()
         val partial = stored.scan?.takeIf { it.resumable }
@@ -737,6 +791,7 @@ public class VehicleSession(
                 fuel = FuelTracker()
                 _fuelFills.value = emptyList()
                 gearRevisionSaved = 0
+                storedBody = null
                 bodyProgress.clear()
                 rebuildDiscovery()
             }
@@ -781,6 +836,8 @@ public class VehicleSession(
         }
         bodyPrepared = true
         bodyCheckId = checks.id
+        // The memory is read before the vehicle's definition is resolved, so its check id could not be compared then: do it now.
+        storedBody?.let { loadBodyProgress(it) }
         val vin = report.ecus.firstNotNullOfOrNull { it.vin }
         if (!checks.appliesTo(vin)) {
             // The app's config names one vehicle; another car on the same app must not be asked the first one's identifiers.
@@ -790,19 +847,36 @@ public class VehicleSession(
         }
         val answering = report.ecus.mapNotNull { it.requestId.toIntOrNull(16) }.toSet()
         bodyUnits = checks.checks.filter { it.requestCanId in answering || it.unprobed }
-        bodyUnits.forEach { bodyProgress.getOrPut(it.requestId) { BodyUnitProgress() } }
+        bodyUnits.forEach { bodyProgress.getOrPut(it.progressKey) { BodyUnitProgress() } }
     }
 
     /** Takes over the stored progress of the body check when it is for the same candidate file. */
     private fun loadBodyProgress(stored: BodyCheckMemory) {
         bodyProgress.clear()
-        if (stored.checkId.isNotEmpty() && stored.checkId == bodyCheckId) bodyProgress.putAll(stored.units)
+        if (stored.checkId.isEmpty()) return
+        if (stored.checkId == bodyCheckId) {
+            bodyProgress.putAll(stored.units)
+            return
+        }
+        // A file that follows the stored one: units whose identifier list kept its size keep their progress, a changed one starts afresh.
+        val checks = candidateChecks ?: return
+        if (checks.id != bodyCheckId || checks.continues != stored.checkId) return
+        for (unit in checks.checks) {
+            stored.units[unit.progressKey]?.takeIf { it.total == unit.identifiers().size }?.let { bodyProgress[unit.progressKey] = it }
+        }
     }
 
-    private fun pendingBodyUnits(): List<CandidateCheck> = bodyUnits.filter { bodyProgress[it.requestId]?.done != true }
+    private fun pendingBodyUnits(): List<CandidateCheck> = bodyUnits.filter { bodyProgress[it.progressKey]?.done != true && (!it.extended || extendedOn) }
+
+    private fun publishBodyPending() {
+        _bodyPending.value = pendingBodyUnits().size
+    }
+
+    /** Nothing was ever asked of the unit: not its fault codes, not an identifier, and no try of it ended. */
+    private fun BodyUnitProgress.untouched(): Boolean = asked == 0 && !faultsRead && attempts == 0 && replies == 0
 
     private fun bodyTotals(): Pair<Int, Int> {
-        val done = bodyUnits.sumOf { unit -> bodyProgress[unit.requestId]?.let { if (it.done) it.total.coerceAtLeast(it.asked) else it.asked } ?: 0 }
+        val done = bodyUnits.sumOf { unit -> bodyProgress[unit.progressKey]?.let { if (it.done) it.total.coerceAtLeast(it.asked) else it.asked } ?: 0 }
         val total = bodyUnits.sumOf { unit -> unit.identifiers().size }
         return done to total
     }
@@ -817,8 +891,17 @@ public class VehicleSession(
      * the link is lost, the stage ends and the rest is asked in the background (see [runBodySlice]), or on the next connection. Polling is simply
      * not running meanwhile, and nothing the units answer (or do not) reaches the silence, asleep or bus-fault logic.
      */
-    private suspend fun runBodyStage(driver: Elm327Driver) {
+    private suspend fun runBodyStage(driver: Elm327Driver, again: Boolean = false, auto: Boolean = false) {
+        try {
+            runBodyStageOnce(driver, again, auto)
+        } finally {
+            publishBodyPending()
+        }
+    }
+
+    private suspend fun runBodyStageOnce(driver: Elm327Driver, again: Boolean, auto: Boolean = false) {
         bodyPaced = false
+        if (!auto) autoSuppressed = false
         bodyReader = null
         bodySkip = false
         if (_bodyScan.value is BodyScanState.Running) _bodyScan.value = BodyScanState.Idle
@@ -830,7 +913,7 @@ public class VehicleSession(
         }
         val reader = bodyReaderFor(driver)
         bodyReader = reader
-        val speed = try {
+        suspend fun speedOnce(): Int? = try {
             reader.readSpeed()
         } catch (e: AdapterDisconnectedException) {
             throw e
@@ -839,20 +922,54 @@ public class VehicleSession(
         } catch (e: AdapterException) {
             null
         }
-        if (speed != 0) {
-            val reason = if (speed == null) "the speed cannot be read" else "the car moves ($speed km/h)"
-            note(SessionEvents.BODY_SCAN, "no parked stage: $reason; the ${pending.size} body units are asked in the background, about one identifier a second")
+        var speed = speedOnce()
+        // Asked again by the driver: an engine unit that dozed off for a few seconds gets a few more chances (about ten seconds) to answer.
+        var tries = 1
+        if (again) {
+            while (speed == null && tries < RESTART_SPEED_TRIES) {
+                delay(RESTART_SPEED_WAIT)
+                speed = speedOnce()
+                tries++
+            }
+        }
+        if (speed != 0 && auto) {
+            // Silent: the polled speed said 0, the read now does not; nothing is shown, and the next try waits for the cool-down.
+            note(SessionEvents.BODY_SCAN, "no automatic stage: " + (speed?.let { "the car moves ($it km/h)" } ?: "the speed cannot be read"))
+            autoStageEndedEarly = timeSource.markNow()
             bodyPaced = true
-            _bodyScan.value = BodyScanState.Skipped(moving = speed != null, reason = reason)
             return
         }
-        note(SessionEvents.BODY_SCAN, "parked stage: ${pending.size} body units, up to ${config.bodyStageCap}")
+        if (speed != 0) {
+            val reason = when {
+                speed != null -> "the car moves ($speed km/h)"
+                again -> "the speed cannot be read (tried $tries times over ${RESTART_SPEED_WAIT * (tries - 1)})"
+                else -> "the speed cannot be read"
+            }
+            note(SessionEvents.BODY_SCAN, "no parked stage: $reason; the ${pending.size} body units are asked in the background, about one identifier a second")
+            bodyPaced = true
+            _bodyScan.value = BodyScanState.Skipped(moving = speed != null, reason = reason, retried = again && speed == null)
+            return
+        }
+        val start = when {
+            auto -> "automatic parked stage (the car stood still for ${config.bodyAutoStageAfter}): "
+            again -> "parked stage again (asked by the user): "
+            else -> "parked stage: "
+        }
+        note(SessionEvents.BODY_SCAN, start + "${pending.size} body units, up to ${config.bodyStageCap}")
         val stageStart = timeSource.markNow()
-        publishBodyRunning(pending.first().label, stageStart)
+        publishBodyRunning(pending.first().label, stageStart, auto)
+        val limits = BodyUnitReader.Limits(
+            maxTime = config.bodyStageCap,
+            watchSpeed = true,
+            skip = { bodySkip },
+            // Every stage (the extended session of the cluster too) gives the adapter back within a few seconds of the car moving off.
+            speedCheckInterval = config.bodyAutoSpeedCheck,
+        )
         val outcome = try {
-            reader.run(pending, bodyProgress, BodyUnitReader.Limits(maxTime = config.bodyStageCap, watchSpeed = true, skip = { bodySkip })) { label, _, _ ->
+            // The extended-session pass of the cluster first: the odometer is the most likely there.
+            reader.run(pending.sortedBy { if (it.extended) 0 else 1 }, bodyProgress, limits) { label, _, _ ->
                 memoryDirty = true
-                publishBodyRunning(label, stageStart)
+                publishBodyRunning(label, stageStart, auto)
             }
         } catch (e: CancellationException) {
             throw e
@@ -863,36 +980,53 @@ public class VehicleSession(
         } catch (e: AdapterException) {
             note(SessionEvents.BODY_SCAN, "the parked stage failed: ${describe(e)}; the rest is asked in the background")
             bodyFailures++
-            BodyOutcome.SPEED_UNKNOWN
+            BodyOutcome.FAILED
         } finally {
             memoryDirty = true
             saveMemory()
             // However the stage ended (a lost link included), the banner must not stay on "keep the car parked".
             if (_bodyScan.value is BodyScanState.Running) {
-                _bodyScan.value = if (bodyAnswered() > 0 || bodyTotals().first > 0) BodyScanState.Partial(bodyAnswered()) else BodyScanState.Idle
+                _bodyScan.value = if (bodyAnswered() > 0 || bodyTotals().first > 0) {
+                    BodyScanState.Partial(bodyAnswered(), BodyOutcome.FAILED, auto = auto)
+                } else {
+                    BodyScanState.Idle
+                }
             }
         }
         val remaining = pendingBodyUnits()
         if (outcome == BodyOutcome.COMPLETED || remaining.isEmpty()) {
-            _bodyScan.value = BodyScanState.Complete(bodyAnswered())
+            _bodyScan.value = BodyScanState.Complete(bodyAnswered(), auto)
             note(SessionEvents.BODY_SCAN, "parked stage complete: ${bodyAnswered()} identifiers answered")
+            // A unit that only said "not now" (or was silent) is left for the next connection, not retried here: each try counts towards its limit.
+            if (remaining.isNotEmpty()) note(SessionEvents.BODY_SCAN, "${remaining.size} units are tried again on the next connection")
         } else {
             bodyPaced = true
-            _bodyScan.value = BodyScanState.Partial(bodyAnswered())
-            note(SessionEvents.BODY_SCAN, "parked stage ended (${outcome.name.lowercase()}); ${remaining.size} units are asked in the background")
+            val speedKmh = if (outcome == BodyOutcome.MOVING) reader.stoppedAtKmh else null
+            _bodyScan.value = BodyScanState.Partial(bodyAnswered(), outcome, speedKmh, auto)
+            // Any stage that did not finish holds the next automatic one off for the cool-down; one the driver skipped, for this connection.
+            autoStageEndedEarly = timeSource.markNow()
+            if (outcome == BodyOutcome.SKIPPED) autoSuppressed = true
+            note(
+                SessionEvents.BODY_SCAN,
+                "parked stage ended early (${outcome.name.lowercase()}" + (speedKmh?.let { ", $it km/h" } ?: "") +
+                    ") after ${stageStart.elapsedNow().inWholeSeconds} s; ${remaining.size} units are asked in the background",
+            )
         }
     }
 
-    private fun publishBodyRunning(label: String, stageStart: TimeMark) {
+    private fun publishBodyRunning(label: String, stageStart: TimeMark, auto: Boolean = false) {
         val (done, total) = bodyTotals()
         val capLeft = (config.bodyStageCap - stageStart.elapsedNow()).coerceAtLeast(Duration.ZERO).inWholeSeconds
         val needed = kotlin.math.ceil((total - done).coerceAtLeast(0) / config.body.requestsPerSecond * BODY_ESTIMATE_MARGIN).toLong()
-        _bodyScan.value = BodyScanState.Running(label, done, total, minOf(needed, capLeft).toInt())
+        _bodyScan.value = BodyScanState.Running(label, done, total, minOf(needed, capLeft).toInt(), auto)
     }
 
     /** A few body-unit requests between two stretches of polling (the car moves or its speed is unknown). Errors cost only the check. */
     private suspend fun runBodySlice(driver: Elm327Driver) {
-        val pending = pendingBodyUnits()
+        // Units never reached go first (stable otherwise): at about ten requests a slice a unit of hundreds of identifiers would otherwise hold
+        // up the ones after it for a whole drive (on 2026-11-24 the climate and ESP units were never asked anything).
+        // Never the extended session in a slice: that one is for a parked stage only.
+        val pending = pendingBodyUnits().filter { !it.extended }.sortedBy { unit -> if (bodyProgress[unit.progressKey]?.untouched() != false) 0 else 1 }
         if (pending.isEmpty() || bodyGaveUp) return
         val reader = bodyReader ?: bodyReaderFor(driver).also { bodyReader = it }
         try {
@@ -912,6 +1046,7 @@ public class VehicleSession(
             }
         }
         saveMemory()
+        publishBodyPending()
         if (pendingBodyUnits().isEmpty()) {
             note(SessionEvents.BODY_SCAN, "every body unit is checked: ${bodyAnswered()} identifiers answered")
         }
@@ -1241,6 +1376,27 @@ public class VehicleSession(
     }
 
     /**
+     * Runs the parked stage of the body-unit check again ("run the parked check again"), e.g. after it ended early because the speed could not be
+     * read for a moment. It starts at the next boundary between two stretches of polling, under the same rules as the first stage: the speed
+     * must read 0 (it is asked a few times over about ten seconds first), confirmed movement ends it, the same time cap applies, and only the
+     * identifiers not yet asked are asked. Read-only, as the first stage.
+     *
+     * @return false, and does nothing, when the session is not polling, only listens, the stage runs already, a scan runs, or no unit is pending
+     */
+    public fun restartBodyStage(): Boolean {
+        if (_state.value !is SessionState.Polling) return false
+        if (_captureMode.value == CaptureMode.PASSIVE) return false
+        if (_bodyScan.value is BodyScanState.Running) return false
+        val scan = _scan.value
+        if (scan is ScanState.Starting || scan is ScanState.Running) return false
+        if (candidateChecks == null || pendingBodyUnits().isEmpty()) return false
+        // The driver asks for it: a check given up after failed background slices gets one more chance.
+        bodyGaveUp = false
+        bodyFailures = 0
+        return bodyRequests.trySend(Unit).isSuccess
+    }
+
+    /**
      * Runs the learning ladder again ("scan again"), parked, in place of polling for a while. It also runs on every level, whatever was remembered.
      *
      * @return false, and does nothing, when this car has a definition, the ladder is not configured, or the session is not polling the car
@@ -1434,10 +1590,12 @@ public class VehicleSession(
                 limit = if (slice) config.bodyPacedEvery else null,
                 listenForScan = true,
                 restartScheduler = !afterSlice,
+                bodyWork = slice,
             )
             afterSlice = false
             if (end is PollEnd.TimeUp) {
                 if (noDataSince == null && (lastAnswer?.elapsedNow() ?: Duration.ZERO) < config.silenceWindow / 2) {
+                    resumeSlicesNote("the car no longer moves")
                     runBodySlice(driver)
                     afterSlice = true
                 }
@@ -1461,6 +1619,17 @@ public class VehicleSession(
             }
             if (end is PollEnd.LadderRequested) {
                 runLadder(driver, known.report, again = true)
+                lastAnswer = timeSource.markNow()
+                continue
+            }
+            if (end is PollEnd.BodyRequested) {
+                runBodyStage(driver, again = true)
+                lastAnswer = timeSource.markNow()
+                continue
+            }
+            if (end is PollEnd.AutoBodyStage) {
+                resumeSlicesNote("the car stands still")
+                runBodyStage(driver, auto = true)
                 lastAnswer = timeSource.markNow()
                 continue
             }
@@ -1740,6 +1909,12 @@ public class VehicleSession(
 
         data object LadderRequested : PollEnd
 
+        /** The parked body stage was asked for again ([restartBodyStage]). */
+        data object BodyRequested : PollEnd
+
+        /** The car has stood still long enough for the parked body stage to start by itself ([Config.bodyAutoStageAfter]). */
+        data object AutoBodyStage : PollEnd
+
         /** The time limit that the caller gave passed. */
         data object TimeUp : PollEnd
 
@@ -1759,6 +1934,7 @@ public class VehicleSession(
         limit: Duration? = null,
         listenForScan: Boolean = false,
         restartScheduler: Boolean = true,
+        bodyWork: Boolean = false,
     ): PollEnd = coroutineScope {
         // A silence backs every item off: begin with a clean slate. Not after a pause that only interrupted healthy polling (the body check), which
         // must not make every slow item due again at once.
@@ -1836,6 +2012,14 @@ public class VehicleSession(
                 trouble.complete(PollEnd.LadderRequested)
             }
         }
+        val bodyWatcher = if (!listenForScan) {
+            null
+        } else {
+            launch {
+                bodyRequests.receive()
+                trouble.complete(PollEnd.BodyRequested)
+            }
+        }
         val faultWatcher = if (!listenForScan) {
             null
         } else {
@@ -1849,7 +2033,22 @@ public class VehicleSession(
         } else {
             launch {
                 delay(limit)
+                // A body slice waits while the car moves (polling keeps the adapter), or while it stands and the automatic stage will take over.
+                while (bodyWork && holdSlice()) delay(MOTION_TICK)
                 trouble.complete(PollEnd.TimeUp)
+            }
+        }
+        val autoWatcher = if (!bodyWork || !listenForScan || config.bodyAutoStageAfter == null) {
+            null
+        } else {
+            launch {
+                while (true) {
+                    delay(MOTION_TICK)
+                    if (autoStageDue()) {
+                        trouble.complete(PollEnd.AutoBodyStage)
+                        return@launch
+                    }
+                }
             }
         }
         val reason = trouble.await()
@@ -1859,8 +2058,57 @@ public class VehicleSession(
         captureWatcher?.cancelAndJoin()
         faultWatcher?.cancelAndJoin()
         ladderWatcher?.cancelAndJoin()
+        bodyWatcher?.cancelAndJoin()
         timer?.cancelAndJoin()
+        autoWatcher?.cancelAndJoin()
         reason
+    }
+
+    /** Whether a background body slice that is due waits: the car moves (logged once), or it stands and the automatic stage will start. */
+    private suspend fun holdSlice(): Boolean {
+        val now = sessionStart.elapsedNow()
+        if (config.bodyPauseWhileMoving && motion.moving(now, MOTION_MAX_AGE)) {
+            if (!slicesHeld) {
+                slicesHeld = true
+                val kmh = _telemetry.value.value(SIGNAL_SPEED)?.toInt()
+                note(SessionEvents.BODY_SCAN, "background body check paused: the car moves" + (kmh?.let { " ($it km/h)" } ?: "") + "; polling keeps the adapter")
+            }
+            return true
+        }
+        // Rolling slowly after moving: still held until the speed reads 0 (or no fresh reading says anything).
+        if (slicesHeld && motion.stillFor(now, MOTION_MAX_AGE) == null && motion.fresh(now, MOTION_MAX_AGE)) return true
+        // Standing with the automatic stage on: it takes the adapter (after its cool-down), so no slice cuts into polling meanwhile.
+        return autoBodyOn && !autoSuppressed && config.bodyAutoStageAfter != null && motion.stillFor(now, MOTION_MAX_AGE) != null
+    }
+
+    private suspend fun resumeSlicesNote(why: String) {
+        if (!slicesHeld) return
+        slicesHeld = false
+        note(SessionEvents.BODY_SCAN, "background body check resumed: $why")
+    }
+
+    private fun autoCooledDown(): Boolean = autoStageEndedEarly?.let { it.elapsedNow() >= config.bodyAutoStageCooldown } ?: true
+
+    /** The car has stood still (polled speed 0, the engine unit answering) for [Config.bodyAutoStageAfter], and nothing else holds the adapter. */
+    private fun autoStageDue(): Boolean {
+        val after = config.bodyAutoStageAfter ?: return false
+        if (!autoBodyOn || autoSuppressed || noDataSince != null || !autoCooledDown()) return false
+        if (_captureMode.value != CaptureMode.ACTIVE || _bodyScan.value is BodyScanState.Running) return false
+        val still = motion.stillFor(sessionStart.elapsedNow(), MOTION_MAX_AGE) ?: return false
+        return still >= after && pendingBodyUnits().isNotEmpty()
+    }
+
+    /** Switches the extended-session pass of the instrument cluster on or off ("deeper check of the instrument cluster"); from the next stage. */
+    public fun setClusterExtended(enabled: Boolean) {
+        extendedOn = enabled
+    }
+
+    /**
+     * Switches the automatic parked stage on or off ("check other units automatically when stopped"). Off, the body units are asked only in
+     * the parked stage at the start, when asked for, and in background slices (never while the car moves). Needs [Config.bodyAutoStageAfter].
+     */
+    public fun setAutoBodyStage(enabled: Boolean) {
+        autoBodyOn = enabled && config.bodyAutoStageAfter != null
     }
 
     /** The reason, led by the bus fault the adapter reported meanwhile (if any), which says more than silence does. */
@@ -1895,6 +2143,7 @@ public class VehicleSession(
             val at = sessionStart.elapsedNow()
             readings.forEach { meter.reading(it.signal.id, at) }
             _telemetry.update { it.with(readings, at) }
+            readings.lastOrNull { it.signal.id == SIGNAL_SPEED }?.let { motion.update(it.signal.value, at) }
             if (config.gearCalc && vehicleKnown && readings.any { it.signal.id == SIGNAL_RPM || it.signal.id == SIGNAL_SPEED }) publishGear(at)
             readings.firstOrNull { it.signal.id == SIGNAL_FUEL_LEVEL }?.let { watchFuel(it.signal.value) }
         }
@@ -2039,8 +2288,18 @@ public class VehicleSession(
         const val SIGNAL_RPM = "engine.rpm"
         const val SIGNAL_FUEL_LEVEL = "fuel.level_pct"
         const val SIGNAL_SPEED = "vehicle.speed"
+
+        /** How often the automatic body stage and a held slice look at the polled speed. */
+        val MOTION_TICK = 500.milliseconds
+
+        /** A polled speed older than this says nothing about whether the car moves. */
+        val MOTION_MAX_AGE = 3.seconds
         const val MAX_SAMPLES = 1_000_000
         const val MAX_BODY_FAILURES = 3
+
+        /** When the parked stage is asked for again, the speed is read up to this many times, [RESTART_SPEED_WAIT] apart (about ten seconds). */
+        const val RESTART_SPEED_TRIES = 6
+        val RESTART_SPEED_WAIT: Duration = 2.seconds
         const val DEFAULT_PRIMARY_REQUEST_ID = 0x7E0
         const val VIN_PREFIX_LENGTH = 3
         const val SP_PREFIX_LENGTH = 4

@@ -154,12 +154,13 @@ fun guidedFlow(state: UiState): GuidedFlow {
     val identifyDone = identify.state == StepState.DONE
     val ladder = state.ladder
     val body = state.bodyScan
-    val parkedWork = ladder is LadderProgress.Running || body is BodyScanProgress.Running || state.faults.status == FaultsStatus.READING
+    // A check that started by itself at a red light is not "parked work": the driver is under way and is not asked to wait for it.
+    val parkedWork = ladder is LadderProgress.Running || (body is BodyScanProgress.Running && !body.auto) || state.faults.status == FaultsStatus.READING
     val health = when {
         !identifyDone -> row(GuidedStep.HEALTH_CHECK, StepState.PENDING, StepSentence.HEALTH_LATER)
         ladder is LadderProgress.Running ->
             row(GuidedStep.HEALTH_CHECK, StepState.ACTIVE, StepSentence.HEALTH_LEARNING, arg = ladder.label, fraction = ladder.fraction, canSkip = true)
-        body is BodyScanProgress.Running ->
+        body is BodyScanProgress.Running && !body.auto ->
             row(GuidedStep.HEALTH_CHECK, StepState.ACTIVE, StepSentence.HEALTH_RUNNING, arg = body.label, fraction = body.fraction, canSkip = true)
         state.faults.status == FaultsStatus.READING -> row(GuidedStep.HEALTH_CHECK, StepState.ACTIVE, StepSentence.HEALTH_RUNNING)
         ladder is LadderProgress.Flagged -> row(GuidedStep.HEALTH_CHECK, StepState.DONE, StepSentence.HEALTH_FLAGGED, arg = ladder.reason)

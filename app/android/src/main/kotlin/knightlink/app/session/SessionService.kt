@@ -349,14 +349,18 @@ class SessionService : Service() {
     private suspend fun announceBodyScan() {
         var wasRunning = false
         controller.uiState.map { it.bodyScan }.distinctUntilChanged().collect { progress ->
-            val message = when {
-                wasRunning && progress is BodyScanProgress.Complete -> R.string.bodyscan_spoken_complete
-                wasRunning && progress is BodyScanProgress.Partial -> R.string.bodyscan_spoken_partial
+            // A check that started by itself while the car stood still is silent, start and end: no voice, no notification.
+            if (progress.isAuto) {
+                wasRunning = false
+                return@collect
+            }
+            val text = when {
+                wasRunning && progress is BodyScanProgress.Complete -> applicationContext.getString(R.string.bodyscan_spoken_complete)
+                wasRunning && progress is BodyScanProgress.Partial -> progress.text(applicationContext.resources, spoken = true)
                 else -> null
             }
             wasRunning = progress is BodyScanProgress.Running
-            if (message == null) return@collect
-            val text = applicationContext.getString(message)
+            if (text == null) return@collect
             connectionLog.app("body scan: $text")
             if (!closed) notifications.postScanDone(text)
             if (voiceSettings.settings.value.spokenStatus) speaker.speak(statusUtterance(text))

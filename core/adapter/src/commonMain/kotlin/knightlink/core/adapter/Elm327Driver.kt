@@ -81,6 +81,8 @@ public data class DriverStats(
     val pendingWaits: Int = 0,
     /** Requests whose final answer never came within the pending limits (so the pending answer stands). */
     val pendingGaveUp: Int = 0,
+    /** Commands abandoned by their caller whose late reply had not ended when the next command was due (that one was sent anyway). */
+    val abandonedNotSettled: Int = 0,
 )
 
 /**
@@ -132,6 +134,7 @@ public class Elm327Driver(
      *   answer, which comes without a new request
      * @property pendingRounds how many further replies one request reads while its answer stays "response pending"
      * @property timeSource the clock of [minRequestInterval]
+     * @property abandonedReplyWait how long the next command waits for the prompt of one whose caller was cancelled while it waited for the reply
      */
     public data class Config(
         val commandTimeout: Duration = 3.seconds,
@@ -148,6 +151,7 @@ public class Elm327Driver(
         val pendingTimeout: Duration = 5.seconds,
         val pendingRounds: Int = 3,
         val timeSource: TimeSource = TimeSource.Monotonic,
+        val abandonedReplyWait: Duration = 1.seconds,
     ) {
         init {
             require(commandTimeout > Duration.ZERO) { "commandTimeout must be positive" }
@@ -189,6 +193,9 @@ public class Elm327Driver(
 
     @Volatile
     private var counters = DriverStats()
+
+    /** The last command's caller was cancelled before its reply came: the adapter may still be busy with it. Read and written under [lock]. */
+    private var abandonedReply = false
 
     /** Set once, when the stream ends for any reason. Read under [lock], written by the reader or its completion handler. */
     @Volatile
@@ -322,6 +329,7 @@ public class Elm327Driver(
     public suspend fun monitor(listenFor: Duration, stopTimeout: Duration, until: Deferred<*>? = null): List<String> = lock.withLock {
         ReadOnlyPolicy.monitorViolation(MONITOR_COMMAND)?.let { reason -> throw ReadOnlyViolationException("Refused to send a command: $reason") }
         disconnection?.let { throw it }
+        settleAbandoned()
         discardStale()
         // The adapter forgets nothing it was told, but the next request must not rely on the header it had before monitoring.
         currentHeader = null
@@ -599,10 +607,19 @@ public class Elm327Driver(
         // The writes to the adapter are here and in [monitor]'s stop, so this is where the read-only guarantee is enforced.
         checkAllowed(text, passive, requestId)
         disconnection?.let { throw it }
+        settleAbandoned()
         discardStale()
         val asked = config.timeSource.markNow()
         stream.write((text + "\r").encodeToByteArray())
-        val lines = awaitReply(text, timeout)
+        val lines = try {
+            awaitReply(text, timeout)
+        } catch (e: CancellationException) {
+            // The caller gave up (a polling slice ended, say) while the adapter is still working on this command. Its reply, and its
+            // prompt, will still come; the next command must not be sent into the middle of it (the adapter would answer STOPPED and drop
+            // it) nor take that late reply for its own.
+            abandonedReply = true
+            throw e
+        }
         val took = asked.elapsedNow()
         if (took >= config.slowReply && !text.compact().startsWith("AT")) {
             val count = ++slowReplies
@@ -617,6 +634,28 @@ public class Elm327Driver(
         (if (passive) ReadOnlyPolicy.passiveViolation(text) else ReadOnlyPolicy.violation(text, requestId))?.let { reason ->
             note(SessionEvents.INIT_STEP, "refused (read-only): $reason")
             throw ReadOnlyViolationException("Refused to send a command: $reason")
+        }
+    }
+
+    /**
+     * After a command whose caller was cancelled while it waited, waits (at most [Config.abandonedReplyWait]) for that command's prompt, so the
+     * adapter is idle again before the next command goes out; [discardStale] then drops the late reply. An adapter that never finishes
+     * is no worse off than before: the next command then meets the STOPPED resend.
+     */
+    private suspend fun settleAbandoned() {
+        if (!abandonedReply) return
+        val late = withTimeoutOrNull(config.abandonedReplyWait) { responses.receiveCatching() }
+        // Only now: a caller cancelled during this wait leaves it to the next command.
+        abandonedReply = false
+        if (late == null) {
+            counters = counters.copy(abandonedNotSettled = counters.abandonedNotSettled + 1)
+            if (shouldLog(counters.abandonedNotSettled)) {
+                note(SessionEvents.RESEND, "the reply to an abandoned command did not end within ${config.abandonedReplyWait}")
+            }
+        } else {
+            late.getOrNull()?.let { lines ->
+                if (lines.any { it.contains(BANNER, ignoreCase = true) || isLowVoltageReset(it) }) unsolicitedReset = true
+            }
         }
     }
 

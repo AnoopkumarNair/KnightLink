@@ -346,12 +346,19 @@ internal class GattLink(
             val gatt = checkNotNull(gattRef.get()) { "write before connect" }
             val route = checkNotNull(route) { "write before the serial channel was resolved" }
             var handedOver = false
+            var completed = false
             try {
-                for (chunk in chunks) {
-                    ensureOpen()
-                    withTimeoutOrNull(config.writeTimeout) {
-                        retrier.run { attempt(gatt, route, chunk) { handedOver = true } }
-                    } ?: throw TransportException("Writing to the adapter timed out after ${config.writeTimeout}; the link is assumed lost.")
+                // Not cancellable: a caller that is cancelled mid-write (a polling slice ending, say) would leave a half-sent command and an
+                // unacknowledged operation, which costs the whole link. The write is short and bounded by the timeout, so it is finished first
+                // and the cancellation is seen at the caller's next suspension.
+                withContext(NonCancellable) {
+                    for (chunk in chunks) {
+                        ensureOpen()
+                        withTimeoutOrNull(config.writeTimeout) {
+                            retrier.run { attempt(gatt, route, chunk) { handedOver = true } }
+                        } ?: throw TransportException("Writing to the adapter timed out after ${config.writeTimeout}; the link is assumed lost.")
+                    }
+                    completed = true
                 }
             } catch (e: TransportException) {
                 // The Android status code is in the message; the queue state says whether something else was in flight (a leaked operation).
@@ -364,8 +371,9 @@ internal class GattLink(
                 finish(e)
                 throw e
             } catch (e: CancellationException) {
-                // The same holds if the writer is cancelled after bytes were handed over (or are awaiting their acknowledgement).
-                if (handedOver) finish(TransportException("Writing to the adapter was interrupted, so the link was abandoned."))
+                // The write itself cannot be cancelled any more, so this is the caller's cancellation seen as the write returns (the command
+                // went out whole: the link is fine) or before it began. Only a write cut off half-way would cost the link.
+                if (handedOver && !completed) finish(TransportException("Writing to the adapter was interrupted, so the link was abandoned."))
                 throw e
             }
         }

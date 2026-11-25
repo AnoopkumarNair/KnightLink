@@ -64,19 +64,34 @@ class ReadOnlyGuardTest {
     @Test
     fun everyOtherServiceThatChangesStateStaysRefusedEvenForABodyUnit() {
         val refused = listOf(
-            "1003", "1002", "1004", "100301", "100101", "10", // other sessions, extra bytes, no sub-function
-            "3E00", "3E80", // tester present
+            "1002", "1004", "100301", "100101", "10", // other sessions, extra bytes, no sub-function
+            "3E80", "3E", "3E0000", // tester present other than exactly 3E 00
             "2701", "2702", // security access
             "2EF19000", // write data by identifier
             "310100FF", // routine control
             "1101", "1103", // ECU reset
             "14FFFFFF", // clear DTC information
-            "2803", "2F123403", "3400", "3D00", "8502", "04", "0800",
+            "2803", "2F123403", "3400", "3500", "3600", "3700", "3D00", "8502", "04", "0800",
         )
         for (request in refused) {
             assertNotNull(ReadOnlyPolicy.violation(request, 0x700), "$request to 700")
             assertNotNull(ReadOnlyPolicy.violation(request, 0x7E0), "$request to 7E0")
         }
+    }
+
+    @Test
+    fun theExtendedSessionAndTesterPresentAreAllowedOnlyForTheInstrumentCluster() {
+        assertNull(ReadOnlyPolicy.violation("1003", 0x700))
+        assertNull(ReadOnlyPolicy.violation("10031", 0x700), "with the response count")
+        assertNull(ReadOnlyPolicy.violation("3E00", 0x700))
+        assertNull(ReadOnlyPolicy.violation("3E001", 0x700))
+        // Every other unit: engine (7E0), ESP (750), airbag (737/772), body controller (701), head unit, climate, functional address.
+        for (id in listOf(0x7E0, 0x7E1, 0x7DF, 0x701, 0x703, 0x705, 0x737, 0x750, 0x772, 0x708, 0x7FF)) {
+            assertNotNull(ReadOnlyPolicy.violation("1003", id), "10 03 to ${id.toString(16)}")
+            assertNotNull(ReadOnlyPolicy.violation("3E00", id), "3E 00 to ${id.toString(16)}")
+        }
+        assertNotNull(ReadOnlyPolicy.violation("1003"), "a raw command has no address")
+        assertNotNull(ReadOnlyPolicy.violation("3E00"), "a raw command has no address")
     }
 
     @Test
@@ -199,9 +214,13 @@ class ReadOnlyGuardTest {
         val adapter = adapter()
         val driver = driver(adapter)
         for (id in listOf(0x700, 0x7E0)) {
-            for (payload in listOf("1002", "1003", "3E00", "2701", "2EF19000", "310100FF", "1101", "14FFFFFF")) {
+            for (payload in listOf("1002", "2701", "2EF19000", "310100FF", "1101", "14FFFFFF")) {
                 assertFailsWith<ReadOnlyViolationException> { driver.request(id, payload.hexToBytes(), expectedResponses = null) }
             }
+        }
+        for (payload in listOf("1003", "3E00")) {
+            assertFailsWith<ReadOnlyViolationException> { driver.request(0x7E0, payload.hexToBytes(), expectedResponses = null) }
+            assertFailsWith<ReadOnlyViolationException> { driver.request(0x701, payload.hexToBytes(), expectedResponses = null) }
         }
         assertFailsWith<ReadOnlyViolationException> { driver.request(0x7E0, "1001".hexToBytes(), expectedResponses = 1) }
         assertFailsWith<ReadOnlyViolationException> { driver.command("1001") }

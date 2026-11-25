@@ -90,17 +90,23 @@ class DidSweepFileTest {
     fun theHarrierCandidateFileIsValidAndAsksTheBodyUnits() {
         val file = File(System.getProperty("knightlink.repoRoot"), "definitions/discovery/candidates/tata/harrier-2020-kryotec-at.json")
         val checks = CandidateChecks.parse(file.readText())
-        assertEquals(listOf("700", "701", "703", "705", "750"), checks.checks.map { it.requestId })
+        assertEquals(listOf("700", "700", "701", "703", "705", "750"), checks.checks.map { it.requestId })
+        assertTrue(checks.checks.first().extended && checks.checks.drop(1).none { it.extended }, "only the cluster has the extended-session pass")
+        val normal = checks.checks.filterNot { it.extended }
         assertTrue(checks.checks.all { it.unprobed }, "none of the body units is in the OBD probe")
-        assertTrue(checks.checks.all { check -> (0xF180..0xF1FF).all { it in check.identifiers() } }, "F180-F1FF on every unit")
-        val cluster = checks.checks.single { it.requestId == "700" }.identifiers()
-        assertTrue(0xF190 in cluster && 0x0100 in cluster && 0x01FF in cluster && 0xDD00 in cluster && 0xDDFF in cluster)
-        assertEquals(0x80 * 5 + 0x100 * 2, checks.checks.sumOf { it.identifiers().size })
-        assertTrue(checks.checks.sumOf { it.identifiers().size } <= CandidateChecks.MAX_IDENTIFIERS)
+        assertTrue(normal.drop(1).all { check -> (0xF180..0xF1FF).all { it in check.identifiers() } }, "F180-F1FF on every other unit")
+        val cluster = normal.single { it.requestId == "700" }.identifiers()
+        // v2: only identifiers v1 did not ask (v1 asked F180-F1FF, 0100-01FF, DD00-DDFF and found no odometer), the OBD mirror F4xx first.
+        assertTrue(0xF4A6 in cluster && 0xD1FF in cluster && 0x0200 in cluster && 0x10FF in cluster && 0x20FF in cluster)
+        assertTrue(cluster.none { it in 0xF180..0xF1FF || it in 0x0100..0x01FF || it in 0xDD00..0xDDFF }, "nothing v1 asked already")
+        assertEquals(0xF400, cluster.first())
+        assertEquals("discovery/candidates/tata/harrier-2020-kryotec-at", checks.continues, "the other units keep their progress")
+        assertEquals(0x80 * 4 + 1536, normal.sumOf { it.identifiers().size })
+        assertTrue(normal.sumOf { it.identifiers().size } <= CandidateChecks.MAX_IDENTIFIERS)
         assertEquals(listOf("MAT"), checks.appliesTo, "only for the Tata manufacturer code, as the vehicle definition's wmi")
         assertTrue(checks.appliesTo("MAT123456789") && !checks.appliesTo("SIM123") && !checks.appliesTo(null))
-        assertEquals(0x708, checks.checks.first().responseCanId)
-        assertEquals(listOf(128, 256, 256), checks.checks.first().groups().map { it.size })
+        assertEquals(0x708, normal.first().responseCanId)
+        assertEquals(listOf(256, 512, 256, 256, 256), normal.first().groups().map { it.size })
     }
 
     @Test
