@@ -2,6 +2,10 @@ package knightlink.app.data
 
 import knightlink.app.ui.voice.ThemePack
 import knightlink.core.adapter.AdapterDefinition
+import knightlink.core.rules.PhraseBook
+import knightlink.core.rules.PhraseException
+import knightlink.core.rules.RulesConfig
+import knightlink.core.rules.RulesConfigException
 import knightlink.core.scan.CandidateChecks
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.FaultCodeDictionary
@@ -185,6 +189,41 @@ class DefinitionStore(private val assets: AssetSource) {
         return ThemePack.parse(read(assets, "$DEFINITIONS_ROOT/${checked(id)}.json"), id)
     }
 
+    /**
+     * Deterministic safety rules for vehicle definition [vehicleId] (`definitions/rules/<vehicle>.json`, stripping `vehicles/`),
+     * or null when no rules file exists for that vehicle.
+     *
+     * @throws DefinitionStoreException if the file exists and is invalid.
+     */
+    fun rules(vehicleId: String): RulesConfig? {
+        val path = "$DEFINITIONS_ROOT/$RULES_DIRECTORY/${checked(vehicleId).removePrefix(VEHICLES_PREFIX)}$JSON"
+        val text = try {
+            assets.open(path)
+        } catch (_: IOException) {
+            return null
+        }
+        return try {
+            RulesConfig.parse(text)
+        } catch (e: RulesConfigException) {
+            throw DefinitionStoreException("Invalid rules file '$path': ${e.message}", e)
+        }
+    }
+
+    /**
+     * Spoken phrase templates for [language] (`definitions/phrases/<language>.json`).
+     *
+     * @throws DefinitionStoreException if the file is missing or invalid.
+     */
+    fun phrases(language: String = DEFAULT_PHRASE_LANGUAGE): PhraseBook {
+        val path = "$DEFINITIONS_ROOT/$PHRASES_DIRECTORY/${checked(language)}$JSON"
+        val text = read(assets, path)
+        return try {
+            PhraseBook.parse(text)
+        } catch (e: PhraseException) {
+            throw DefinitionStoreException("Invalid phrase book '$path': ${e.message}", e)
+        }
+    }
+
     private fun definition(id: String): DefinitionFile {
         val text = read(assets, "$DEFINITIONS_ROOT/${checked(id)}.json")
         return try {
@@ -222,6 +261,9 @@ class DefinitionStore(private val assets: AssetSource) {
         private const val SWEEP_PLAN = "discovery/did-sweep"
         private const val SEED_DIRECTORY = "discovery/seed"
         private const val CANDIDATES_DIRECTORY = "discovery/candidates"
+        private const val RULES_DIRECTORY = "rules"
+        private const val PHRASES_DIRECTORY = "phrases"
+        private const val DEFAULT_PHRASE_LANGUAGE = "en"
         private const val STANDARD_DEFINITION = "standard/sae-j1979-mode01"
         private const val WMI_FILE = "identity/wmi"
         private const val MODELS_FILE = "identity/models"

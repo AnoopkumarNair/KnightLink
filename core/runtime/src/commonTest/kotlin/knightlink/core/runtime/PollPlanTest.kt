@@ -2,6 +2,8 @@ package knightlink.core.runtime
 
 import knightlink.core.scheduler.PollItem
 import knightlink.core.signals.CompiledParameter
+import knightlink.core.signals.DefinitionJson
+import knightlink.core.signals.SignalCatalog
 import knightlink.core.vehicle.AdapterInfo
 import knightlink.core.vehicle.CapabilityReport
 import knightlink.core.vehicle.DefinitionCoverage
@@ -115,5 +117,51 @@ class PollPlanTest {
         val items = plan(ecu("7E5", "7ED", "0C"), primary = "ecm")
         assertEquals(listOf("7E5 010C"), items.summary())
         assertEquals("7E5:010C", items.single().id)
+    }
+
+    @Test
+    fun confirmedUdsPollItemsIncludesVerifiedService22AndSkipsInferred() {
+        val udsDef = DefinitionJson.parse(
+            """
+            {
+              "schemaVersion": 1,
+              "id": "vehicles/test/uds",
+              "kind": "vehicle",
+              "title": "Test UDS",
+              "ecus": [
+                { "id": "tcm", "name": "Gearbox", "requestId": "7E1", "responseId": "7E9" }
+              ],
+              "parameters": [
+                {
+                  "service": "22",
+                  "pid": "1E12",
+                  "ecu": "tcm",
+                  "length": 1,
+                  "provenance": "verified",
+                  "signals": [{ "id": "transmission.gear", "unit": "", "formula": "A" }]
+                },
+                {
+                  "service": "22",
+                  "pid": "1E1F",
+                  "ecu": "tcm",
+                  "length": 2,
+                  "provenance": "inferred",
+                  "signals": [{ "id": "transmission.atf_temp", "unit": "C", "formula": "A - 40" }]
+                }
+              ]
+            }
+            """.trimIndent(),
+        )
+        val udsCatalog = SignalCatalog.of(listOf(udsDef))
+        val report = CapabilityReport(
+            adapter = AdapterInfo(null, null, null, null, null),
+            timing = Timing(0.0, 0, null, null),
+            ecus = listOf(ecu("7E1", "7E9", "30")),
+            derived = DerivedFacts.of(listOf(ecu("7E1", "7E9", "30"))),
+        )
+        val items = confirmedUdsPollItems(udsCatalog, report, primaryEcu = "tcm") { 1.seconds }
+        assertEquals(listOf("7E1 221E12"), items.summary())
+        assertEquals("tcm:221E12", items.single().id)
+        assertEquals(1, items.single().expectedResponses)
     }
 }

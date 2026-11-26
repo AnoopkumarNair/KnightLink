@@ -176,7 +176,13 @@ class FindingsExportTest {
             FindingsExport.write(file, input(), sessionRecording(), scan)
             val texts = zipTexts(file)
             assertEquals(
-                setOf(FindingsExport.README_FILE, FindingsExport.CAPABILITIES_FILE, FindingsExport.DEFINITION_FILE, FindingsExport.RECORDING_FILE, FindingsExport.SCAN_FILE),
+                setOf(
+                    FindingsExport.README_FILE,
+                    FindingsExport.CAPABILITIES_FILE,
+                    FindingsExport.DEFINITION_FILE,
+                    FindingsExport.RECORDING_FILE,
+                    FindingsExport.SCAN_FILE,
+                ),
                 texts.keys,
             )
             val vinTail = fullVin.drop(3)

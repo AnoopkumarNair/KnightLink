@@ -15,11 +15,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -44,6 +46,10 @@ import knightlink.app.session.UiState
 import knightlink.app.ui.design.KlColors
 import knightlink.app.ui.design.KlSpacing
 import knightlink.app.ui.design.QuietButton
+import knightlink.app.voice.PushToTalkState
+import knightlink.core.rules.DpfPhase
+import knightlink.core.rules.RulesState
+import knightlink.core.rules.SwitchOffAdvice
 
 private enum class Tab { SCAN, CAR, FAULTS, LIVE }
 
@@ -66,6 +72,7 @@ fun HomeScreen(
     voice: VoiceActions = VoiceActions.Unavailable,
     talk: TalkActions = TalkActions.NONE,
     app: AppActions = AppActions(),
+    ai: AiActions = AiActions(),
 ) {
     var tab by rememberSaveable { mutableStateOf(Tab.SCAN) }
     var page by rememberSaveable { mutableStateOf(Page.TABS) }
@@ -97,19 +104,63 @@ fun HomeScreen(
             )
         },
         bottomBar = { if (page == Page.TABS) TabBar(tab, state) { tab = it } },
+        floatingActionButton = { if (page == Page.TABS && talk.onDevice) AskSaathiFab(talk, voice.activePersonaName) },
     ) { inner ->
         val content = Modifier.padding(inner).let { if (page == Page.TABS) it else it.navigationBarsPadding() }
         when (page) {
-            Page.TABS -> when (tab) {
-                Tab.SCAN -> ScanScreen(state, lastAdapter, actions, app, content)
-                Tab.CAR -> SummaryScreen(state, app, requestShare, content)
-                Tab.FAULTS -> FaultsScreen(state, actions.onRefreshFaults, content)
-                Tab.LIVE -> LiveScreen(state, content, actions)
+            Page.TABS -> Column(content.fillMaxSize()) {
+                RulesAlertBanner(state.rules)
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    when (tab) {
+                        Tab.SCAN -> ScanScreen(state, lastAdapter, actions, app, Modifier.fillMaxSize())
+                        Tab.CAR -> SummaryScreen(state, app, requestShare, Modifier.fillMaxSize())
+                        Tab.FAULTS -> FaultsScreen(state, actions.onRefreshFaults, Modifier.fillMaxSize())
+                        Tab.LIVE -> LiveScreen(state, Modifier.fillMaxSize(), actions)
+                    }
+                }
             }
-            Page.SETTINGS -> SettingsScreen(state, actions, app, driveData, voice, talk, requestShare, { page = Page.DEVELOPER }, content)
+            Page.SETTINGS -> SettingsScreen(state, actions, app, driveData, voice, talk, ai, requestShare, { page = Page.DEVELOPER }, content)
             Page.DEVELOPER ->
                 DeveloperScreen(state, recordings, lastAdapter, actions, onShareLatest, onShareLog, content, driveData, voice, talk)
         }
+    }
+}
+
+@Composable
+private fun AskSaathiFab(talk: TalkActions, personaName: String) {
+    val listening = talk.state is PushToTalkState.Listening
+    ExtendedFloatingActionButton(
+        onClick = talk.onTalk,
+        containerColor = if (listening) KlColors.Attention else KlColors.Accent,
+        contentColor = KlColors.OnAccent,
+    ) {
+        Text(
+            text = if (listening) stringResource(R.string.voice_listening_short) else stringResource(R.string.ask_persona, personaName),
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
+}
+
+@Composable
+private fun RulesAlertBanner(rules: RulesState?) {
+    if (rules == null) return
+    val message = when {
+        rules.alerts.isNotEmpty() -> "${rules.alerts.first().priority.name}: ${rules.alerts.first().phrase.key}"
+        rules.dpf.phase == DpfPhase.REGEN_ACTIVE -> stringResource(R.string.rule_dpf_regen_active)
+        rules.switchOff is SwitchOffAdvice.NotYet -> stringResource(R.string.rule_cooldown_wait)
+        else -> null
+    } ?: return
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = KlSpacing.Gutter, vertical = KlSpacing.Xs),
+        color = KlColors.Attention.copy(alpha = 0.16f),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Text(
+            text = message,
+            color = KlColors.Attention,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = KlSpacing.M, vertical = KlSpacing.S),
+        )
     }
 }
 

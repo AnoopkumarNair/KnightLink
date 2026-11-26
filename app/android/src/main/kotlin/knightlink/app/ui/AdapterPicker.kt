@@ -35,6 +35,7 @@ import knightlink.app.ble.PickerState
 import knightlink.app.ble.ScanResults
 import knightlink.app.ble.pickerStates
 import knightlink.platform.ble.DiscoveredAdapter
+import knightlink.platform.spp.BondedSppDevice
 import kotlinx.coroutines.flow.Flow
 
 private val LIST_MAX_HEIGHT = 320.dp
@@ -53,26 +54,40 @@ fun AdapterPickerDialog(
     bluetoothIsOff: () -> Boolean,
     onEnableBluetooth: () -> Unit,
     onPick: (DiscoveredAdapter) -> Unit,
+    bondedSpp: () -> List<BondedSppDevice> = { emptyList() },
+    onPickSpp: (BondedSppDevice) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     var run by remember { mutableIntStateOf(0) }
     val state by produceState<PickerState>(PickerState.Scanning(ScanResults()), run) {
         pickerStates(scan()).collect { value = it }
     }
+    val sppDevices = remember(run) { bondedSpp() }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.picker_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 PickerStatus(state)
-                if (state.results.adapters.isNotEmpty()) {
+                if (state.results.adapters.isNotEmpty() || sppDevices.isNotEmpty()) {
                     Text(stringResource(R.string.picker_tap_hint), style = MaterialTheme.typography.bodyMedium)
                 }
                 if (state is PickerState.Failed && bluetoothIsOff()) {
                     TextButton(onClick = onEnableBluetooth) { Text(stringResource(R.string.picker_enable_bluetooth)) }
                 }
                 LazyColumn(Modifier.heightIn(max = LIST_MAX_HEIGHT)) {
-                    items(state.results.adapters, key = { it.address }) { adapter -> AdapterRow(adapter, onClick = { onPick(adapter) }) }
+                    items(state.results.adapters, key = { "ble:${it.address}" }) { adapter -> AdapterRow(adapter, onClick = { onPick(adapter) }) }
+                    if (sppDevices.isNotEmpty()) {
+                        item(key = "spp-header") {
+                            Text(
+                                stringResource(R.string.picker_spp_section),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                            )
+                        }
+                        items(sppDevices, key = { "spp:${it.address}" }) { device -> SppAdapterRow(device, onClick = { onPickSpp(device) }) }
+                    }
                 }
             }
         },
@@ -123,6 +138,32 @@ private fun AdapterRow(adapter: DiscoveredAdapter, onClick: () -> Unit) {
             )
             Text(
                 stringResource(R.string.picker_signal, adapter.rssi),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Button(onClick = onClick) { Text(stringResource(R.string.picker_connect)) }
+    }
+}
+
+@Composable
+private fun SppAdapterRow(device: BondedSppDevice, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(device.name, style = MaterialTheme.typography.titleSmall)
+            Text(
+                device.address,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(R.string.picker_spp_badge),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

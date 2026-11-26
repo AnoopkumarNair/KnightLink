@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.semantics
 import knightlink.app.R
 import knightlink.app.ble.LastAdapter
 import knightlink.app.session.CarProfile
+import knightlink.app.session.ConnectionStatus
 import knightlink.app.session.FuelType
 import knightlink.app.session.GarageStatus
 import knightlink.app.session.GuidedStep
@@ -127,7 +128,11 @@ fun ScanScreen(
             )
         }
 
-        if (!idle) ParkedCheckCard(state, actions.onRunParkedCheckAgain, actions.onSkipLadder)
+        val linkConnecting = state.connection is ConnectionStatus.Connecting ||
+            state.connection == ConnectionStatus.Initialising ||
+            state.connection is ConnectionStatus.Reconnecting ||
+            state.connection is ConnectionStatus.Recovering
+        if (!idle && !linkConnecting) ParkedCheckCard(state, actions.onRunParkedCheckAgain, actions.onSkipLadder)
 
         if (idle) {
             IdleActions(lastAdapter, actions, app.demo)

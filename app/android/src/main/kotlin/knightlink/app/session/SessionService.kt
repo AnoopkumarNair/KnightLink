@@ -25,9 +25,11 @@ import knightlink.app.R
 import knightlink.app.SharedPreferencesStringStore
 import knightlink.app.data.AndroidAssetSource
 import knightlink.app.data.AppConfig
+import knightlink.app.data.AssetSource
 import knightlink.app.data.DashboardStore
 import knightlink.app.data.DefinitionStore
 import knightlink.app.data.DefinitionStoreException
+import knightlink.app.data.OverlayAssetSource
 import knightlink.app.text
 import knightlink.app.voice.AndroidSpeechEngine
 import knightlink.app.voice.ConnectionAnnouncer
@@ -36,11 +38,15 @@ import knightlink.app.voice.KnightVoicePlayer
 import knightlink.app.voice.VoiceSettingsStore
 import knightlink.app.voice.statusUtterance
 import knightlink.app.voice.text
+import knightlink.core.rules.AlertPriority
 import knightlink.core.runtime.VehicleSession
 import knightlink.platform.ble.BleTransport
+import knightlink.platform.spp.SppTransport
+import knightlink.voice.api.Priority
 import knightlink.voice.api.QueuedSpeaker
 import knightlink.voice.api.Speaker
 import knightlink.voice.api.SpeechState
+import knightlink.voice.api.Utterance
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -89,7 +95,7 @@ class SessionService : Service() {
     private val binder = LocalBinder()
     private lateinit var controller: SessionController
     private lateinit var notifications: SessionNotifications
-    private lateinit var assets: AndroidAssetSource
+    private lateinit var assets: AssetSource
     private lateinit var connectionLog: ConnectionLog
     lateinit var knightPackManager: KnightPackManager
         private set
@@ -120,10 +126,14 @@ class SessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        assets = AndroidAssetSource(applicationContext.assets)
+        assets = OverlayAssetSource(
+            java.io.File(applicationContext.filesDir, "packs"),
+            AndroidAssetSource(applicationContext.assets),
+        )
         connectionLog = ConnectionLog.of(connectionLogDirectory(applicationContext))
         val store = DefinitionStore(assets)
         val memoryStore = FileVehicleMemoryStore(applicationContext)
+        val twinStore = FileCarTwinStore(applicationContext)
         controller = SessionController(
             scope = scope,
             config = { AppConfig.load(assets) },
@@ -132,6 +142,7 @@ class SessionService : Service() {
                 demo = DemoTransportFactory(scenario = store::simulation),
                 adapter = { store.adapter(AppConfig.load(assets).adapterDefinition) },
                 ble = { address, profile -> BleTransport(applicationContext, address, profile) },
+                spp = { address -> SppTransport(applicationContext, address) },
             ),
             recordings = FileRecordSinkFactory(RecordingStore(recordingsDirectory(applicationContext))),
             connectionLog = connectionLog,
@@ -143,6 +154,7 @@ class SessionService : Service() {
                 SharedPreferencesStringStore(applicationContext.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)),
             ),
             settings = SharedPreferencesStringStore(applicationContext.getSharedPreferences(SharedPreferencesStringStore.FILE, Context.MODE_PRIVATE)),
+            carTwinStore = twinStore,
         )
         notifications = SessionNotifications(this)
         knightPackManager = KnightPackManager(applicationContext)
@@ -167,6 +179,17 @@ class SessionService : Service() {
                     startLink(ConnectionTarget.Ble(address))
                 } else {
                     connectionLog.app("service: the start command had no adapter address")
+                    rejectForegroundStart()
+                }
+            }
+            ACTION_START_SPP -> {
+                Log.i(TAG, "Classic Bluetooth SPP start command received")
+                connectionLog.app("service: Classic Bluetooth SPP start command received")
+                val address = intent.getStringExtra(EXTRA_ADDRESS)?.takeIf { it.isNotBlank() }
+                if (address != null) {
+                    startLink(ConnectionTarget.Spp(address))
+                } else {
+                    connectionLog.app("service: the SPP start command had no adapter address")
                     rejectForegroundStart()
                 }
             }
@@ -338,9 +361,28 @@ class SessionService : Service() {
             announce = { speaker.speak(statusUtterance(it.text(applicationContext.resources))) },
         )
         scope.launch { announcer.collect(controller.uiState.map { it.connection }.distinctUntilChanged()) }
+        scope.launch { announceRules() }
         scope.launch { announceBodyScan() }
         scope.launch { announceDrive() }
         scope.launch { announceTwinReady() }
+    }
+
+    /** Speaks deterministic safety alerts from [RulesEngine] (CRITICAL/WARNING always, ADVISORY/INFO when spoken status is on). */
+    private suspend fun announceRules() {
+        controller.rulesAnnouncements.collect { ann ->
+            val packLine = knightPackManager.getActivePack()?.dialogue?.get(ann.id)?.takeIf { it.isNotBlank() }
+            val spokenText = packLine ?: ann.text
+            connectionLog.app("rule alert [${ann.priority}]: $spokenText")
+            val priority = when (ann.priority) {
+                AlertPriority.CRITICAL -> Priority.CRITICAL
+                AlertPriority.WARNING -> Priority.ALERT
+                AlertPriority.ADVISORY, AlertPriority.INFO -> {
+                    if (!voiceSettings.settings.value.spokenStatus) return@collect
+                    Priority.STATUS
+                }
+            }
+            speaker.speak(Utterance(spokenText, priority, "alert.${ann.id}"))
+        }
     }
 
     /** Notifies the driver once per session when parked + drive data is sufficient to export the digital twin bundle. */
@@ -463,6 +505,7 @@ class SessionService : Service() {
         private const val TAG = "SessionService"
         private const val ACTION_START_DEMO = "knightlink.app.action.START_DEMO"
         private const val ACTION_START_BLE = "knightlink.app.action.START_BLE"
+        private const val ACTION_START_SPP = "knightlink.app.action.START_SPP"
         private const val ACTION_DISCONNECT = "knightlink.app.action.DISCONNECT"
         private const val EXTRA_ADDRESS = "knightlink.app.extra.ADDRESS"
         private const val NOTIFICATION_INTERVAL_MS = 1000L
@@ -480,6 +523,10 @@ class SessionService : Service() {
          */
         fun startBleIntent(context: Context, address: String): Intent =
             Intent(context, SessionService::class.java).setAction(ACTION_START_BLE).putExtra(EXTRA_ADDRESS, address)
+
+        /** Starts a Classic Bluetooth (SPP) session with the adapter at [address]. */
+        fun startSppIntent(context: Context, address: String): Intent =
+            Intent(context, SessionService::class.java).setAction(ACTION_START_SPP).putExtra(EXTRA_ADDRESS, address)
 
         fun disconnectIntent(context: Context): Intent = Intent(context, SessionService::class.java).setAction(ACTION_DISCONNECT)
 

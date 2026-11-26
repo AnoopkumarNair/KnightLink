@@ -1,6 +1,7 @@
 package knightlink.app.session
 
 import knightlink.app.data.DashboardReadings
+import knightlink.core.rules.RulesState
 import knightlink.core.runtime.BodyOutcome
 import knightlink.core.runtime.BodyScanState
 import knightlink.core.runtime.CannotReadReason
@@ -92,6 +93,8 @@ data class UiState(
     val twinReady: Boolean = false,
     /** Drive mode labels supported by this car (from its vehicle definition); empty when the car has none. */
     val driveModes: List<String> = emptyList(),
+    /** Deterministic safety rules state (DPF, cooldown, active alerts); null when no rules file applies or not connected. */
+    val rules: RulesState? = null,
     /** An error nothing else handled in this run (class and message), for a plain line on screen; null when there was none. */
     val internalError: String? = null,
 ) {

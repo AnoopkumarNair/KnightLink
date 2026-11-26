@@ -193,8 +193,11 @@ How it works now: `BleAdvertisementListener` runs a balanced-mode scan with one 
   - `BodyUnitReader` now reports overall `done / total` across all pending body units so the progress bar moves monotonically.
   - Real Harrier run proved `700` extended (`10 03`) refuses all 860 candidate DIDs (saved `done` in `VehicleMemory`) and captured `701` `19 02 FF` + `F180`/`F181`/`F184`; 5 remaining Harrier body units will finish automatically on future drives.
 - **Device & test state:** `./gradlew jvmTest :app:android:testDebugUnitTest :app:android:assembleDebug :tools:archtest:test --no-daemon -q` passes; updated debug APK installed in-place on S25 Ultra (`RZCY11YWNXP`).
-- **Next for app dev (new session):**
-  1. Implement the persistent **Car Twin** store + typed `Twin API` (`docs/ARCHITECTURE_TWIN.md`).
-  2. Add **AI Mode selector** (`No AI` / `Local AI` / `Cloud AI` / `Hybrid AI`), **KnightPack** shared `knightpack-events.json` mapping (`PhraseKeys` <-> `car_dialogue.json`), and sideload picker for `D:\Projects\KnightPack Studio`.
-  3. Add **Offline pack sync** (`files/packs/` override in `DefinitionStore`), **Expense/Fuel ledger**, and **Trend alerts** (DPF soot, 12V cranking/resting voltage, alternator, cooling).
-  4. Note one pre-existing ktlint line-length warning in `app/android/src/test/.../DashboardReadingsTest.kt:58`.
+- **Next for v1.0 Production Roadmap (locked 2026-11-25, see `docs/PLAN.md`):**
+  - Target: Android-only v1.0 (KMP `core/*` kept iOS-compatible on CI), 100% offline-first with v1.1 community hooks, Play Internal/Closed Beta + sideloaded APK, original default pack **`Saathi`** (no trademarked assets in shipped builds).
+  - **Stage 1 (Safety & Release Hygiene):** Wire `:core:rules` into `SessionController`/`SessionService`; genericize VoiceBox archetypes (`BarMeterVoiceBox`, `RingHudVoiceBox`, `DualVuVoiceBox`); remove `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`; configure `proguard-rules.pro` + release R8 verification; fix `DashboardReadingsTest.kt:58` ktlint warning. (Note: `WAKE_LOCK_CEILING_MS` in `SessionService` is 12 h; `LiteRT-LM` is scheduled for Stage 4 on-demand download, not bundled.)
+  - **Stage 2 (Car Twin & Unified Scan):** Persistent `CarTwin` + `TwinApi`, fast-connect (3–5 s "just start driving") + opportunistic background discovery, `Service 22` decoding, `files/packs/` override.
+  - **Stage 3 (SPP + Adapter Quirks + Field Runs):** `:platform:spp-android` for Classic Bluetooth ELM327 v2.1 clones, capability fallback, `CapabilityProbe` timeout, TPMS verification, real-car runs.
+  - **Stage 4 (`Saathi` Voice & Hybrid AI):** Bundle `Saathi.knightpack`, `PhraseKeys` <-> `car_dialogue.json`, Push-to-Talk, AI Mode selector (`No AI` / `Local` / `Cloud` / `Hybrid`) with `TelemetryFactGuard`.
+  - **Stage 5 (Insights & Arrival):** Expense/Fuel ledger, Trend alerts, M4 Arrival Engine.
+  - **Stage 6 (Play Beta Hardening):** Privacy policy, Data Safety, opt-in scrubbed diagnostics, thermal/soak pass, Play Internal Testing.

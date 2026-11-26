@@ -46,7 +46,8 @@ class DemoTransportFactory(
         is ConnectionTarget.Demo ->
             DemoTransport(scenario(target.scenarioId), VirtualElm327.Config(responseDelay = responseDelay), restartAfter)
                 .also { lastTransport = it }
-        is ConnectionTarget.Ble -> throw UnsupportedOperationException("Bluetooth support is not built in yet")
+        is ConnectionTarget.Ble, is ConnectionTarget.Spp ->
+            throw UnsupportedOperationException("Bluetooth support is not built in yet")
     }
 }
 

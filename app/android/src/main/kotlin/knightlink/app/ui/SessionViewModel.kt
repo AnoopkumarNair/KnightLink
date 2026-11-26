@@ -64,6 +64,8 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     val knightVoicePlayer: StateFlow<KnightVoicePlayer?> = connection.knightVoicePlayer
     val activePack: StateFlow<InstalledKnightPack?> = connection.activePack
 
+    fun refreshActivePack(preferredPersonaId: String? = null) = connection.refreshActivePack(preferredPersonaId)
+
     val recordings = RecordingStore(SessionService.recordingsDirectory(application))
 
     /** The rolling text log of connection attempts; the same instance the service writes to. */
@@ -240,6 +242,10 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             _knightPackManager.value = packMgr
             _knightVoicePlayer.value = binder?.knightVoicePlayer
             _activePack.value = packMgr?.getActivePack()
+        }
+
+        fun refreshActivePack(preferredPersonaId: String? = null) {
+            _activePack.value = _knightPackManager.value?.getActivePack(preferredPersonaId)
         }
 
         override fun onServiceDisconnected(name: ComponentName) = clear()

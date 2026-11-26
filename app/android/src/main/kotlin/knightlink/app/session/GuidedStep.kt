@@ -123,10 +123,11 @@ fun guidedFlow(state: UiState): GuidedFlow {
         else -> row(GuidedStep.ADAPTER, StepState.ACTIVE, StepSentence.ADAPTER_CONNECTING)
     }
 
+    val asleepBeforeDrive = c is ConnectionStatus.VehicleAsleep && !identified && state.driveStage == DriveStage.NOT_STARTED
     val ignition = when {
         !linkUp -> row(GuidedStep.IGNITION, StepState.PENDING, StepSentence.IGNITION_PROMPT)
         cannotRead?.reason == CannotReadReason.NoResponse -> row(GuidedStep.IGNITION, StepState.FAILED, StepSentence.IGNITION_FAILED, canRetry = true)
-        c is ConnectionStatus.WaitingForIgnition || c is ConnectionStatus.VehicleAsleep ->
+        c is ConnectionStatus.WaitingForIgnition || asleepBeforeDrive ->
             row(GuidedStep.IGNITION, StepState.ACTIVE, StepSentence.IGNITION_WAITING)
         else -> row(GuidedStep.IGNITION, StepState.DONE, StepSentence.IGNITION_OK)
     }

@@ -40,14 +40,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * J.A.R.V.I.S. Stark Industries Holographic HUD Visualizer.
+ * Concentric Ring Holographic HUD Visualizer.
  *
  * Driven by speech loudness level (0f to 1f) from LoudnessEnvelope.
- * Features rotating concentric rings and an audio-reactive pulsing holographic core.
- * Adaptive to S25 Ultra Portrait (412dp) vs Landscape Car Mount (892dp).
+ * Features rotating concentric rings and an audio-reactive pulsing core.
+ * Adaptive to Portrait vs Landscape Car Mount viewports.
  */
 @Composable
-fun JarvisVoiceBox(
+fun RingHudVoiceBox(
     level: Float,
     modifier: Modifier = Modifier,
     displayMode: VoiceBoxDisplayMode = VoiceBoxDisplayMode.ADAPTIVE,
@@ -56,7 +56,7 @@ fun JarvisVoiceBox(
     val smoothLevel by animateFloatAsState(
         targetValue = level.coerceIn(0f, 1f),
         animationSpec = spring(stiffness = Spring.StiffnessMedium),
-        label = "jarvisLevel",
+        label = "ringHudLevel",
     )
 
     val infiniteTransition = rememberInfiniteTransition(label = "jarvisSpin")
@@ -233,7 +233,7 @@ fun JarvisVoiceBox(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
-                    text = "STARK INDUSTRIES • J.A.R.V.I.S. HOLOGRAPHIC HUD",
+                    text = "SAATHI • TELEMETRY HUD",
                     color = cyanColor,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,

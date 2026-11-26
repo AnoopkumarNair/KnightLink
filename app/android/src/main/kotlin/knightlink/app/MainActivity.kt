@@ -1,7 +1,6 @@
 package knightlink.app
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
@@ -16,6 +15,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -56,6 +56,7 @@ import knightlink.app.session.SessionController
 import knightlink.app.session.SessionService
 import knightlink.app.session.UiState
 import knightlink.app.ui.AdapterPickerDialog
+import knightlink.app.ui.AiActions
 import knightlink.app.ui.AppActions
 import knightlink.app.ui.ConnectionActions
 import knightlink.app.ui.DemoActions
@@ -68,12 +69,15 @@ import knightlink.app.ui.design.KnightLinkTheme
 import knightlink.app.ui.voice.ThemePack
 import knightlink.app.ui.voice.VoiceOverlay
 import knightlink.app.ui.voice.rememberReduceMotion
+import knightlink.app.voice.AiSettingsStore
 import knightlink.app.voice.ButtonGesture
 import knightlink.app.voice.MediaButtonTrigger
 import knightlink.app.voice.VoiceSettings
 import knightlink.core.recorder.Recording
 import knightlink.platform.ble.BlePermissions
 import knightlink.platform.ble.DiscoveredAdapter
+import knightlink.platform.spp.BondedSppDevice
+import knightlink.platform.spp.SppAdapterScanner
 import knightlink.voice.api.Priority
 import knightlink.voice.api.SpeakResult
 import knightlink.voice.api.Speaker
@@ -117,13 +121,12 @@ class MainActivity : ComponentActivity() {
     /** Whether Android's battery optimisation leaves this app alone (the phone's sensors stalled for tens of seconds before link drops without it). */
     private val backgroundExempt = MutableStateFlow(true)
 
-    /** Asks Android to exempt the app from battery optimisation; the system dialog explains and the user decides. */
-    @SuppressLint("BatteryLife")
+    /** Opens Android's battery optimisation settings so the user can allow unrestricted background use if needed. */
     private fun allowBackground() {
         try {
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, "package:$packageName".toUri()))
-        } catch (_: ActivityNotFoundException) {
             startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        } catch (_: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:$packageName".toUri()))
         }
     }
 
@@ -142,9 +145,25 @@ class MainActivity : ComponentActivity() {
     // Nothing to read from the result: if Bluetooth is on afterwards, "Scan again" works.
     private val enableBluetooth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
 
+    private val aiStore by lazy {
+        AiSettingsStore(SharedPreferencesStringStore(getSharedPreferences(SharedPreferencesStringStore.FILE, MODE_PRIVATE)))
+    }
+
+    private val pickKnightPack = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val mgr = viewModel.knightPackManager.value ?: return@registerForActivityResult
+        if (uri == null) return@registerForActivityResult
+        val installed = contentResolver.openInputStream(uri)?.use { stream -> mgr.installPack(stream).getOrNull() }
+        if (installed != null) {
+            viewModel.refreshActivePack(installed.personaId)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         setContent {
             KnightLinkTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -226,6 +245,7 @@ class MainActivity : ComponentActivity() {
         val gesture by viewModel.mediaGesture.collectAsStateWithLifecycle()
         val micExplanation by viewModel.micExplanationOpen.collectAsStateWithLifecycle()
         val micDenial by viewModel.micDenial.collectAsStateWithLifecycle()
+        val aiSettings by aiStore.settings.collectAsStateWithLifecycle()
 
         HomeScreen(
             state = state,
@@ -278,7 +298,7 @@ class MainActivity : ComponentActivity() {
                 onVolumeChange = { voiceStore?.setVolume(it) },
                 onTest = { speaker?.let(::testVoice) },
                 onSayAgain = { speaker?.repeatLast() },
-                activePersonaName = activePack?.manifest?.name ?: "K.I.T.T.",
+                activePersonaName = activePack?.manifest?.name ?: "Saathi",
                 activeArchetype = activePack?.visualizer?.archetype ?: "bar-meter",
                 visualizerLevel = visualizerLevel,
             ),
@@ -291,6 +311,13 @@ class MainActivity : ComponentActivity() {
                     viewModel.setMediaGesture(it)
                     mediaButton.setGesture(it)
                 },
+            ),
+            ai = AiActions(
+                settings = aiSettings,
+                onMode = { aiStore.setMode(it) },
+                onProvider = { aiStore.setProvider(it) },
+                onSaveApiKey = { aiStore.saveApiKey(it) },
+                onSideloadPack = { pickKnightPack.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
             ),
         )
 
@@ -320,6 +347,8 @@ class MainActivity : ComponentActivity() {
                 bluetoothIsOff = ::bluetoothIsOff,
                 onEnableBluetooth = { enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
                 onPick = ::onAdapterPicked,
+                bondedSpp = { SppAdapterScanner.bondedDevices(this) },
+                onPickSpp = ::onSppAdapterPicked,
                 onDismiss = { viewModel.setPickerOpen(false) },
             )
         }
@@ -483,6 +512,13 @@ class MainActivity : ComponentActivity() {
         viewModel.setPickerOpen(false)
         viewModel.remember(LastAdapter(adapter.address, adapter.name))
         startBluetoothSession(adapter.address)
+    }
+
+    private fun onSppAdapterPicked(device: BondedSppDevice) {
+        Log.i(TAG, "Classic SPP adapter picked (${device.name}); starting an SPP session")
+        viewModel.connectionLog.app("classic SPP adapter picked in the list (${device.name}); starting an SPP session")
+        viewModel.setPickerOpen(false)
+        ContextCompat.startForegroundService(this, SessionService.startSppIntent(this, device.address))
     }
 
     private fun bluetoothIsOff(): Boolean = getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == false

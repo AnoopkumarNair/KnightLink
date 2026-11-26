@@ -50,6 +50,7 @@ val androidSdkConfigured: Boolean =
 if (androidSdkConfigured) {
     include(":app:android")
     include(":platform:ble-android")
+    include(":platform:spp-android")
 } else {
     logger.lifecycle("Android SDK not configured (no ANDROID_HOME and no sdk.dir in local.properties): skipping :app:android and :platform:ble-android")
 }

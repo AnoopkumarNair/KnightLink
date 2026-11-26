@@ -292,22 +292,29 @@ The project has achieved the **v0.1 first drivable and voice-enabled milestone**
 
 ---
 
-## Immediate Next Steps (M4 & M5)
+## Immediate Next Steps — Locked v1.0 Production Roadmap (2026-11-25)
 
-### M4: Arrival Engine (Target: Safe Parking & Cooldown Guidance)
-- **Geofences & Commute Tracking**: Register home/office geofences locally without cloud sync.
-- **Parking Manoeuvre Detector**: Detect low-speed parking transitions (speed < 10 km/h with steering angle changes).
-- **Navigation ETA Integration**: Safe listener for `com.google.android.apps.maps` notifications to predict trip arrival window.
-- **Arrival Rules**:
-  - If DPF regeneration is active when approaching destination, advise the driver to extend the drive for 3–5 minutes.
-  - If turbocharger/EGT temperatures exceed safety thresholds upon parking, trigger spoken cooldown timer before engine shutdown.
+Target: **Android-only v1.0** (keeping `core/*` KMP-clean and `iosSimulatorArm64Test` green on CI), **100% offline-first** with v1.1 community hooks, distributed via **Google Play Internal / Closed Beta** and sideloaded APK, shipping with an **original default KnightPack (`Saathi`)** and user-sideloadable custom packs.
 
-### M5: Any Car, Any Adapter (Target: Universal Fleet Interoperability)
-- **Progressive Staged Discovery**:
-  - Stage 1–4 at connect: adapter identity, supported standard PIDs, VIN/CALID, and ECU sweep.
-  - Parked UDS DID sweep: incremental, resumable background sweeps across ECUs (saving progress to `VehicleMemoryStore`).
-- **Comprehensive DTC Reading & Plain-Language Explanation**:
-  - Interrogate Mode 03, 07, 0A and UDS `19 02` with status mask filtering (confirmed vs pending).
-  - Translate raw SAE J2012 fault codes into plain-language spoken advice: what it is, severity rating, and whether it is safe to continue driving.
-- **Adapter Chipset Quirks Engine**:
-  - Support STN, vLinker, and ELM327 clones with custom timeout profiles and manual flow control.
+1. **Stage 1 — Safety Wiring & Release Hygiene**
+   - Wire `:core:rules` (`RulesEngine`, `DpfTracker`, `SwitchOffGuard`, `AlertManager`) into `SessionController` / `SessionService` with reading-age staleness guards.
+   - Genericize VoiceBox composables (`BarMeterVoiceBox`, `RingHudVoiceBox`, `DualVuVoiceBox`) and remove trademarked strings/assets from the shipped build.
+   - Remove `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` from `AndroidManifest.xml` (Play compliance); use standard settings guidance when background-restricted.
+   - Populate `proguard-rules.pro`, fix ktlint, and verify release R8 build in CI.
+2. **Stage 2 — Car Twin & Unified Scan Pipeline**
+   - Implement persistent `CarTwin` store + typed `TwinApi` (`docs/ARCHITECTURE_TWIN.md`), migrating `VehicleMemory`, `ProtocolMemory`, `DriveTruthStore`, and `DashboardStore`.
+   - Unify `FullScan`, `LearningLadder`, and `BodyUnitReader` into a **fast-connect (3–5 s L0/L1, "just start driving") + opportunistic background** pipeline.
+   - Decode verified `Service 22` DIDs into `TelemetrySnapshot`, and add `files/packs/` override priority in `DefinitionStore`.
+3. **Stage 3 — Classic Bluetooth (SPP), Adapter Quirks & Field Runs**
+   - Add `:platform:spp-android` (Classic Bluetooth RFCOMM behind `Transport`) for budget ELM327 v2.1 adapters.
+   - Build Adapter Capability & Quirks fallback so clones degrade safely to Mode 01/03 polling.
+   - Add `CapabilityProbe` overall timeout, cap `VirtualElm327.received`, verify SensAiry TPMS offsets + allowlist, and validate on Vgate iCar Pro 2S + Robu ELM327 v2.1 + 1-hour drive + 2+ non-Harrier cars.
+4. **Stage 4 — `Saathi` Voice & Hybrid AI**
+   - Bundle original `Saathi.knightpack` in `assets/packs/` + sideload picker for KnightPack Studio packs.
+   - Map `PhraseKeys` <-> `car_dialogue.json`; wire Push-to-Talk + `voice/intents` (<150 ms).
+   - Add AI Mode Selector (`No AI` / `Local AI` / `Cloud AI` / `Hybrid AI`) with `TelemetryFactGuard`, Keystore-encrypted BYO Cloud keys, and on-demand Wi-Fi `LiteRT-LM` model downloader.
+5. **Stage 5 — Insights & Arrival Engine (M4 + M8)**
+   - Expense/Fuel Ledger & Trend Alerts (DPF soot, 12V cranking/resting voltage, alternator, cooling) over `TwinApi`.
+   - Arrival Engine: local geofences, parking-manoeuvre detector, optional Maps ETA notification listener, and arrival cooldown rules.
+6. **Stage 6 — Play Beta Hardening**
+   - Privacy Policy, Play Data Safety & Foreground Service review assets, opt-in scrubbed local crash diagnostics, 2–4 hour thermal/battery profiling, 40-cycle reconnect soak test, and Play Internal Testing upload.

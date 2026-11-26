@@ -18,15 +18,15 @@ fun VoiceBoxRenderer(
 ) {
     val key = archetype.lowercase().replace(".", "").replace(" ", "").replace("-", "")
     when {
-        "concentric" in key || "ring" in key || "jarvis" in key -> {
-            JarvisVoiceBox(level = level, modifier = modifier, displayMode = displayMode)
+        "concentric" in key || "ring" in key -> {
+            RingHudVoiceBox(level = level, modifier = modifier, displayMode = displayMode)
         }
-        "matrix" in key || "waveform" in key || "optimus" in key -> {
-            OptimusVoiceBox(level = level, modifier = modifier, displayMode = displayMode)
+        "matrix" in key || "waveform" in key || "vu" in key -> {
+            DualVuVoiceBox(level = level, modifier = modifier, displayMode = displayMode)
         }
         else -> {
-            // Default canonical Knight 2000 3-Bar Capsule
-            KittVoiceBox(level = level, modifier = modifier, displayMode = displayMode)
+            // Default 3-column LED bar meter
+            BarMeterVoiceBox(level = level, modifier = modifier, displayMode = displayMode)
         }
     }
 }

@@ -380,7 +380,7 @@ public class VehicleSession(
     /** The driver skipped a stage on this connection: no automatic one until the next connection or a stage the driver asks for. */
     private var autoSuppressed = false
     private val _bodyScan = MutableStateFlow<BodyScanState>(BodyScanState.Idle)
-    private val _bodyPending = MutableStateFlow(0)
+    private val _bodyPendingUnits = MutableStateFlow(0)
     private val _ladder = MutableStateFlow<LadderState>(LadderState.Idle)
 
     /** What polling asks beyond the vehicle's own signals: the discovery identifiers. */
@@ -436,7 +436,7 @@ public class VehicleSession(
     public val bodyScan: StateFlow<BodyScanState> = _bodyScan.asStateFlow()
 
     /** How many body units still have identifiers to ask (0 when none, or when this car is not checked); see [restartBodyStage]. */
-    public val bodyPendingUnits: StateFlow<Int> = _bodyPending.asStateFlow()
+    public val bodyPendingUnits: StateFlow<Int> = _bodyPendingUnits.asStateFlow()
 
     /** The learning ladder of a car without a definition: which level runs and how far it is, and how it ended (see [LadderState]). */
     public val ladder: StateFlow<LadderState> = _ladder.asStateFlow()
@@ -698,7 +698,9 @@ public class VehicleSession(
         _ladder.value = LadderState.Idle
         runLadder(driver, known.report)
         runBodyStage(driver)
-        val items = confirmedPollItems(activeCatalog, known.coverage, primaryEcu, config.pollPeriod)
+        val obdItems = confirmedPollItems(activeCatalog, known.coverage, primaryEcu, config.pollPeriod)
+        val udsItems = confirmedUdsPollItems(activeCatalog, known.report, primaryEcu, config.pollPeriod)
+        val items = (obdItems + udsItems).distinctBy { it.id }
         val requester = DiagnosticRequester { id, payload, expected -> driver.request(id, payload, expected) }
         val scheduler = PollScheduler(items, maxBatch = config.maxBatch).also { it.replaceExtras(extras()) }
         activeScheduler = scheduler
@@ -869,7 +871,7 @@ public class VehicleSession(
     private fun pendingBodyUnits(): List<CandidateCheck> = bodyUnits.filter { bodyProgress[it.progressKey]?.done != true && (!it.extended || extendedOn) }
 
     private fun publishBodyPending() {
-        _bodyPending.value = pendingBodyUnits().size
+        _bodyPendingUnits.value = pendingBodyUnits().size
     }
 
     /** Nothing was ever asked of the unit: not its fault codes, not an identifier, and no try of it ended. */

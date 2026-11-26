@@ -20,10 +20,14 @@ class AppTransportFactory(
     private val demo: TransportFactory,
     private val adapter: () -> AdapterDefinition,
     private val ble: (address: String, profile: BleSerialProfile) -> Transport,
+    private val spp: (address: String) -> Transport = {
+        throw UnsupportedOperationException("Classic Bluetooth SPP transport is not configured")
+    },
 ) : TransportFactory {
     override fun create(target: ConnectionTarget): Transport = when (target) {
         is ConnectionTarget.Demo -> demo.create(target)
         is ConnectionTarget.Ble -> ble(target.address, adapter().requireBle().toSerialProfile())
+        is ConnectionTarget.Spp -> spp(target.address)
     }
 }
 

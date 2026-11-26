@@ -29,14 +29,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Optimus Prime Autobot Energon Matrix Oscilloscope Visualizer.
+ * Dual VU Matrix Oscilloscope Visualizer.
  *
  * Driven by speech loudness level (0f to 1f) from LoudnessEnvelope.
  * Symmetrical 9-bar matrix expanding dynamically with voice cadence.
- * Adaptive to S25 Ultra Portrait (412dp) vs Landscape Car Mount (892dp).
+ * Adaptive to Portrait vs Landscape Car Mount viewports.
  */
 @Composable
-fun OptimusVoiceBox(
+fun DualVuVoiceBox(
     level: Float,
     modifier: Modifier = Modifier,
     displayMode: VoiceBoxDisplayMode = VoiceBoxDisplayMode.ADAPTIVE,
@@ -44,7 +44,7 @@ fun OptimusVoiceBox(
     val smoothLevel by animateFloatAsState(
         targetValue = level.coerceIn(0f, 1f),
         animationSpec = spring(stiffness = Spring.StiffnessMedium),
-        label = "optimusLevel",
+        label = "dualVuLevel",
     )
 
     val barScales = listOf(0.30f, 0.50f, 0.70f, 0.88f, 1.0f, 0.88f, 0.70f, 0.50f, 0.30f)
@@ -124,7 +124,7 @@ fun OptimusVoiceBox(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "AUTOBOT MATRIX • ENERGON RESONANCE",
+                text = "DUAL MATRIX • VOICE RESONANCE",
                 color = Color(0xFF66A3FF),
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,

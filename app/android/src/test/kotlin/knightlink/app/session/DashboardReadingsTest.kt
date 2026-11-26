@@ -55,7 +55,11 @@ class DashboardReadingsTest {
         override fun stop() = Unit
     }
 
-    private fun TestScope.controller(store: StringStore, sinks: MemorySinks = MemorySinks(), samples: SampleSource? = null): SessionController = SessionController(
+    private fun TestScope.controller(
+        store: StringStore,
+        sinks: MemorySinks = MemorySinks(),
+        samples: SampleSource? = null,
+    ): SessionController = SessionController(
         backgroundScope,
         { config },
         definitions,

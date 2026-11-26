@@ -39,10 +39,16 @@ data class PersonaMetadata(
     @SerialName("system_prompt") val systemPrompt: String = "",
 )
 
+@Serializable
+data class CarDialogueMatrix(
+    val events: Map<String, String> = emptyMap(),
+)
+
 data class InstalledKnightPack(
     val dir: File,
     val manifest: KnightPackManifest,
     val visualizer: VisualizerConfig,
     val persona: PersonaMetadata?,
     val lexicon: LexiconEngine,
+    val dialogue: Map<String, String> = emptyMap(),
 )

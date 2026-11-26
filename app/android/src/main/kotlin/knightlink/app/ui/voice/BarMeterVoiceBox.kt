@@ -37,12 +37,12 @@ enum class VoiceBoxDisplayMode {
 }
 
 /**
- * K.I.T.T. voice box, drawn like the dashboard original: three columns of rounded red LED bars growing outward from a
- * glowing horizontal centre line (the middle column tallest), brightest at the centre and fading toward the ends, with a
- * faint trace of the unlit bars. One canvas on pure black, so it keeps its proportions at any width and never crops.
+ * Three-column segmented LED bar-meter voice box: rounded bars growing outward from a glowing horizontal centre line
+ * (the middle column tallest), brightest at the centre and fading toward the ends, with a faint trace of the unlit bars.
+ * One canvas on pure black, so it keeps its proportions at any width and never crops.
  */
 @Composable
-fun KittVoiceBox(
+fun BarMeterVoiceBox(
     level: Float,
     modifier: Modifier = Modifier,
     displayMode: VoiceBoxDisplayMode = VoiceBoxDisplayMode.ADAPTIVE,
@@ -52,7 +52,7 @@ fun KittVoiceBox(
     val smoothLevel by animateFloatAsState(
         targetValue = level.coerceIn(0f, 1f),
         animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium),
-        label = "kittLevel",
+        label = "barMeterLevel",
     )
     // The drawing keeps its proportions and is as large as the width, the height on offer and a cap allow: a box that insists on a width and a
     // proportion fits neither a short landscape screen nor a long spoken line under it.

@@ -17,7 +17,8 @@ class KnightPackManager(
         bundledPackStreamProvider = {
             try {
                 val assetList = context.assets.list("packs") ?: emptyArray()
-                val bundledName = assetList.firstOrNull { it.equals("KITT.knightpack", ignoreCase = true) }
+                val bundledName = assetList.firstOrNull { it.equals("Saathi.knightpack", ignoreCase = true) }
+                    ?: assetList.firstOrNull { it.endsWith(".knightpack", ignoreCase = true) }
                 bundledName?.let { context.assets.open("packs/$it") }
             } catch (_: Exception) {
                 null
@@ -34,11 +35,11 @@ class KnightPackManager(
     }
 
     /**
-     * Extracts bundled KITT.knightpack from APK assets on first launch if not already installed.
+     * Extracts bundled default KnightPack (`Saathi.knightpack`) from APK assets on first launch if not already installed.
      */
     fun ensureBundledPackInstalled() {
-        val kittDir = File(packsDir, "kitt")
-        if (kittDir.exists() && File(kittDir, "manifest.json").exists()) return
+        val defaultDir = File(packsDir, "saathi")
+        if (defaultDir.exists() && File(defaultDir, "manifest.json").exists()) return
 
         try {
             bundledPackStreamProvider?.invoke()?.use { input ->
@@ -110,7 +111,7 @@ class KnightPackManager(
             val matching = packs.firstOrNull { it.manifest.personaId.equals(preferredPersonaId, ignoreCase = true) }
             if (matching != null) return matching
         }
-        return packs.firstOrNull { it.manifest.personaId.equals("kitt", ignoreCase = true) } ?: packs.first()
+        return packs.firstOrNull { it.manifest.personaId.equals("saathi", ignoreCase = true) } ?: packs.first()
     }
 
     fun loadPack(dir: File): InstalledKnightPack? = runCatching {
@@ -135,12 +136,20 @@ class KnightPackManager(
         val lexiconFile = File(dir, "lexicon.json")
         val lexicon = LexiconEngine.load(lexiconFile)
 
+        val dialogueFile = File(dir, "car_dialogue.json")
+        val dialogue = if (dialogueFile.exists()) {
+            runCatching { json.decodeFromString<CarDialogueMatrix>(dialogueFile.readText()).events }.getOrDefault(emptyMap())
+        } else {
+            emptyMap()
+        }
+
         InstalledKnightPack(
             dir = dir,
             manifest = manifest,
             visualizer = visualizer,
             persona = persona,
             lexicon = lexicon,
+            dialogue = dialogue,
         )
     }.getOrNull()
 }

@@ -13,6 +13,11 @@ import knightlink.core.common.plus
 import knightlink.core.recorder.ExternalSamples
 import knightlink.core.recorder.RecordingHeader
 import knightlink.core.recorder.RecordingTransport
+import knightlink.core.rules.AlertPriority
+import knightlink.core.rules.CatalogSignalTrust
+import knightlink.core.rules.PhraseBook
+import knightlink.core.rules.RulesEngine
+import knightlink.core.rules.RulesState
 import knightlink.core.runtime.CaptureMode
 import knightlink.core.runtime.LadderConfig
 import knightlink.core.runtime.OdometerEstimator
@@ -28,6 +33,12 @@ import knightlink.core.runtime.VehicleSession
 import knightlink.core.runtime.drivetruth.DriveTruthConfig
 import knightlink.core.runtime.drivetruth.DriveTruthReport
 import knightlink.core.runtime.drivetruth.GpsFix
+import knightlink.core.runtime.twin.CarTwin
+import knightlink.core.runtime.twin.CarTwinBuilder
+import knightlink.core.runtime.twin.CarTwinStore
+import knightlink.core.runtime.twin.LocalTwinApi
+import knightlink.core.runtime.twin.TwinApi
+import knightlink.core.runtime.twin.TwinDriveSummary
 import knightlink.core.scan.DidSweepPlan
 import knightlink.core.scan.FaultCodeDictionary
 import knightlink.core.scan.ScanSummary
@@ -56,8 +67,11 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterIsInstance
@@ -72,6 +86,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
+import knightlink.core.rules.LinkStatus as RulesLinkStatus
 
 /**
  * Hosts at most one [VehicleSession] and turns it into [uiState]. Plain Kotlin, no Android types: the foreground
@@ -122,7 +137,15 @@ class SessionController(
     private val settings: StringStore? = null,
     /** The wall clock (ms since the epoch): when the dashboard readings were saved, to tell one drive's from the next. */
     private val wallClock: () -> Long = System::currentTimeMillis,
+    /** Persistent digital twin store per vehicle; null for none. */
+    private val carTwinStore: CarTwinStore? = null,
 ) {
+    @Volatile
+    private var activeTwin: CarTwin? = carTwinStore?.lastKey()?.let { carTwinStore.load(it) }
+
+    /** Typed read API over the active or last-known vehicle digital twin. */
+    val twinApi: TwinApi = LocalTwinApi { activeTwin }
+
     /** The deep scan switch (levels L3 and L4 of the learning ladder on an unknown car): on unless the user turned it off. */
     private val deepScan = MutableStateFlow(settings?.get(DEEP_SCAN_KEY) != "off")
 
@@ -138,12 +161,13 @@ class SessionController(
         ?.takeIf { it.isFinite() && it in OdometerEstimator.MIN_SCALE..OdometerEstimator.MAX_SCALE } ?: 1.0
     private var odometerCalibrated = odometerScale != 1.0
 
-    /** What the screen shows with no connection: the kept dashboard readings and switches. */
+    /** What the screen shows with no connection: the kept dashboard readings, switches, and last finished drive report. */
     private fun idleState(): UiState = UiState.IDLE.copy(
         dashboard = dashboard.value,
         deepScan = deepScan.value,
         autoBodyCheck = autoBodyCheck.value,
         clusterDeepCheck = clusterDeepCheck.value,
+        driveTruth = driveTruth.value,
     )
 
     /**
@@ -273,7 +297,17 @@ class SessionController(
         /** The last drive kept for [lastDriveKey], read once per car. */
         var lastDriveKey: String? = null
         var lastDrive: DriveTruthReport? = null
+
+        /** Deterministic safety rules engine for this run, lazily created once the vehicle definition is known. */
+        var isDemo: Boolean = false
+        var rulesDefinitionId: String? = null
+        var rulesEngine: RulesEngine? = null
+        var rulesPhraseBook: PhraseBook? = null
+        var rulesUnavailable: Boolean = false
     }
+
+    /** Spoken alert emitted by [RulesEngine] for [SessionService] to speak. */
+    data class RulesAnnouncement(val id: String, val priority: AlertPriority, val text: String)
 
     /** The manufacturer codes, the model picker lists of a run. */
     private class IdentityData(val wmi: WmiTable?, val models: ModelList?)
@@ -288,6 +322,11 @@ class SessionController(
     private var current: Run? = null
     private val dashboard = MutableStateFlow(loadDashboard())
     private val _uiState = MutableStateFlow(idleState())
+    private val _rulesAnnouncements = MutableSharedFlow<RulesAnnouncement>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val rulesAnnouncements: Flow<RulesAnnouncement> = _rulesAnnouncements.asSharedFlow()
 
     /** What was kept; a store that cannot be read is no reason not to start. */
     private fun loadDashboard(): DashboardReadings = try {
@@ -389,6 +428,7 @@ class SessionController(
         var catalog: SignalCatalog? = null
         var recorded: RecordingTransport? = null
         var tyres: List<TpmsDecoder> = emptyList()
+        run.isDemo = target is ConnectionTarget.Demo
         val session = try {
             val setup = prepare(target)
             catalog = setup.catalog
@@ -805,6 +845,7 @@ class SessionController(
         val note = when (target) {
             is ConnectionTarget.Demo -> "app, demo: ${target.scenarioId}"
             is ConnectionTarget.Ble -> "app, bluetooth"
+            is ConnectionTarget.Spp -> "app, bluetooth-spp"
         }
         val transport = RecordingTransport(
             transports.create(target),
@@ -962,6 +1003,8 @@ class SessionController(
             val driveModes = vehicleInfo?.driveModes ?: if (facts.known) DriveMode.DEFAULT else emptyList()
             val faultSummary = session.faults.value.toSummary()
             feedDriveTruth(run, session, started, state, faultSummary, key)
+            syncCarTwin(key, identity, facts.definitionId, profile?.fuelType?.name, lastReport, run.scanSummary)
+            val rulesState = evaluateRules(run, session, started, state, facts.definitionId)
             lastReport?.let { rep ->
                 lastFindings = FindingsInput(rep, identity, faultSummary, run.scanSummary, appVersion = "", bundleId = "")
             }
@@ -1005,9 +1048,69 @@ class SessionController(
                 odometerEstimate = odometer,
                 twinReady = twinReady,
                 driveModes = driveModes,
+                rules = rulesState,
                 internalError = _uiState.value.internalError,
             )
         }
+    }
+
+    private fun evaluateRules(
+        run: Run,
+        session: VehicleSession,
+        started: TimeMark,
+        state: SessionState,
+        definitionId: String?,
+    ): RulesState? {
+        val pair = ensureRulesEngine(run, definitionId) ?: return null
+        val (engine, book) = pair
+        return try {
+            val evaluated = engine.evaluate(session.telemetry.value, started.elapsedNow(), state.toRulesLinkStatus())
+            evaluated.announcements.forEach { ann ->
+                _rulesAnnouncements.tryEmit(RulesAnnouncement(ann.id, ann.priority, book.render(ann.phrase)))
+            }
+            evaluated
+        } catch (e: Exception) {
+            connectionLog?.app("rules evaluation error: ${e.message ?: e::class.simpleName}")
+            null
+        }
+    }
+
+    private fun ensureRulesEngine(run: Run, definitionId: String?): Pair<RulesEngine, PhraseBook>? {
+        val targetId = definitionId ?: if (run.isDemo) config().vehicleDefinition else null
+        if (targetId.isNullOrBlank()) return null
+        if (run.rulesUnavailable && run.rulesDefinitionId == targetId) return null
+        val existingEngine = run.rulesEngine
+        val existingBook = run.rulesPhraseBook
+        if (existingEngine != null && existingBook != null && run.rulesDefinitionId == targetId) {
+            return existingEngine to existingBook
+        }
+        run.rulesDefinitionId = targetId
+        return try {
+            val rulesConfig = store.rules(targetId)
+            if (rulesConfig == null) {
+                run.rulesUnavailable = true
+                return null
+            }
+            val catalog = store.vehicleCatalog(targetId)
+            val book = store.phrases()
+            val engine = RulesEngine(rulesConfig, CatalogSignalTrust(catalog))
+            run.rulesEngine = engine
+            run.rulesPhraseBook = book
+            run.rulesUnavailable = false
+            engine to book
+        } catch (e: Exception) {
+            run.rulesUnavailable = true
+            connectionLog?.app("rules unavailable for '$targetId': ${e.message ?: e::class.simpleName}")
+            null
+        }
+    }
+
+    private fun SessionState.toRulesLinkStatus(): RulesLinkStatus = when (this) {
+        is SessionState.Polling -> RulesLinkStatus.LIVE
+        is SessionState.VehicleAsleep,
+        is SessionState.WaitingForIgnition,
+        -> RulesLinkStatus.NO_IGNITION
+        else -> RulesLinkStatus.LINK_DOWN
     }
 
     /** One tick of the Drive Truth feed. A failure here costs the report, never the screen. */
@@ -1032,6 +1135,7 @@ class SessionController(
                 connectionLog?.app("drive ended: report made")
                 publishDriveTruth(report)
                 keepDrive(key, report)
+                recordTwinDrive(key, report)
             }
         } catch (e: CancellationException) {
             throw e
@@ -1043,6 +1147,58 @@ class SessionController(
     private fun keepDrive(key: String?, report: DriveTruthReport) {
         if (key == null) return
         driveTruthStore?.save(key, report)
+    }
+
+    private fun syncCarTwin(
+        key: String?,
+        identity: VehicleIdentity?,
+        definitionId: String?,
+        fuelType: String?,
+        report: CapabilityReport?,
+        scanSummary: ScanSummary?,
+    ) {
+        if (key == null) return
+        val currentTwin = activeTwin?.takeIf { it.key == key }
+        if (currentTwin != null &&
+            currentTwin.identity.definitionId == (definitionId ?: currentTwin.identity.definitionId) &&
+            currentTwin.identity.model == (identity?.model ?: currentTwin.identity.model)
+        ) {
+            return
+        }
+        val base = currentTwin ?: carTwinStore?.load(key) ?: sessionConfig.memory?.load(key)?.let(CarTwinBuilder::fromVehicleMemory) ?: CarTwin(
+            key = key,
+        )
+        val merged = CarTwinBuilder.mergeIdentity(base, identity, definitionId, fuelType = fuelType).let { twin ->
+            val withProbe = if (report != null && twin.probe == null) twin.copy(probe = report.redacted()) else twin
+            withProbe.copy(coverage = knightlink.core.runtime.twin.CarTwinBuilder.evaluateCoverage(withProbe))
+        }
+        activeTwin = merged
+        try {
+            carTwinStore?.save(merged)
+        } catch (e: Exception) {
+            connectionLog?.app("car twin save error: ${e.message ?: e::class.simpleName}")
+        }
+    }
+
+    private fun recordTwinDrive(key: String?, report: DriveTruthReport) {
+        if (key == null) return
+        val base = activeTwin?.takeIf { it.key == key } ?: carTwinStore?.load(key) ?: CarTwin(key = key)
+        val summary = TwinDriveSummary(
+            startedAtMs = wallClock(),
+            endedAtMs = wallClock(),
+            distanceKm = report.carDistanceKm ?: report.gpsDistanceKm,
+            fuelLitres = report.fuelLitres,
+            costRupees = report.costRupees,
+            idleMinutes = report.idleMinutes,
+            ended = knightlink.core.runtime.drivetruth.DriveTruthNote.DRIVE_NOT_ENDED !in report.notes,
+        )
+        val updated = CarTwinBuilder.recordDrive(base, summary)
+        activeTwin = updated
+        try {
+            carTwinStore?.save(updated)
+        } catch (e: Exception) {
+            connectionLog?.app("car twin drive save error: ${e.message ?: e::class.simpleName}")
+        }
     }
 
     /** A drive under way when the connection ends is kept as it stands (it says it had not ended), when it was long enough to mean something. */
@@ -1136,6 +1292,7 @@ private fun List<LiveValue>.freshNumber(signalId: String): Double? =
 private fun ConnectionTarget.describe(): String = when (this) {
     is ConnectionTarget.Demo -> "demo ($scenarioId)"
     is ConnectionTarget.Ble -> "bluetooth"
+    is ConnectionTarget.Spp -> "bluetooth-spp"
 }
 
 /** The log's sink for the session's events, leaving out the scan's result line (see [SessionController]); a short note stands in for it. */

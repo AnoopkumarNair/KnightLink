@@ -1,5 +1,6 @@
 package knightlink.core.runtime
 
+import knightlink.core.common.hexToBytes
 import knightlink.core.protocol.ElmResponse
 import knightlink.core.scheduler.DiagnosticRequester
 import knightlink.core.scheduler.PollDecision
@@ -8,13 +9,16 @@ import knightlink.core.scheduler.PollResult
 import knightlink.core.scheduler.PollScheduler
 import knightlink.core.scheduler.answeredItems
 import knightlink.core.signals.CompiledParameter
+import knightlink.core.signals.Provenance
 import knightlink.core.signals.SignalCatalog
 import knightlink.core.telemetry.singleFrameCount
+import knightlink.core.vehicle.CapabilityReport
 import knightlink.core.vehicle.DefinitionCoverage
 import kotlinx.coroutines.CancellationException
 import kotlin.time.Duration
 
 private const val SERVICE_LIVE_DATA = 0x01
+private const val SERVICE_READ_DATA_BY_ID = 0x22
 
 /** The broadcast address. A poll that used it would be answered by every ECU at once and flood the bus. */
 private const val FUNCTIONAL_REQUEST_ID = 0x7DF
@@ -62,6 +66,46 @@ public fun confirmedPollItems(
             payload = byteArrayOf(SERVICE_LIVE_DATA.toByte(), covered.pid.toInt(16).toByte()),
             period = wanted,
             // The count digit is only for replies that fit one CAN frame: it would cut a longer reply to its first frame.
+            expectedResponses = parameter.singleFrameCount(),
+            dataLength = parameter.length,
+        )
+    }
+}
+
+/**
+ * Builds [PollItem]s for verified/standard UDS `0x22` (ReadDataByIdentifier) parameters in [catalog] whose target ECU answered in [report].
+ * Never polls unverified (`COMMUNITY` / `INFERRED`) definitions automatically.
+ */
+public fun confirmedUdsPollItems(
+    catalog: SignalCatalog,
+    report: CapabilityReport,
+    primaryEcu: String?,
+    period: (CompiledParameter) -> Duration?,
+): List<PollItem> {
+    val ecuById = catalog.ecus.associateBy { it.id }
+    val answeringIds = report.ecus.map { it.requestCanId }.filter { it != FUNCTIONAL_REQUEST_ID }.toSet()
+    val primaryRequestId = primaryEcu?.let { ecuById[it]?.requestCanId }?.takeIf { it in answeringIds } ?: answeringIds.minOrNull()
+        ?: return emptyList()
+
+    return catalog.parameters.mapNotNull { parameter ->
+        if (parameter.service != SERVICE_READ_DATA_BY_ID) return@mapNotNull null
+        val prov = parameter.definition.provenance
+        if (prov != Provenance.STANDARD && prov != Provenance.VERIFIED) return@mapNotNull null
+        val wanted = period(parameter) ?: return@mapNotNull null
+        val targetEcu = parameter.definition.ecu
+        val requestId = if (targetEcu != null) {
+            ecuById[targetEcu]?.requestCanId?.takeIf { it in answeringIds }
+        } else {
+            primaryRequestId
+        } ?: return@mapNotNull null
+        val didBytes = parameter.pid.hexToBytes()
+        if (didBytes.size != 2) return@mapNotNull null
+        val owner = targetEcu ?: ecuById.values.firstOrNull { it.requestCanId == requestId }?.id ?: requestId.toString(16).uppercase()
+        PollItem(
+            id = "$owner:22${parameter.pid}",
+            requestId = requestId,
+            payload = byteArrayOf(SERVICE_READ_DATA_BY_ID.toByte(), didBytes[0], didBytes[1]),
+            period = wanted,
             expectedResponses = parameter.singleFrameCount(),
             dataLength = parameter.length,
         )

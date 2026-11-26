@@ -24,7 +24,7 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
       # The hosted Ubuntu image ships the Android SDK and exports ANDROID_HOME, so no SDK setup step is needed.
-      - run: ./gradlew check :app:android:assembleDebug --console=plain
+      - run: ./gradlew check :app:android:assembleDebug :app:android:assembleRelease --console=plain
       - uses: actions/upload-artifact@v4
         with:
           name: knightlink-debug-apk

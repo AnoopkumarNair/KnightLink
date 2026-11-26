@@ -6,6 +6,7 @@ import knightlink.core.protocol.ElmResponse
 import knightlink.core.protocol.ElmStatus
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 
@@ -28,9 +29,12 @@ public class CapabilityProbe(
         val benchmarkSamples: Int = DEFAULT_BENCHMARK_SAMPLES,
         /** CAN addressing scheme (11-bit or 29-bit normal fixed). */
         val addressing: BusAddressing = BusAddressing.Can11Bit,
+        /** Overall time cap across all probe stages so a sluggish adapter cannot hang indefinitely. */
+        val overallTimeout: Duration = DEFAULT_OVERALL_TIMEOUT,
     ) {
         init {
             require(benchmarkSamples >= 0) { "benchmarkSamples must not be negative" }
+            require(overallTimeout.isPositive()) { "overallTimeout must be positive" }
         }
     }
 
@@ -65,10 +69,20 @@ public class CapabilityProbe(
         val supported = found.map { liveDataSupport(it, warnings) }
 
         onProgress(ProbeStage.VEHICLE_INFO)
-        val info = found.map { vehicleInfo(it, warnings) }
+        val timedOutBeforeInfo = started.elapsedNow() >= config.overallTimeout
+        val info = if (timedOutBeforeInfo) {
+            warnings += "probe timed out after ${config.overallTimeout}; vehicle info skipped"
+            found.map { VehicleInfo(null, emptyList(), null) }
+        } else {
+            found.map { vehicleInfo(it, warnings) }
+        }
 
         onProgress(ProbeStage.BENCHMARK)
-        val roundTrips = found.firstOrNull()?.let { benchmark(it, warnings) }.orEmpty()
+        val roundTrips = if (timedOutBeforeInfo || started.elapsedNow() >= config.overallTimeout) {
+            emptyList()
+        } else {
+            found.firstOrNull()?.let { benchmark(it, warnings) }.orEmpty()
+        }
 
         onProgress(ProbeStage.DERIVED_FACTS)
         val ecus = found.mapIndexed { i, ecu ->
@@ -258,7 +272,9 @@ public class CapabilityProbe(
             if (answered != null) roundTrips += elapsed
         }
         if (roundTrips.size < config.benchmarkSamples) {
-            warnings += "${ecu.label(config.addressing)}: ${config.benchmarkSamples - roundTrips.size} of ${config.benchmarkSamples} benchmark requests were not answered"
+            warnings +=
+                "${ecu.label(config.addressing)}: ${config.benchmarkSamples - roundTrips.size} of " +
+                "${config.benchmarkSamples} benchmark requests were not answered"
         }
         return roundTrips
     }
@@ -294,6 +310,7 @@ public class CapabilityProbe(
 
     private companion object {
         const val DEFAULT_BENCHMARK_SAMPLES = 10
+        val DEFAULT_OVERALL_TIMEOUT: Duration = 45.seconds
         const val MILLIS_PER_SECOND = 1000.0
 
         /** Physical request ids of the first eight ECUs on an 11-bit OBD bus (replies come from id + 8). */

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "adapters/elm327-v21-generic",
+  "title": "Generic ELM327 v2.1 (Classic SPP / Clone Fallback)",
+  "chipset": "elm327-clone",
+  "firmware": "ELM327 v2.1",
+  "initScript": ["ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP0"],
+  "probeScript": ["ATST64"],
+  "pollScript": ["ATST32"],
+  "essentialCommands": ["ATZ", "ATE0", "ATH1"],
+  "timing": {
+    "warmUp": true,
+    "warmUpDelayMs": 500,
+    "postResetDelayMs": 800,
+    "stoppedRetryDelayMs": 300,
+    "commandTimeoutMs": 4000,
+    "resetTimeoutMs": 7000,
+    "searchingTimeoutMs": 10000
+  },
+  "notes": "Conservative profile for budget ELM327 v2.1 Classic Bluetooth (SPP) clones. Tolerates missing ATD, ATL0, ATS0, ATAT1, ATST, and ATSP commands, and falls back to Mode 01/03 polling."
+}

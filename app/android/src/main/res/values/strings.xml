@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">KnightLink</string>
 
     <!-- Connection card -->
@@ -75,7 +75,7 @@
     <string name="bodyscan_skipped_unknown">Scan skipped: the car\'s speed could not be read — it will run in the background</string>
     <string name="bodyscan_spoken_complete">Scan complete, you can drive</string>
     <string name="bodyscan_spoken_partial">Scan partly done, you can drive. The rest continues in the background</string>
-    <string name="bodyscan_spoken_partial_moving">Scan stopped early, the car moved at %1$d kilometres an hour. The rest continues in the background</string>
+    <string name="bodyscan_spoken_partial_moving" tools:ignore="PluralsCandidate">Scan stopped early, the car moved at %1$d kilometres an hour. The rest continues in the background</string>
     <string name="bodyscan_spoken_partial_moving_unknown">Scan stopped early, the car moved. The rest continues in the background</string>
     <string name="bodyscan_spoken_partial_speed_unknown">Scan stopped early, the speed could not be read. The rest continues in the background</string>
     <string name="bodyscan_spoken_partial_failed">Scan stopped early, the adapter stopped answering. The rest continues in the background</string>
@@ -83,7 +83,7 @@
     <string name="bodyscan_channel_name">Scan finished</string>
     <string name="dashboard_hint">Type what the dashboard shows at the start and at the end of the drive, so the recording can be checked against it.</string>
     <string name="dashboard_odometer">Odometer (km)</string>
-    <string name="dashboard_range">Range / distance to empty (km)</string>
+    <string name="dashboard_range">Range / DTE (km)</string>
     <string name="dashboard_save_start">Save start readings</string>
     <string name="dashboard_save_end">Save end readings</string>
     <string name="dashboard_start_title">At the start</string>
@@ -94,9 +94,6 @@
     <!-- Full scan -->
     <string name="drive_title">Drive</string>
     <string name="drive_mode_hint">Tap the mode you switch the car to, so the recording knows how each stretch was driven.</string>
-    <string name="drive_mode_eco">Eco</string>
-    <string name="drive_mode_city">City</string>
-    <string name="drive_mode_sport">Sport</string>
     <string name="readings_title">Drive readings</string>
     <string name="readings_hint">Type the odometer and the range (distance to empty) from the dashboard when you set off, and again when you stop.</string>
     <string name="readings_end_prompt">Enter the end odometer and range</string>
@@ -171,6 +168,8 @@
     <string name="picker_signal">Signal %1$d dBm</string>
     <string name="picker_tap_hint">Tap your adapter to connect.</string>
     <string name="picker_connect">Connect</string>
+    <string name="picker_spp_section">Paired Classic Bluetooth (SPP)</string>
+    <string name="picker_spp_badge">Classic SPP · Paired</string>
     <string name="picker_scan_again">Scan again</string>
     <string name="picker_enable_bluetooth">Turn on Bluetooth</string>
 
@@ -539,4 +538,15 @@
     <string name="settings_version">Version %1$s</string>
     <string name="settings_developer">Developer page</string>
     <string name="settings_developer_hint">Raw data for troubleshooting. A long press on the title opens it too.</string>
+    <string name="ask_persona">Ask %1$s</string>
+    <string name="voice_listening_short">Listening…</string>
+    <string name="rule_dpf_regen_active">DPF regeneration active — keep driving if safe</string>
+    <string name="rule_cooldown_wait">Hot exhaust — idle briefly before switching off</string>
+    <string name="ai_mode_title">AI companion mode</string>
+    <string name="ai_provider_title">Cloud provider (BYO key)</string>
+    <string name="ai_key_saved">Encrypted API key saved in Android Keystore</string>
+    <string name="ai_key_missing">No API key saved</string>
+    <string name="ai_key_set">Set API key</string>
+    <string name="knightpack_sideload_title">Voice &amp; persona pack (.knightpack)</string>
+    <string name="knightpack_sideload_button">Sideload .knightpack</string>
 </resources>

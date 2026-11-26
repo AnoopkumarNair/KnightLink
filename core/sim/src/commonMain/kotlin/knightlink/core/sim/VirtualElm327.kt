@@ -112,9 +112,9 @@ public class VirtualElm327(
     public var monitorStops: Int = 0
         private set
 
-    /** Every command received, in order. For assertions in tests. */
+    /** Recent commands received (capped at [MAX_RECEIVED_LOG] entries), in order. For assertions in tests. */
     public val received: List<String> get() = log
-    private val log = ArrayList<String>()
+    private val log = ArrayDeque<String>()
 
     override val incoming: Flow<ByteArray> = channel.receiveAsFlow()
 
@@ -147,7 +147,8 @@ public class VirtualElm327(
             }
             val command = input.toString()
             input.clear()
-            log += command
+            if (log.size >= MAX_RECEIVED_LOG) log.removeFirst()
+            log.addLast(command)
             if (resetBeforeNextCommand) {
                 resetBeforeNextCommand = false
                 reset()
@@ -427,6 +428,7 @@ public class VirtualElm327(
         const val DEFAULT_RECEIVE_FILTER = 0x7E8
         const val DEFAULT_RECEIVE_MASK = 0x7F8
         const val EXACT_MASK = 0x7FF
+        const val MAX_RECEIVED_LOG = 50_000
 
         /** Settings the simulator accepts without modelling their effect. */
         val ACCEPTED_PREFIXES = listOf("SP", "TP", "AT", "ST", "CAF", "CFC", "AL", "M", "WS", "CSM")

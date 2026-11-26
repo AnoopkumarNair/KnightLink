@@ -7,8 +7,11 @@ sealed interface ConnectionTarget {
     /** The simulated vehicle of [scenarioId], run through the complete real stack on the phone. */
     data class Demo(val scenarioId: String) : ConnectionTarget
 
-    /** A real adapter at the Bluetooth [address]. Not implemented yet. */
+    /** A real adapter at the BLE [address]. */
     data class Ble(val address: String) : ConnectionTarget
+
+    /** A real Classic Bluetooth (SPP / RFCOMM) adapter at [address]. */
+    data class Spp(val address: String) : ConnectionTarget
 }
 
 /**

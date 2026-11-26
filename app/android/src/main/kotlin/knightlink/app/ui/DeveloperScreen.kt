@@ -57,7 +57,6 @@ import knightlink.app.data.DashboardReadings
 import knightlink.app.fraction
 import knightlink.app.session.BodyScanProgress
 import knightlink.app.session.ConnectionStatus
-import knightlink.app.session.DriveMode
 import knightlink.app.session.DriveSummary
 import knightlink.app.session.FaultSummary
 import knightlink.app.session.FaultsStatus
@@ -397,7 +396,7 @@ private fun BodyScanBanner(progress: BodyScanProgress) {
                     )
                 }
                 is BodyScanProgress.Complete -> Text(stringResource(R.string.bodyscan_complete), style = MaterialTheme.typography.titleMedium)
-                is BodyScanProgress.Partial -> Text(progress.text(LocalContext.current.resources), style = MaterialTheme.typography.titleMedium)
+                is BodyScanProgress.Partial -> Text(progress.text(LocalResources.current), style = MaterialTheme.typography.titleMedium)
                 is BodyScanProgress.Skipped ->
                     Text(
                         stringResource(if (progress.moving) R.string.bodyscan_skipped_moving else R.string.bodyscan_skipped_unknown),

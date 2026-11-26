@@ -26,7 +26,6 @@ import androidx.compose.ui.semantics.semantics
 import knightlink.app.R
 import knightlink.app.data.DashboardReadings
 import knightlink.app.session.BodyScanProgress
-import knightlink.app.session.DriveMode
 import knightlink.app.session.DriveSummary
 import knightlink.app.session.UiState
 import knightlink.app.ui.design.KlCard
